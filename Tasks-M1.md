@@ -1,3 +1,4 @@
+
 # Phase M1: Gateway + Identity (enable Dashboard login)
 
 [Back to index](./Tasks.md)
@@ -6,8 +7,8 @@
 
 ## Checklist
 
-- [ ] [1) Bootstrap YARP gateway](#task-1-bootstrap-yarp-gateway)
-- [ ] [2) Tenant resolution in Gateway](#task-2-tenant-resolution-in-gateway)
+- [x] [1) Bootstrap YARP gateway](#task-1-bootstrap-yarp-gateway)
+- [x] [2) Tenant resolution in Gateway](#task-2-tenant-resolution-in-gateway)
 - [ ] [3) Safety controls at gateway](#task-3-safety-controls-at-gateway)
 - [ ] [4) Identity server skeleton](#task-4-identity-server-skeleton)
 - [ ] [5) Token claims and scopes](#task-5-token-claims-and-scopes)
@@ -32,6 +33,11 @@
 
 - Outcome: Subdomain and /t/{tenant} path parsing; sets X-Tansu-Tenant; unit tests for parser.
 - Dependencies: Task 1
+
+Notes:
+- Implemented `TenantResolver` to parse from subdomain and `/t/{tenant}`; path wins when both.
+- Gateway middleware sets `X-Tansu-Tenant` for downstream.
+- Added xUnit tests in `tests/TansuCloud.Gateway.Tests` covering host and path cases.
 
 <a id="task-3-safety-controls-at-gateway"></a>
 
