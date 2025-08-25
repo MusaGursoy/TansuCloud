@@ -1,0 +1,6 @@
+@TansuCloud.Database_HostAddress = http://localhost:5278
+
+GET {{TansuCloud.Database_HostAddress}}/weatherforecast/
+Accept: application/json
+
+###

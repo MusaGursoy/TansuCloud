@@ -1,0 +1,62 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.14.36414.22
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TansuCloud.Dashboard", "TansuCloud.Dashboard\TansuCloud.Dashboard.csproj", "{ED79CC6D-0275-4F78-B8E7-2DF14F1E385C}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TansuCloud.Gateway", "TansuCloud.Gateway\TansuCloud.Gateway.csproj", "{DD80B273-1329-4B50-BE23-947D117F0D9F}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TansuCloud.Identity", "TansuCloud.Identity\TansuCloud.Identity.csproj", "{0AF4DFAB-0085-46B3-A1BF-1E2BF0A47D95}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TansuCloud.Storage", "TansuCloud.Storage\TansuCloud.Storage.csproj", "{82435328-8C71-4815-A8D8-81D4BBB6A06F}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TansuCloud.Database", "TansuCloud.Database\TansuCloud.Database.csproj", "{0777234F-7060-436A-B8B2-63286882E808}"
+EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "Solution Items", "Solution Items", "{089100B1-113F-4E66-888A-E83F3999EAFD}"
+	ProjectSection(SolutionItems) = preProject
+		Architecture-Study.md = Architecture-Study.md
+		Architecture.md = Architecture.md
+		Development-Principles.md = Development-Principles.md
+		Requirements.md = Requirements.md
+		Tasks-M1.md = Tasks-M1.md
+		Tasks-M2.md = Tasks-M2.md
+		Tasks-M3.md = Tasks-M3.md
+		Tasks-M4.md = Tasks-M4.md
+		Tasks.md = Tasks.md
+	EndProjectSection
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{ED79CC6D-0275-4F78-B8E7-2DF14F1E385C}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{ED79CC6D-0275-4F78-B8E7-2DF14F1E385C}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{ED79CC6D-0275-4F78-B8E7-2DF14F1E385C}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{ED79CC6D-0275-4F78-B8E7-2DF14F1E385C}.Release|Any CPU.Build.0 = Release|Any CPU
+		{DD80B273-1329-4B50-BE23-947D117F0D9F}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{DD80B273-1329-4B50-BE23-947D117F0D9F}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{DD80B273-1329-4B50-BE23-947D117F0D9F}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{DD80B273-1329-4B50-BE23-947D117F0D9F}.Release|Any CPU.Build.0 = Release|Any CPU
+		{0AF4DFAB-0085-46B3-A1BF-1E2BF0A47D95}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{0AF4DFAB-0085-46B3-A1BF-1E2BF0A47D95}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{0AF4DFAB-0085-46B3-A1BF-1E2BF0A47D95}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{0AF4DFAB-0085-46B3-A1BF-1E2BF0A47D95}.Release|Any CPU.Build.0 = Release|Any CPU
+		{82435328-8C71-4815-A8D8-81D4BBB6A06F}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{82435328-8C71-4815-A8D8-81D4BBB6A06F}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{82435328-8C71-4815-A8D8-81D4BBB6A06F}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{82435328-8C71-4815-A8D8-81D4BBB6A06F}.Release|Any CPU.Build.0 = Release|Any CPU
+		{0777234F-7060-436A-B8B2-63286882E808}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{0777234F-7060-436A-B8B2-63286882E808}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{0777234F-7060-436A-B8B2-63286882E808}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{0777234F-7060-436A-B8B2-63286882E808}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ExtensibilityGlobals) = postSolution
+		SolutionGuid = {F67286C0-58D5-4958-82B4-75FD33B07691}
+	EndGlobalSection
+EndGlobal
