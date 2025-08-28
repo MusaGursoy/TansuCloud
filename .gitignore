@@ -370,3 +370,6 @@ FodyWeavers.xsd
 /Tasks-M1.md
 /Tasks-M2.md
 /Tasks-M3.md
+/.playwright-mcp
+/.github/copilot-instructions.md
+/README.md
