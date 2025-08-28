@@ -1,0 +1,14 @@
+@page
+@model TansuCloud.Identity.Pages.Admin.Impersonation.IndexModel
+@{
+    ViewData["Title"] = "Impersonation";
+}
+<h2>Impersonation</h2>
+<form method="post">
+    <div class="mb-2">
+        <label class="form-label">User ID to impersonate</label>
+        <input asp-for="UserId" class="form-control form-control-sm" />
+    </div>
+    <button type="submit" class="btn btn-sm btn-primary">Start Impersonation</button>
+    <button type="submit" formaction="?handler=End" class="btn btn-sm btn-secondary">End Impersonation</button>
+</form>

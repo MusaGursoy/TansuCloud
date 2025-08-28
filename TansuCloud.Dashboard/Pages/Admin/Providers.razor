@@ -1,0 +1,60 @@
+@page "/admin/providers"
+@inject HttpClient Http
+
+<h3>External Providers</h3>
+
+@if (error is not null)
+{
+    <p class="text-danger">@error</p>
+}
+else if (items is null)
+{
+    <p>Loading...</p>
+}
+else
+{
+    <table class="table">
+        <thead>
+            <tr>
+                <th>Tenant</th>
+                <th>Provider</th>
+                <th>Display</th>
+                <th>Authority</th>
+                <th>ClientId</th>
+                <th>Enabled</th>
+            </tr>
+        </thead>
+        <tbody>
+            @foreach (var e in items)
+            {
+                <tr>
+                    <td>@e.tenantId</td>
+                    <td>@e.provider</td>
+                    <td>@e.displayName</td>
+                    <td>@e.authority</td>
+                    <td>@e.clientId</td>
+                    <td>@e.enabled</td>
+                </tr>
+            }
+        </tbody>
+    </table>
+}
+
+@code {
+    private List<ProviderDto>? items;
+    private string? error;
+    private sealed record ProviderDto(string tenantId, string provider, string? displayName, string authority, string clientId, bool enabled);
+
+    protected override async Task OnInitializedAsync()
+    {
+        try
+        {
+            items = await Http.GetFromJsonAsync<List<ProviderDto>>("/identity/admin/providers?take=100");
+            items ??= new List<ProviderDto>();
+        }
+        catch (Exception ex)
+        {
+            error = $"Failed to load providers: {ex.Message}";
+        }
+    }
+}

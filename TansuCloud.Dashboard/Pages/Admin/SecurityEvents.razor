@@ -1,0 +1,62 @@
+@page "/admin/security"
+@inject HttpClient Http
+
+<h3>Security Events</h3>
+
+@if (error is not null)
+{
+    <p class="text-danger">@error</p>
+}
+else if (events is null)
+{
+    <p>Loading...</p>
+}
+else
+{
+    <table class="table">
+        <thead>
+            <tr>
+                <th>Id</th>
+                <th>Type</th>
+                <th>User</th>
+                <th>Tenant</th>
+                <th>Actor</th>
+                <th>At</th>
+            </tr>
+        </thead>
+        <tbody>
+            @foreach (var e in events)
+            {
+                <tr>
+                    <td>@e.id</td>
+                    <td>@e.type</td>
+                    <td>@e.userId</td>
+                    <td>@e.tenantId</td>
+                    <td>@e.actorId</td>
+                    <td>@e.createdAt</td>
+                </tr>
+            }
+        </tbody>
+    </table>
+}
+
+@code {
+    private List<SecEvent>? events;
+    private string? error;
+    private sealed record SecEvent(long id, string type, string? userId, string? tenantId, string? actorId, DateTimeOffset createdAt);
+
+    protected override async Task OnInitializedAsync()
+    {
+        try
+        {
+            // Assumes gateway route /identity proxied
+            var data = await System.Net.Http.Json.HttpClientJsonExtensions.GetFromJsonAsync<List<SecEvent>>(Http, 
+                "/identity/admin/security/events?take=100");
+            events = data ?? new List<SecEvent>();
+        }
+        catch (Exception ex)
+        {
+            error = $"Failed to load security events: {ex.Message}";
+        }
+    }
+}

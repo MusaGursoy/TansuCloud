@@ -1,0 +1,26 @@
+@page
+@model TansuCloud.Identity.Pages.Admin.Providers.IndexModel
+@{
+    ViewData["Title"] = "External Providers";
+}
+<h2>External Providers</h2>
+<p><a class="btn btn-sm btn-primary" asp-page="Create">Add Provider</a></p>
+<table class="table table-sm">
+    <thead>
+        <tr>
+            <th>Tenant</th><th>Provider</th><th>Authority</th><th>ClientId</th><th>Enabled</th>
+        </tr>
+    </thead>
+    <tbody>
+        @foreach (var p in Model.Items)
+        {
+            <tr>
+                <td>@p.TenantId</td>
+                <td>@p.Provider</td>
+                <td>@p.Authority</td>
+                <td>@p.ClientId</td>
+                <td>@p.Enabled</td>
+            </tr>
+        }
+    </tbody>
+    </table>

@@ -1,0 +1,46 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "Run alias test",
+			"type": "shell",
+			"command": "dotnet",
+			"args": [
+				"test",
+				"c:\\Users\\gurso\\Documents\\NET\\TansuCloud\\tests\\TansuCloud.E2E.Tests\\TansuCloud.E2E.Tests.csproj",
+				"-c",
+				"Debug",
+				"--filter",
+				"FullyQualifiedName~TansuCloud.E2E.Tests.GatewayAliasTests.Gateway_LoginAlias_Returns_LoginForm"
+			],
+			"isBackground": false,
+			"problemMatcher": [
+				"$msCompile"
+			],
+			"group": "build"
+		},
+		{
+			"label": "Run alias test (no warning)",
+			"type": "shell",
+			"command": "dotnet",
+			"args": [
+				"test",
+				"c:\\Users\\gurso\\Documents\\NET\\TansuCloud\\tests\\TansuCloud.E2E.Tests\\TansuCloud.E2E.Tests.csproj",
+				"-c",
+				"Debug",
+				"--filter",
+				"FullyQualifiedName~TansuCloud.E2E.Tests.GatewayAliasTests.Gateway_LoginAlias_Returns_LoginForm"
+			],
+			"isBackground": false,
+			"problemMatcher": [
+				"$msCompile"
+			],
+			"group": "build"
+		},
+		{
+			"label": "Build TansuCloud.sln (Debug)",
+			"type": "shell",
+			"command": "dotnet build \"c:\\Users\\gurso\\Documents\\NET\\TansuCloud\\TansuCloud.sln\" -c Debug"
+		}
+	]
+}
