@@ -88,8 +88,11 @@ builder
     .Services.AddOpenIddict()
     .AddValidation(options =>
     {
-        options.SetIssuer(new Uri("https://localhost:7299/identity/"));
+    var issuer = builder.Configuration["Oidc:Issuer"] ?? "https://localhost:7299/identity/";
+    if (!issuer.EndsWith('/')) issuer += "/";
+    options.SetIssuer(new Uri(issuer));
         options.AddAudiences("tansu.storage");
+    options.UseSystemNetHttp();
         options.UseAspNetCore();
     });
 
@@ -107,7 +110,7 @@ app.UseAuthorization();
 app.MapControllers();
 
 // Health endpoints
-app.MapHealthChecks("/health/live");
-app.MapHealthChecks("/health/ready");
+app.MapHealthChecks("/health/live").AllowAnonymous();
+app.MapHealthChecks("/health/ready").AllowAnonymous();
 
 app.Run();

@@ -12,6 +12,13 @@ using Yarp.ReverseProxy.Configuration;
 
 var builder = WebApplication.CreateBuilder(args);
 
+// If provided, feed the HTTPS certificate password into Kestrel from env
+var gatewayCertPwd = Environment.GetEnvironmentVariable("GATEWAY_CERT_PASSWORD")?.Trim();
+if (!string.IsNullOrWhiteSpace(gatewayCertPwd))
+{
+    builder.Configuration["Kestrel:Endpoints:Https:Certificate:Password"] = gatewayCertPwd;
+}
+
 // OpenTelemetry: tracing, metrics, and logs
 var serviceName = "tansu.gateway";
 var serviceVersion = typeof(Program).Assembly.GetName().Version?.ToString() ?? "0.0.0";
@@ -82,6 +89,30 @@ builder.Logging.AddOpenTelemetry(logging =>
 
 // Health checks
 builder.Services.AddHealthChecks();
+
+// CORS: tighten cross-origin access at the gateway; configure allowed origins via Gateway:Cors:AllowedOrigins
+builder.Services.AddCors(options =>
+{
+    options.AddPolicy("Default", policy =>
+    {
+        // Accept comma or semicolon separated list
+        var list = builder.Configuration["Gateway:Cors:AllowedOrigins"] ?? string.Empty;
+        var origins = list
+            .Split(new[] { ',', ';' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        if (origins.Length > 0)
+        {
+            policy.WithOrigins(origins)
+                  .AllowAnyHeader()
+                  .AllowAnyMethod()
+                  .AllowCredentials();
+        }
+        else
+        {
+            // No origins configured -> deny all cross-site requests by default
+            policy.DisallowCredentials();
+        }
+    });
+});
 
 // Safety controls: Rate Limiting
 builder.Services.AddRateLimiter(options =>
@@ -678,6 +709,9 @@ app.UseWebSockets();
 // Global Rate Limiter
 app.UseRateLimiter();
 
+// CORS before proxy to ensure preflight and headers are handled at the edge
+app.UseCors("Default");
+
 // Redirect HTTP -> HTTPS in dev when not disabled (Aspire fronting may handle TLS)
 var disableHttpsRedirect = builder.Configuration.GetValue<bool>(
     "Gateway:DisableHttpsRedirect",
@@ -709,9 +743,27 @@ app.Use(
     async (context, next) =>
     {
         var path = context.Request.Path;
-        var requiresAuth = path.StartsWithSegments("/db") || path.StartsWithSegments("/storage");
+        var requiresAuth = false;
+        if (path.StartsWithSegments("/db") || path.StartsWithSegments("/storage"))
+        {
+            // Allow anonymous health endpoints for downstream services
+            if (
+                !(
+                    path.StartsWithSegments("/db/health")
+                    || path.StartsWithSegments("/storage/health")
+                )
+            )
+            {
+                requiresAuth = true;
+            }
+        }
 
-        if (requiresAuth)
+        // Allow health endpoints unauthenticated for monitoring
+        var isHealth =
+            path.StartsWithSegments("/db/health", StringComparison.OrdinalIgnoreCase)
+            || path.StartsWithSegments("/storage/health", StringComparison.OrdinalIgnoreCase);
+
+        if (requiresAuth && !isHealth)
         {
             // Reject if no Authorization header present
             if (!context.Request.Headers.ContainsKey("Authorization"))
@@ -764,8 +816,8 @@ app.Use(
 app.MapGet("/", () => "TansuCloud Gateway is running");
 
 // Health endpoints
-app.MapHealthChecks("/health/live");
-app.MapHealthChecks("/health/ready");
+app.MapHealthChecks("/health/live").AllowAnonymous();
+app.MapHealthChecks("/health/ready").AllowAnonymous();
 
 // Map the reverse proxy endpoints
 app.MapReverseProxy();

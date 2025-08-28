@@ -11,6 +11,7 @@ WORKDIR "/src/TansuCloud.Storage"
 RUN dotnet publish "./TansuCloud.Storage.csproj" -c $BUILD_CONFIGURATION -o /app/publish /p:UseAppHost=false
 
 # Final runtime image (chiseled, non-root by default)
+FROM busybox:stable-musl AS bb
 FROM mcr.microsoft.com/dotnet/aspnet:9.0-noble-chiseled AS final
 ARG REPOSITORY_URL=https://github.com/MusaGursoy/TansuCloud
 ARG BUILD_VERSION=0.0.0
@@ -28,4 +29,5 @@ EXPOSE 8080
 ENV ASPNETCORE_URLS=http://+:8080 \
     DOTNET_EnableDiagnostics=0
 COPY --from=build /app/publish .
+COPY --from=bb /bin/busybox /bin/busybox
 ENTRYPOINT ["dotnet", "TansuCloud.Storage.dll"]

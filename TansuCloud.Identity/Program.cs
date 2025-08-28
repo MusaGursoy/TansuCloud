@@ -319,8 +319,8 @@ app.MapRazorPages();
 app.MapControllers();
 
 // Health endpoints
-app.MapHealthChecks("/health/live");
-app.MapHealthChecks("/health/ready");
+app.MapHealthChecks("/health/live").AllowAnonymous();
+app.MapHealthChecks("/health/ready").AllowAnonymous();
 
 // Placeholder for a future JWKS rotation background job
 // app.Services.GetRequiredService<IHostedService>();

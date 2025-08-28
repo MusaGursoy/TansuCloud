@@ -2,22 +2,27 @@
 using Microsoft.AspNetCore.Authorization;
 using OpenIddict.Abstractions;
 using OpenIddict.Validation.AspNetCore;
+using OpenTelemetry.Logs;
 using OpenTelemetry.Metrics;
 using OpenTelemetry.Resources;
 using OpenTelemetry.Trace;
-using OpenTelemetry.Logs;
 
 var builder = WebApplication.CreateBuilder(args);
 
 // OpenTelemetry baseline
 var dbName = "tansu.db";
 var dbVersion = typeof(Program).Assembly.GetName().Version?.ToString() ?? "0.0.0";
-builder.Services.AddOpenTelemetry()
-    .ConfigureResource(rb => rb.AddService(dbName, serviceVersion: dbVersion, serviceInstanceId: Environment.MachineName)
-                             .AddAttributes(new KeyValuePair<string, object>[]
-                             {
-                                 new("deployment.environment", (object)builder.Environment.EnvironmentName)
-                             }))
+builder
+    .Services.AddOpenTelemetry()
+    .ConfigureResource(rb =>
+        rb.AddService(dbName, serviceVersion: dbVersion, serviceInstanceId: Environment.MachineName)
+            .AddAttributes(
+                new KeyValuePair<string, object>[]
+                {
+                    new("deployment.environment", (object)builder.Environment.EnvironmentName)
+                }
+            )
+    )
     .WithTracing(tracing =>
     {
         tracing.AddAspNetCoreInstrumentation(o => o.RecordException = true);
@@ -59,6 +64,7 @@ builder.Logging.AddOpenTelemetry(o =>
     });
 });
 builder.Services.AddHealthChecks();
+
 // Add services to the container.
 
 builder.Services.AddControllers();
@@ -94,9 +100,13 @@ builder
     .Services.AddOpenIddict()
     .AddValidation(options =>
     {
-        // In dev, validate tokens issued via the gateway path
-        options.SetIssuer(new Uri("https://localhost:7299/identity/"));
+        // Validate tokens using the configured issuer (defaults to dev gateway path)
+        var issuer = builder.Configuration["Oidc:Issuer"] ?? "https://localhost:7299/identity/";
+        if (!issuer.EndsWith('/'))
+            issuer += "/";
+        options.SetIssuer(new Uri(issuer));
         options.AddAudiences("tansu.db");
+        options.UseSystemNetHttp();
         options.UseAspNetCore();
     });
 
@@ -114,7 +124,7 @@ app.UseAuthorization();
 app.MapControllers();
 
 // Health endpoints
-app.MapHealthChecks("/health/live");
-app.MapHealthChecks("/health/ready");
+app.MapHealthChecks("/health/live").AllowAnonymous();
+app.MapHealthChecks("/health/ready").AllowAnonymous();
 
 app.Run();

@@ -1,0 +1,131 @@
+version: "3.9"
+
+services:
+  otel-collector:
+    image: otel/opentelemetry-collector:latest
+    command: ["--config=/etc/otelcol/config.yaml"]
+    volumes:
+      - ./dev/otel-collector-config.yaml:/etc/otelcol/config.yaml:ro
+    expose:
+      - "4317" # OTLP gRPC (internal only)
+    networks:
+      - tansucloud-network
+
+  gateway:
+    build:
+      context: .
+      dockerfile: TansuCloud.Gateway/Dockerfile
+    environment:
+      # Downstream service base URLs (internal Docker DNS names)
+      - Services__DashboardBaseUrl=http://dashboard:8080
+      - Services__IdentityBaseUrl=http://identity:8080
+      - Services__DatabaseBaseUrl=http://db:8080
+      - Services__StorageBaseUrl=http://storage:8080
+      # OpenTelemetry collector endpoint
+      - OpenTelemetry__Otlp__Endpoint=http://otel-collector:4317
+      # Optional Kestrel HTTPS endpoint (uncomment Kestrel lines below when enabling TLS, mind the indentation)
+      # - Kestrel__Endpoints__Https__Url=https://0.0.0.0:8443
+      # - Kestrel__Endpoints__Https__Certificate__Path=/certs/gateway.pfx
+      # Optional TLS certificate password for the PFX at /certs/gateway.pfx (uncomment below when enabling HTTPS, mind the indentation)
+      # - GATEWAY_CERT_PASSWORD=${GATEWAY_CERT_PASSWORD}
+    ports:
+      - "80:8080"
+      # Optional HTTPS (enable when you mount a PFX and provide the password, mind the indentation)
+      # - "443:8443"
+    # Optional. Mount a local certs folder that contains gateway.pfx into the container (uncomment below to enable HTTPS, mind the indentation)
+    # volumes:
+    #   - ./certs:/certs:ro
+    healthcheck:
+      test: ["CMD", "/bin/busybox", "wget", "-q", "-O", "-", "http://localhost:8080/health/ready"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+    depends_on:
+      identity:
+        condition: service_healthy
+      dashboard:
+        condition: service_healthy
+      db:
+        condition: service_healthy
+      storage:
+        condition: service_healthy
+      otel-collector:
+        condition: service_started
+    networks:
+      - tansucloud-network
+
+  identity:
+    healthcheck:
+      test: ["CMD", "/bin/busybox", "wget", "-q", "-O", "-", "http://localhost:8080/health/ready"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+    build:
+      context: .
+      dockerfile: TansuCloud.Identity/Dockerfile
+    environment:
+      # Issuer must include "/identity/" and match what downstream validators use
+      - Oidc__Issuer=http://gateway:8080/identity/
+      - OpenTelemetry__Otlp__Endpoint=http://otel-collector:4317
+      # Database connection can be overridden here as needed in prod
+      # - ConnectionStrings__Default=Host=postgres;Port=5432;Database=tansu_identity;Username=postgres;Password=postgres
+    networks:
+      - tansucloud-network
+
+  dashboard:
+    build:
+      context: .
+      dockerfile: TansuCloud.Dashboard/Dockerfile
+    environment:
+      - OpenTelemetry__Otlp__Endpoint=http://otel-collector:4317
+      - Oidc__Authority=http://gateway:8080/identity
+      - Oidc__MetadataAddress=http://gateway:8080/identity/.well-known/openid-configuration
+      - Oidc__ClientId=tansu-dashboard
+      - Oidc__ClientSecret=dev-secret
+      - GatewayBaseUrl=http://gateway:8080
+    healthcheck:
+      test: ["CMD", "/bin/busybox", "wget", "-q", "-O", "-", "http://localhost:8080/health/ready"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+    networks:
+      - tansucloud-network
+
+  db:
+    build:
+      context: .
+      dockerfile: TansuCloud.Database/Dockerfile
+    environment:
+      - Oidc__Issuer=http://gateway:8080/identity/
+      - OpenTelemetry__Otlp__Endpoint=http://otel-collector:4317
+    healthcheck:
+      test: ["CMD", "/bin/busybox", "wget", "-q", "-O", "-", "http://localhost:8080/health/ready"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+    networks:
+      - tansucloud-network
+
+  storage:
+    build:
+      context: .
+      dockerfile: TansuCloud.Storage/Dockerfile
+    environment:
+      - Oidc__Issuer=http://gateway:8080/identity/
+      - OpenTelemetry__Otlp__Endpoint=http://otel-collector:4317
+    healthcheck:
+      test: ["CMD", "/bin/busybox", "wget", "-q", "-O", "-", "http://localhost:8080/health/ready"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+    networks:
+      - tansucloud-network
+
+networks:
+  tansucloud-network:
+    driver: bridge

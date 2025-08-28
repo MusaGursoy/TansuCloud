@@ -41,6 +41,76 @@
 			"label": "Build TansuCloud.sln (Debug)",
 			"type": "shell",
 			"command": "dotnet build \"c:\\Users\\gurso\\Documents\\NET\\TansuCloud\\TansuCloud.sln\" -c Debug"
+		},
+		{
+			"label": "Test Task 8 E2E and config",
+			"type": "shell",
+			"command": "dotnet test \"c:\\Users\\gurso\\Documents\\NET\\TansuCloud\\tests\\TansuCloud.E2E.Tests\\TansuCloud.E2E.Tests.csproj\" -c Debug --filter FullyQualifiedName~TansuCloud.E2E.Tests.HealthEndpointsE2E|FullyQualifiedName~TansuCloud.E2E.Tests.OpenTelemetryConfigTests"
+		},
+		{
+			"label": "Test Task 8 E2E and config (retry filter)",
+			"type": "shell",
+			"command": "dotnet test \"c:\\Users\\gurso\\Documents\\NET\\TansuCloud\\tests\\TansuCloud.E2E.Tests\\TansuCloud.E2E.Tests.csproj\" -c Debug --filter \"FullyQualifiedName~TansuCloud.E2E.Tests.HealthEndpointsE2E|FullyQualifiedName~TansuCloud.E2E.Tests.OpenTelemetryConfigTests\""
+		},
+		{
+			"label": "Test Task 8 E2E (class by class)",
+			"type": "shell",
+			"command": "dotnet test \"c:\\Users\\gurso\\Documents\\NET\\TansuCloud\\tests\\TansuCloud.E2E.Tests\\TansuCloud.E2E.Tests.csproj\" -c Debug --filter FullyQualifiedName~TansuCloud.E2E.Tests.HealthEndpointsE2E"
+		},
+		{
+			"label": "Test HealthEndpoints only",
+			"type": "shell",
+			"command": "dotnet test \"c:\\Users\\gurso\\Documents\\NET\\TansuCloud\\tests\\TansuCloud.E2E.Tests\\TansuCloud.E2E.Tests.csproj\" -c Debug --filter FullyQualifiedName~TansuCloud.E2E.Tests.HealthEndpointsE2E"
+		},
+		{
+			"label": "Test OpenTelemetryConfig only",
+			"type": "shell",
+			"command": "dotnet test \"c:\\Users\\gurso\\Documents\\NET\\TansuCloud\\tests\\TansuCloud.E2E.Tests\\TansuCloud.E2E.Tests.csproj\" -c Debug --filter FullyQualifiedName~TansuCloud.E2E.Tests.OpenTelemetryConfigTests"
+		},
+		{
+			"label": "Test HealthEndpoints only (retry)",
+			"type": "shell",
+			"command": "dotnet test \"c:\\Users\\gurso\\Documents\\NET\\TansuCloud\\tests\\TansuCloud.E2E.Tests\\TansuCloud.E2E.Tests.csproj\" -c Debug --filter FullyQualifiedName~TansuCloud.E2E.Tests.HealthEndpointsE2E"
+		},
+		{
+			"label": "Run HealthEndpointsE2E tests only (final)",
+			"type": "shell",
+			"command": "dotnet test \"c:\\Users\\gurso\\Documents\\NET\\TansuCloud\\tests\\TansuCloud.E2E.Tests\\TansuCloud.E2E.Tests.csproj\" -c Debug --filter \"FullyQualifiedName~TansuCloud.E2E.Tests.HealthEndpointsE2E\""
+		},
+		{
+			"label": "Run all E2E tests",
+			"type": "shell",
+			"command": "dotnet test \"c:\\Users\\gurso\\Documents\\NET\\TansuCloud\\tests\\TansuCloud.E2E.Tests\\TansuCloud.E2E.Tests.csproj\" -c Debug"
+		},
+		{
+			"label": "build-sln",
+			"type": "shell",
+			"command": "dotnet build .\\TansuCloud.sln -c Debug",
+			"isBackground": false,
+			"problemMatcher": [
+				"$msCompile"
+			],
+			"group": "build"
+		},
+		{
+			"label": "Run health E2E tests",
+			"type": "shell",
+			"command": "dotnet test .\\tests\\TansuCloud.E2E.Tests\\TansuCloud.E2E.Tests.csproj -c Debug --filter FullyQualifiedName~TansuCloud.E2E.Tests.HealthEndpointsE2E"
+		},
+		{
+			"label": "dev: up",
+			"type": "shell",
+			"command": "$ErrorActionPreference='Stop'; dotnet build .\\TansuCloud.sln -c Debug; Start-Job -Name tansu-identity -ScriptBlock { dotnet run --no-build --project .\\TansuCloud.Identity\\TansuCloud.Identity.csproj -c Debug } | Out-Null; Start-Job -Name tansu-dashboard -ScriptBlock { dotnet run --no-build --project .\\TansuCloud.Dashboard\\TansuCloud.Dashboard.csproj -c Debug } | Out-Null; Start-Job -Name tansu-database -ScriptBlock { dotnet run --no-build --project .\\TansuCloud.Database\\TansuCloud.Database.csproj -c Debug } | Out-Null; Start-Job -Name tansu-storage -ScriptBlock { dotnet run --no-build --project .\\TansuCloud.Storage\\TansuCloud.Storage.csproj -c Debug } | Out-Null; Start-Sleep -Seconds 2; dotnet run --no-build --project .\\TansuCloud.Gateway\\TansuCloud.Gateway.csproj -c Debug",
+			"isBackground": true,
+			"group": "build"
+		}
+		,
+		{
+			"label": "dev: down",
+			"type": "shell",
+			"command": "$jobs = Get-Job | Where-Object { $_.Name -like 'tansu-*' }; if ($jobs) { $jobs | Stop-Job -Force; $jobs | Remove-Job }; Get-Process -Name 'TansuCloud.Gateway' -ErrorAction SilentlyContinue | Stop-Process -Force",
+			"isBackground": false,
+			"group": "build"
 		}
 	]
 }

@@ -293,7 +293,7 @@ app.MapStaticAssets().AllowAnonymous();
 app.MapRazorComponents<App>().RequireAuthorization().AddInteractiveServerRenderMode();
 
 // Health endpoints
-app.MapHealthChecks("/health/live");
-app.MapHealthChecks("/health/ready");
+app.MapHealthChecks("/health/live").AllowAnonymous();
+app.MapHealthChecks("/health/ready").AllowAnonymous();
 
 app.Run();

@@ -1,0 +1,246 @@
+# Tansu.Cloud Admin & Tenant Guide
+
+## Overview
+
+Tansu.Cloud is a modern backend service platform built on .NET, providing identity, API gateway, dashboards, database and storage services, observability, and health management. This guide helps admins and tenant operators deploy, configure, and operate the platform.
+
+## 1. Getting Started
+
+- Architecture at a glance
+- Core services and responsibilities
+- Environments (dev, staging, production)
+
+## 2. Prerequisites
+
+- Docker and Docker Compose
+- Certificates (PFX) for TLS
+- DNS and firewall basics
+
+## 3. Quickstart: Local Development
+
+- Run all services with VS Code tasks (dev: up / dev: down)
+- Running with Docker Compose (gateway only exposed)
+- Health endpoints (/health/live and /health/ready)
+
+## 4. Production Topology
+
+- Gateway-only exposure (80/443)
+- Internal service networking
+- OpenTelemetry collector
+
+## 5. Certificates & TLS
+
+- Preparing a PFX certificate
+- Mounting certs via Compose (volumes)
+- Configuring Kestrel HTTPS in gateway (appsettings Kestrel:Endpoints)
+- Setting GATEWAY_CERT_PASSWORD
+
+### 5.1 Dev SSL (self‑signed)
+
+Use the helper script to create a local, self‑signed PFX and wire it to the gateway:
+
+1. Generate a dev certificate
+
+- Script: `dev/make-dev-cert.ps1`
+- Output: `./certs/gateway.pfx` (you’ll be prompted for a password)
+
+1. Point the gateway to the PFX
+
+- HTTPS is disabled by default. Enable it via Docker Compose by mounting the PFX, exposing 443, and setting Kestrel HTTPS endpoint via environment variables:
+
+```yaml
+services:
+	gateway:
+		ports:
+			- "80:8080"
+			- "443:8443"            # enable HTTPS (container listens on 8443)
+		volumes:
+			- ./certs:/certs:ro      # contains gateway.pfx
+		environment:
+			- Kestrel__Endpoints__Https__Url=https://0.0.0.0:8443
+			- Kestrel__Endpoints__Https__Certificate__Path=/certs/gateway.pfx
+			- GATEWAY_CERT_PASSWORD=${GATEWAY_CERT_PASSWORD}
+```
+
+1. Provide the password
+
+- Set `GATEWAY_CERT_PASSWORD` via `.env` or shell; it’s read at startup and used as the PFX password. See 5.3 for examples.
+
+1. Browse
+
+- Start compose; navigate to `https://localhost` (trust the self‑signed cert in your browser if prompted).
+
+### 5.2 Real SSL (public CA)
+
+1. Obtain a PFX for your domain
+
+- Include the full chain (intermediate CAs) and set a strong password.
+
+1. Mount and configure
+
+- Place the PFX where Docker can mount it (e.g., `./certs/mydomain.pfx`).
+- Configure the HTTPS endpoint via environment variables. The password must be provided via `GATEWAY_CERT_PASSWORD` using a `.env` file or shell variable (see 5.3):
+
+```yaml
+services:
+	gateway:
+		ports:
+			- "80:8080"
+			- "443:8443"
+		volumes:
+			- ./certs:/certs:ro
+		environment:
+			- Kestrel__Endpoints__Https__Url=https://0.0.0.0:8443
+			- Kestrel__Endpoints__Https__Certificate__Path=/certs/mydomain.pfx
+			- GATEWAY_CERT_PASSWORD=${GATEWAY_CERT_PASSWORD}
+```
+
+- Or re-add the Https endpoint in appsettings to pin the URL; still provide the password via `GATEWAY_CERT_PASSWORD` only (see 5.3).
+
+1. DNS and callbacks
+
+- Point your DNS (A/AAAA) to the gateway host.
+- Update OIDC redirect URIs and issuers to use your HTTPS host.
+
+1. Hardening (recommended)
+
+- Enable HSTS, fine‑tune CORS allowlists, and use secret stores for certificate passwords.
+
+### 5.3 How to provide the certificate password
+
+Provide the password only via the environment variable `GATEWAY_CERT_PASSWORD`. Do not store it in appsettings or source control.
+
+Option A — .env file (recommended for local/dev)
+
+1. Create a `.env` file next to `docker-compose.yml` with:
+
+```env
+GATEWAY_CERT_PASSWORD=changeit
+```
+
+1. Ensure your gateway service `environment` section contains:
+
+```yaml
+environment:
+	- Kestrel__Endpoints__Https__Url=https://0.0.0.0:8443
+	- Kestrel__Endpoints__Https__Certificate__Path=/certs/gateway.pfx
+	- GATEWAY_CERT_PASSWORD=${GATEWAY_CERT_PASSWORD}
+```
+
+Docker Compose will automatically load `.env` and substitute the value.
+
+Option B — Shell environment variable (one-off runs, CI/CD)
+
+- Windows PowerShell
+
+```powershell
+$env:GATEWAY_CERT_PASSWORD = "changeit"
+docker compose up -d
+```
+
+- Bash (Linux/macOS)
+
+```bash
+export GATEWAY_CERT_PASSWORD=changeit
+docker compose up -d
+```
+
+Notes
+
+- Don’t commit real passwords into source control. Use `.env` (ignored by default) or secret managers/CI secrets.
+- For HTTP-only runs, leave 443 and TLS envs unset, and (in dev) you can set `Gateway:DisableHttpsRedirect=true` to prevent redirects.
+
+## 6. Identity & Authentication
+
+- Identity issuer and discovery under /identity
+- Configuring OIDC issuer for downstream services (Oidc:Issuer)
+- Dashboard OIDC authority configuration
+
+## 7. Configuration & Secrets
+
+- Configuration sources (appsettings, environment, user secrets)
+- Sensitive values (client secrets, cert passwords)
+- Example environment variables and key paths
+
+## 8. Health & Monitoring
+
+- Health endpoints and readiness gates
+- OpenTelemetry signals (traces, metrics, logs)
+- Collector endpoint and backends
+
+## 9. Operations
+
+- Rolling updates and restarts
+- Log collection and troubleshooting
+- Backup and restore considerations (DB/storage specifics TBD)
+
+## 10. Security Hardening
+
+- CORS at the gateway
+- TLS everywhere and HSTS (optional)
+- Rate limiting and body size limits at the gateway
+
+## 11. Multi-Tenancy
+
+- Tenant resolution via host/path
+- Header propagation (X-Tansu-Tenant)
+- Tenant-aware caching and routing
+
+## 12. Troubleshooting
+
+- Common startup issues
+- Certificate and TLS errors
+- OIDC discovery and token validation
+
+## Appendix A: Docker Compose Examples
+
+- Base compose
+- Enabling TLS with volumes and env
+- Overriding ports and networks
+
+### A.1 Enable TLS on the gateway (dev or prod)
+
+```yaml
+services:
+	gateway:
+		image: tansucloud-gateway
+		ports:
+			- "80:8080"    # HTTP
+			- "443:8443"   # HTTPS (container listens on 8443)
+		volumes:
+			- ./certs:/certs:ro
+		environment:
+			- Kestrel__Endpoints__Https__Url=https://0.0.0.0:8443
+			- Kestrel__Endpoints__Https__Certificate__Path=/certs/gateway.pfx
+			- GATEWAY_CERT_PASSWORD=${GATEWAY_CERT_PASSWORD}
+		depends_on:
+			identity:
+				condition: service_healthy
+			dashboard:
+				condition: service_healthy
+			db:
+				condition: service_healthy
+			storage:
+				condition: service_healthy
+```
+
+Place your `gateway.pfx` under `./certs` and set `GATEWAY_CERT_PASSWORD` in your shell or a `.env` file.
+
+## Appendix B: Configuration Keys
+
+- Services:*BaseUrl
+- Oidc:Issuer, Oidc:Authority (dashboard)
+- OpenTelemetry:Otlp:Endpoint
+- Gateway:Cors:AllowedOrigins
+- Kestrel:Endpoints:Http/Https (or env: Kestrel__Endpoints__Https__Url, Kestrel__Endpoints__Https__Certificate__Path)
+
+## Appendix C: Useful Endpoints
+
+- / (gateway health text)
+- /health/live, /health/ready (all services)
+- /identity/.well-known/openid-configuration
+- /dashboard (UI)
+
+### Notes
+
+- This guide is a living document. Fill in environment-specific details (DNS, certs, backends) as they are finalized.

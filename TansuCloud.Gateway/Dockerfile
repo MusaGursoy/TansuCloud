@@ -10,6 +10,9 @@ COPY . .
 WORKDIR "/src/TansuCloud.Gateway"
 RUN dotnet publish "./TansuCloud.Gateway.csproj" -c $BUILD_CONFIGURATION -o /app/publish /p:UseAppHost=false
 
+# Bring in a tiny busybox for container healthchecks (wget)
+FROM busybox:stable-musl AS bb
+
 # Final runtime image (chiseled, non-root by default)
 FROM mcr.microsoft.com/dotnet/aspnet:9.0-noble-chiseled AS final
 ARG REPOSITORY_URL=https://github.com/MusaGursoy/TansuCloud
@@ -24,8 +27,9 @@ LABEL org.opencontainers.image.source=$REPOSITORY_URL \
       org.opencontainers.image.revision=$BUILD_COMMIT \
       org.opencontainers.image.created=$BUILD_DATE
 WORKDIR /app
-EXPOSE 8080
+EXPOSE 8080 8443
 ENV ASPNETCORE_URLS=http://+:8080 \
     DOTNET_EnableDiagnostics=0
 COPY --from=build /app/publish .
+COPY --from=bb /bin/busybox /bin/busybox
 ENTRYPOINT ["dotnet", "TansuCloud.Gateway.dll"]
