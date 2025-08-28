@@ -361,3 +361,12 @@ MigrationBackup/
 
 # Fody - auto-generated XML schema
 FodyWeavers.xsd
+/Tasks.md
+/Tasks-M4.md
+/Architecture-Study.md
+/Architecture.md
+/Development-Principles.md
+/Requirements.md
+/Tasks-M1.md
+/Tasks-M2.md
+/Tasks-M3.md
