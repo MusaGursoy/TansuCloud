@@ -44,19 +44,20 @@ public static class DevSeeder
         }
 
         var dashboardClientId = config["Oidc:Dashboard:ClientId"] ?? "tansu-dashboard";
-    var dashboardClientSecret = config["Oidc:Dashboard:ClientSecret"] ?? "dev-secret";
+        var dashboardClientSecret = config["Oidc:Dashboard:ClientSecret"] ?? "dev-secret";
         var dashboardRedirectUri =
-            config["Oidc:Dashboard:RedirectUri"] ?? "https://localhost:7299/dashboard/signin-oidc";
+            config["Oidc:Dashboard:RedirectUri"] ?? "http://127.0.0.1:8080/dashboard/signin-oidc";
         var dashboardRedirectUriRoot =
-            config["Oidc:Dashboard:RedirectUriRoot"] ?? "https://localhost:7299/signin-oidc";
+            config["Oidc:Dashboard:RedirectUriRoot"] ?? "http://127.0.0.1:8080/signin-oidc";
         var dashboardPostLogoutUri =
             config["Oidc:Dashboard:PostLogoutRedirectUri"]
-            ?? "https://localhost:7299/dashboard/signout-callback-oidc";
+            ?? "http://127.0.0.1:8080/dashboard/signout-callback-oidc";
         var dashboardPostLogoutUriRoot =
             config["Oidc:Dashboard:PostLogoutRedirectUriRoot"]
-            ?? "https://localhost:7299/signout-callback-oidc";
+            ?? "http://127.0.0.1:8080/signout-callback-oidc";
 
         var existing = await appMgr.FindByClientIdAsync(dashboardClientId);
+        var enableClientCreds = services.GetRequiredService<IHostEnvironment>().IsDevelopment();
         if (existing is null)
         {
             var descriptor = new OpenIddictApplicationDescriptor
@@ -66,8 +67,6 @@ public static class DevSeeder
                 ClientSecret = dashboardClientSecret,
                 ConsentType = OpenIddictConstants.ConsentTypes.Explicit,
                 DisplayName = "Tansu Dashboard",
-                RedirectUris = { new Uri(dashboardRedirectUri), new Uri(dashboardRedirectUriRoot) },
-                PostLogoutRedirectUris = { new Uri(dashboardPostLogoutUri), new Uri(dashboardPostLogoutUriRoot) },
                 Permissions =
                 {
                     OpenIddictConstants.Permissions.Endpoints.Authorization,
@@ -75,6 +74,7 @@ public static class DevSeeder
                     OpenIddictConstants.Permissions.GrantTypes.AuthorizationCode,
                     OpenIddictConstants.Permissions.GrantTypes.RefreshToken,
                     OpenIddictConstants.Permissions.ResponseTypes.Code,
+                    OpenIddictConstants.Permissions.Prefixes.Scope + "openid",
                     OpenIddictConstants.Permissions.Scopes.Email,
                     OpenIddictConstants.Permissions.Scopes.Profile,
                     OpenIddictConstants.Permissions.Scopes.Roles,
@@ -88,6 +88,16 @@ public static class DevSeeder
                 },
                 Requirements = { OpenIddictConstants.Requirements.Features.ProofKeyForCodeExchange }
             };
+            if (enableClientCreds)
+            {
+                descriptor.Permissions.Add(
+                    OpenIddictConstants.Permissions.GrantTypes.ClientCredentials
+                );
+            }
+            descriptor.RedirectUris.Add(new Uri(dashboardRedirectUri));
+            descriptor.RedirectUris.Add(new Uri(dashboardRedirectUriRoot));
+            descriptor.PostLogoutRedirectUris.Add(new Uri(dashboardPostLogoutUri));
+            descriptor.PostLogoutRedirectUris.Add(new Uri(dashboardPostLogoutUriRoot));
 
             await appMgr.CreateAsync(descriptor);
         }
@@ -111,20 +121,113 @@ public static class DevSeeder
 
             descriptor.Permissions.Add(OpenIddictConstants.Permissions.Endpoints.Authorization);
             descriptor.Permissions.Add(OpenIddictConstants.Permissions.Endpoints.Token);
-            descriptor.Permissions.Add(OpenIddictConstants.Permissions.GrantTypes.AuthorizationCode);
+            descriptor.Permissions.Add(
+                OpenIddictConstants.Permissions.GrantTypes.AuthorizationCode
+            );
             descriptor.Permissions.Add(OpenIddictConstants.Permissions.GrantTypes.RefreshToken);
+            if (enableClientCreds)
+            {
+                descriptor.Permissions.Add(
+                    OpenIddictConstants.Permissions.GrantTypes.ClientCredentials
+                );
+            }
             descriptor.Permissions.Add(OpenIddictConstants.Permissions.ResponseTypes.Code);
             descriptor.Permissions.Add(OpenIddictConstants.Permissions.Scopes.Email);
             descriptor.Permissions.Add(OpenIddictConstants.Permissions.Scopes.Profile);
             descriptor.Permissions.Add(OpenIddictConstants.Permissions.Scopes.Roles);
-            descriptor.Permissions.Add(OpenIddictConstants.Permissions.Prefixes.Scope + "offline_access");
+            descriptor.Permissions.Add(
+                OpenIddictConstants.Permissions.Prefixes.Scope + "offline_access"
+            );
             descriptor.Permissions.Add(OpenIddictConstants.Permissions.Prefixes.Scope + "db.read");
             descriptor.Permissions.Add(OpenIddictConstants.Permissions.Prefixes.Scope + "db.write");
-            descriptor.Permissions.Add(OpenIddictConstants.Permissions.Prefixes.Scope + "storage.read");
-            descriptor.Permissions.Add(OpenIddictConstants.Permissions.Prefixes.Scope + "storage.write");
-            descriptor.Permissions.Add(OpenIddictConstants.Permissions.Prefixes.Scope + "admin.full");
+            descriptor.Permissions.Add(
+                OpenIddictConstants.Permissions.Prefixes.Scope + "storage.read"
+            );
+            descriptor.Permissions.Add(
+                OpenIddictConstants.Permissions.Prefixes.Scope + "storage.write"
+            );
+            descriptor.Permissions.Add(
+                OpenIddictConstants.Permissions.Prefixes.Scope + "admin.full"
+            );
 
             await appMgr.UpdateAsync(existing, descriptor);
+        }
+
+        // Seed a public PKCE client for Postman/native tooling (dev only)
+        var postmanClientId = config["Oidc:Postman:ClientId"] ?? "postman-pkce";
+        var postmanRedirectUri =
+            config["Oidc:Postman:RedirectUri"] ?? "https://oauth.pstmn.io/v1/callback";
+        var postmanExisting = await appMgr.FindByClientIdAsync(postmanClientId);
+        if (postmanExisting is null)
+        {
+            var descriptor = new OpenIddictApplicationDescriptor
+            {
+                ClientId = postmanClientId,
+                ClientType = OpenIddictConstants.ClientTypes.Public, // no client secret
+                ConsentType = OpenIddictConstants.ConsentTypes.Explicit,
+                DisplayName = "Postman (PKCE)",
+                Permissions =
+                {
+                    OpenIddictConstants.Permissions.Endpoints.Authorization,
+                    OpenIddictConstants.Permissions.Endpoints.Token,
+                    OpenIddictConstants.Permissions.GrantTypes.AuthorizationCode,
+                    OpenIddictConstants.Permissions.GrantTypes.RefreshToken,
+                    OpenIddictConstants.Permissions.ResponseTypes.Code,
+                    OpenIddictConstants.Permissions.Prefixes.Scope + "openid",
+                    OpenIddictConstants.Permissions.Scopes.Email,
+                    OpenIddictConstants.Permissions.Scopes.Profile,
+                    OpenIddictConstants.Permissions.Scopes.Roles,
+                    OpenIddictConstants.Permissions.Prefixes.Scope + "offline_access",
+                    OpenIddictConstants.Permissions.Prefixes.Scope + "db.read",
+                    OpenIddictConstants.Permissions.Prefixes.Scope + "db.write",
+                    OpenIddictConstants.Permissions.Prefixes.Scope + "storage.read",
+                    OpenIddictConstants.Permissions.Prefixes.Scope + "storage.write",
+                    OpenIddictConstants.Permissions.Prefixes.Scope + "admin.full"
+                },
+                Requirements = { OpenIddictConstants.Requirements.Features.ProofKeyForCodeExchange }
+            };
+            descriptor.RedirectUris.Add(new Uri(postmanRedirectUri));
+
+            await appMgr.CreateAsync(descriptor);
+        }
+        else
+        {
+            var descriptor = new OpenIddictApplicationDescriptor
+            {
+                ClientId = postmanClientId,
+                ClientType = OpenIddictConstants.ClientTypes.Public,
+                ConsentType = OpenIddictConstants.ConsentTypes.Explicit,
+                DisplayName = "Postman (PKCE)",
+                Requirements = { OpenIddictConstants.Requirements.Features.ProofKeyForCodeExchange }
+            };
+            descriptor.RedirectUris.Add(new Uri(postmanRedirectUri));
+            descriptor.Permissions.Add(OpenIddictConstants.Permissions.Endpoints.Authorization);
+            descriptor.Permissions.Add(OpenIddictConstants.Permissions.Endpoints.Token);
+            descriptor.Permissions.Add(
+                OpenIddictConstants.Permissions.GrantTypes.AuthorizationCode
+            );
+            descriptor.Permissions.Add(OpenIddictConstants.Permissions.GrantTypes.RefreshToken);
+            descriptor.Permissions.Add(OpenIddictConstants.Permissions.ResponseTypes.Code);
+            descriptor.Permissions.Add(OpenIddictConstants.Permissions.Prefixes.Scope + "openid");
+            descriptor.Permissions.Add(OpenIddictConstants.Permissions.Scopes.Email);
+            descriptor.Permissions.Add(OpenIddictConstants.Permissions.Scopes.Profile);
+            descriptor.Permissions.Add(OpenIddictConstants.Permissions.Scopes.Roles);
+            descriptor.Permissions.Add(
+                OpenIddictConstants.Permissions.Prefixes.Scope + "offline_access"
+            );
+            descriptor.Permissions.Add(OpenIddictConstants.Permissions.Prefixes.Scope + "db.read");
+            descriptor.Permissions.Add(OpenIddictConstants.Permissions.Prefixes.Scope + "db.write");
+            descriptor.Permissions.Add(
+                OpenIddictConstants.Permissions.Prefixes.Scope + "storage.read"
+            );
+            descriptor.Permissions.Add(
+                OpenIddictConstants.Permissions.Prefixes.Scope + "storage.write"
+            );
+            descriptor.Permissions.Add(
+                OpenIddictConstants.Permissions.Prefixes.Scope + "admin.full"
+            );
+
+            await appMgr.UpdateAsync(postmanExisting, descriptor);
         }
     }
 } // End of Class DevSeeder

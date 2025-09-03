@@ -1,0 +1,27 @@
+@Gateway = http://localhost:8080
+@Identity = {{Gateway}}/identity
+@ClientId = tansu-dashboard
+@ClientSecret = dev-secret
+@Scopes = db.write admin.full
+
+###
+### Dev-only: get a client credentials token (audience added via scopes -> tansu.db)
+###
+POST {{Identity}}/connect/token
+Content-Type: application/x-www-form-urlencoded
+
+grant_type=client_credentials&client_id={{ClientId}}&client_secret={{ClientSecret}}&scope={{Scopes}}
+
+###
+### Use the token above to call provisioning (paste access_token value below)
+###
+#@Token = REPLACE_WITH_ACCESS_TOKEN
+#POST {{Gateway}}/db/api/provisioning/tenants
+#Content-Type: application/json
+#Authorization: Bearer {{Token}}
+#
+#{
+#  "tenantId": "acme-dev",
+#  "displayName": "ACME Dev",
+#  "region": "eu"
+#}

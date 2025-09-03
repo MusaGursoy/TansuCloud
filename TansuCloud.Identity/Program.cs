@@ -1,10 +1,6 @@
 // Tansu.Cloud Public Repository:    https://github.com/MusaGursoy/TansuCloud
 
 using System.Threading.Tasks;
-using OpenTelemetry.Metrics;
-using OpenTelemetry.Resources;
-using OpenTelemetry.Trace;
-using OpenTelemetry.Logs;
 using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
@@ -13,6 +9,10 @@ using Microsoft.IdentityModel.Tokens;
 using OpenIddict.Abstractions;
 using OpenIddict.Server;
 using OpenIddict.Server.AspNetCore;
+using OpenTelemetry.Logs;
+using OpenTelemetry.Metrics;
+using OpenTelemetry.Resources;
+using OpenTelemetry.Trace;
 using TansuCloud.Identity.Data;
 using TansuCloud.Identity.Infrastructure;
 using TansuCloud.Identity.Infrastructure.External;
@@ -25,12 +25,21 @@ var builder = WebApplication.CreateBuilder(args);
 // OpenTelemetry baseline: traces, metrics, logs
 var svcName = "tansu.identity";
 var svcVersion = typeof(Program).Assembly.GetName().Version?.ToString() ?? "0.0.0";
-builder.Services.AddOpenTelemetry()
-    .ConfigureResource(rb => rb.AddService(svcName, serviceVersion: svcVersion, serviceInstanceId: Environment.MachineName)
-                             .AddAttributes(new KeyValuePair<string, object>[]
-                             {
-                                 new("deployment.environment", (object)builder.Environment.EnvironmentName)
-                             }))
+builder
+    .Services.AddOpenTelemetry()
+    .ConfigureResource(rb =>
+        rb.AddService(
+                svcName,
+                serviceVersion: svcVersion,
+                serviceInstanceId: Environment.MachineName
+            )
+            .AddAttributes(
+                new KeyValuePair<string, object>[]
+                {
+                    new("deployment.environment", (object)builder.Environment.EnvironmentName)
+                }
+            )
+    )
     .WithTracing(tracing =>
     {
         tracing.AddAspNetCoreInstrumentation(o => o.RecordException = true);
@@ -154,7 +163,8 @@ builder
     .AddServer(options =>
     {
         // Explicit issuer so discovery and endpoints include the gateway path base ("/identity")
-        var issuer = builder.Configuration["Oidc:Issuer"] ?? "https://localhost:7299/identity/";
+    // dev default: go through gateway HTTP endpoint
+    var issuer = builder.Configuration["Oidc:Issuer"] ?? "http://localhost:8080/identity/";
         if (!issuer.EndsWith('/'))
             issuer += "/";
         options.SetIssuer(new Uri(issuer));
@@ -165,16 +175,27 @@ builder
             .SetTokenEndpointUris("/connect/token")
             .SetIntrospectionEndpointUris("/connect/introspect");
 
-        options
+    options
             .AllowAuthorizationCodeFlow()
             .AllowRefreshTokenFlow() // Required for issuing/using refresh tokens with offline_access
             .RequireProofKeyForCodeExchange();
 
-        // Encryption key is required by OpenIddict server. Use an ephemeral key for dev/test.
-        // For production, persist encryption keys similarly to signing keys.
-        options.AddEphemeralEncryptionKey();
+        // Dev-only: allow client credentials flow to enable automation/E2E without browser.
+        // Controlled via configuration and environment to avoid enabling in production by default.
+        var enableClientCreds =
+            builder.Environment.IsDevelopment()
+            && builder.Configuration.GetValue("Oidc:EnableClientCredentials", true);
+        if (enableClientCreds)
+        {
+            options.AllowClientCredentialsFlow();
+        }
+
+    // Encryption key is required by OpenIddict server. Use an ephemeral key for dev/test.
+    // For production, persist encryption keys similarly to signing keys.
+    options.AddEphemeralEncryptionKey();
 
         options.RegisterScopes(
+            OpenIddictConstants.Scopes.OpenId,
             OpenIddictConstants.Scopes.Email,
             OpenIddictConstants.Scopes.Profile,
             OpenIddictConstants.Scopes.Roles,
@@ -192,12 +213,18 @@ builder
             builder.UseScopedHandler<TokenClaimsHandler>().Build()
         );
 
+        // Handle client_credentials grant by producing a ClaimsPrincipal for the client
+        options.AddEventHandler<OpenIddictServerEvents.HandleTokenRequestContext>(builder =>
+            builder.UseScopedHandler<ClientCredentialsHandler>().Build()
+        );
+
         // Ensure discovery advertises endpoints under the canonical "/identity" base
         options.AddEventHandler<OpenIddictServerEvents.ApplyConfigurationResponseContext>(builder =>
             builder
                 .UseInlineHandler(context =>
                 {
-                    var issuerUri = context.Options.Issuer ?? new Uri("https://localhost:7299/identity/");
+                    var issuerUri =
+                        context.Options.Issuer ?? new Uri("http://localhost:8080/identity/");
                     if (!issuerUri.AbsoluteUri.EndsWith('/'))
                     {
                         issuerUri = new Uri(issuerUri.AbsoluteUri + "/");
@@ -225,7 +252,10 @@ builder
                 .Build()
         );
 
-        // Token lifetimes from configuration
+    // Emit signed (not encrypted) JWT access tokens so resource servers can validate via JWKS
+    options.DisableAccessTokenEncryption();
+
+    // Token lifetimes from configuration
         var policy =
             builder
                 .Configuration.GetSection(IdentityPolicyOptions.SectionName)
@@ -233,10 +263,16 @@ builder
         options.SetAccessTokenLifetime(policy.AccessTokenLifetime);
         options.SetRefreshTokenLifetime(policy.RefreshTokenLifetime);
 
-        options
+        // ASP.NET Core host integration
+        var aspnet = options
             .UseAspNetCore()
             .EnableAuthorizationEndpointPassthrough()
             .EnableStatusCodePagesIntegration();
+        // In Development, allow HTTP (useful for local testing and when fronted by a gateway)
+        if (builder.Environment.IsDevelopment())
+        {
+            aspnet.DisableTransportSecurityRequirement();
+        }
 
         // Signing keys are added via OpenIddictSigningOptionsSetup (IConfigureOptions<OpenIddictServerOptions>)
     })
@@ -297,26 +333,19 @@ app.UseForwardedHeaders(
     }
 );
 
-// Honor X-Forwarded-Prefix from the Gateway so generated URLs (discovery, redirects) include "/identity"
-app.Use(
-    async (context, next) =>
-    {
-        var prefix = context.Request.Headers["X-Forwarded-Prefix"].ToString();
-        if (!string.IsNullOrWhiteSpace(prefix))
-        {
-            context.Request.PathBase = prefix;
-        }
-        await next();
-    }
-); // End of Middleware Forwarded Prefix -> PathBase
+// Note: We avoid mutating PathBase from X-Forwarded-Prefix here.
+// The gateway already applies PathRemovePrefix and forwards the prefix via headers
+// only for informational purposes. Changing PathBase at this layer can interfere
+// with endpoint matching for OpenIddict (e.g., /connect/token).
 
 app.UseRouting();
 app.UseStaticFiles();
 app.UseAuthentication();
 app.UseAuthorization();
 
-app.MapRazorPages();
+// Map endpoints using minimal routing (OpenIddict registers its routes during UseOpenIddict)
 app.MapControllers();
+app.MapRazorPages();
 
 // Health endpoints
 app.MapHealthChecks("/health/live").AllowAnonymous();

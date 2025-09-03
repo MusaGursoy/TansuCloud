@@ -1,6 +1,55 @@
-@TansuCloud.Database_HostAddress = http://localhost:5278
+@DbService = http://localhost:5278
+@Gateway = http://localhost:8080
+@ProvisionKey = letmein
+@TenantId = acme-dev
+@TenantName = ACME Dev
+@TenantRegion = eu
 
-GET {{TansuCloud.Database_HostAddress}}/weatherforecast/
-Accept: application/json
+### Health (Database service direct)
+GET {{DbService}}/health/live
+Accept: text/plain
+
+### Health (through Gateway)
+GET {{Gateway}}/db/health/live
+Accept: text/plain
+
+### Provision tenant (through Gateway, dev bypass)
+POST {{Gateway}}/db/api/provisioning/tenants
+Content-Type: application/json
+X-Provision-Key: {{ProvisionKey}}
+
+{
+	"tenantId": "{{TenantId}}",
+	"displayName": "{{TenantName}}",
+	"region": "{{TenantRegion}}"
+}
+
+### Provision tenant (Database service direct, dev bypass)
+POST {{DbService}}/api/provisioning/tenants
+Content-Type: application/json
+X-Provision-Key: {{ProvisionKey}}
+
+{
+	"tenantId": "{{TenantId}}",
+	"displayName": "{{TenantName}}",
+	"region": "{{TenantRegion}}"
+}
+
+### Optional: Provision with bearer token (uncomment Authorization and remove X-Provision-Key)
+### Requires a token with audience "tansu.db" and scope "admin.full" or "db.write"
+###
+@Token = REPLACE_WITH_ACCESS_TOKEN
+POST {{Gateway}}/db/api/provisioning/tenants
+Content-Type: application/json
+Authorization: Bearer eyJhbGciOiJSUzI1NiIsImtpZCI6Ijc3YzYwNDE1YWM4NDQzM2I5ZDAzOWM2NmIyM2Q1ZTIwIiwidHlwIjoiYXQrand0In0.eyJpc3MiOiJodHRwOi8vbG9jYWxob3N0OjgwODAvaWRlbnRpdHkvIiwiZXhwIjoxNzU2NDkxMDU2LCJpYXQiOjE3NTY0ODc0NTYsInNjb3BlIjoiZGIud3JpdGUgYWRtaW4uZnVsbCIsImp0aSI6ImJkYzY0NDM4LTUwM2MtNGI1ZC04OTEzLTFlOTIxNTZiMDNkZSIsInN1YiI6InRhbnN1LWRhc2hib2FyZCIsIm9pX3Byc3QiOiJ0YW5zdS1kYXNoYm9hcmQiLCJjbGllbnRfaWQiOiJ0YW5zdS1kYXNoYm9hcmQiLCJvaV90a25faWQiOiJiOTdlZjM5Mi0yNWVhLTRmM2EtODk5Yy0zNGI4Mjk2MmM2ODIifQ.cdrtUkhvwHojfjScaSc-Pd6tSPNgbj2yl56OiOgHaQ4Y9-7kHJgGMZ-oiwx_WGNiSkxEa84HHmrbBdQmoxsye2Yo-J03GRAXwUZHzMst4EbfXOOoW6tp3seT3Mvl_683QZbx-TalCED8daUtG__CdCzQ_0CpQxr9pCvILWoUW5z_-LguHQ1lq1AXQ_xJI3FD0ptSCDMoOqOioF2vQkJuOehIfaHEcPxTYb9aCtJlGh-SWXWHaH5K5dApwtdIOxjMy-lHUYgM_j6v_O-DVTuJDk4etL1nINEsI-R5Hih-W3jqK0TnH6teR7StL8YtjY6hJJf8F0rE8SR1qYbK6kW6aA
+
+{
+ "tenantId": "{{TenantId}}",
+ "displayName": "{{TenantName}}",
+ "region": "{{TenantRegion}}"
+}
+
+### Tip: Get a token from Identity using client_credentials
+# See file: TansuCloud.Identity/TansuCloud.Identity.http (use the gateway variant)
 
 ###

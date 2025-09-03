@@ -1,0 +1,25 @@
+@Gateway = http://localhost:8080
+@Identity = http://localhost:5095
+@ClientId = tansu-dashboard
+@ClientSecret = dev-secret
+
+### Discovery via gateway (canonical /identity)
+GET {{Gateway}}/identity/.well-known/openid-configuration
+Accept: application/json
+
+### Discovery direct to Identity
+GET {{Identity}}/.well-known/openid-configuration
+Accept: application/json
+
+### Token via client_credentials (gateway)
+# Note: http is allowed in Development; gateway forwards X-Forwarded-Proto: https
+POST {{Gateway}}/identity/connect/token
+Content-Type: application/x-www-form-urlencoded
+
+grant_type=client_credentials&client_id={{ClientId}}&client_secret={{ClientSecret}}&scope=db.write%20admin.full
+
+### Token via client_credentials (direct)
+POST {{Identity}}/connect/token
+Content-Type: application/x-www-form-urlencoded
+
+grant_type=client_credentials&client_id={{ClientId}}&client_secret={{ClientSecret}}&scope=db.write%20admin.full

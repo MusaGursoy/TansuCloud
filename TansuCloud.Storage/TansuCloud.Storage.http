@@ -1,6 +1,3 @@
 @TansuCloud.Storage_HostAddress = http://localhost:5257
 
-GET {{TansuCloud.Storage_HostAddress}}/weatherforecast/
-Accept: application/json
-
 ###

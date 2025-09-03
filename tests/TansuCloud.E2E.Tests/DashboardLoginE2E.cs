@@ -8,6 +8,31 @@ namespace TansuCloud.E2E.Tests;
 
 public class DashboardLoginE2E : IAsyncLifetime
 {
+    private static string GetGatewayBaseUrl()
+    {
+        var env = Environment.GetEnvironmentVariable("GATEWAY_BASE_URL");
+        if (!string.IsNullOrWhiteSpace(env))
+        {
+            try
+            {
+                var uri = new Uri(env);
+                // Normalize localhost/::1 to IPv4 loopback for Kestrel bindings
+                var host = (uri.Host.Equals("localhost", StringComparison.OrdinalIgnoreCase) || uri.Host == "::1")
+                    ? "127.0.0.1"
+                    : uri.Host;
+                var builder = new UriBuilder(uri) { Host = host };
+                return builder.Uri.ToString().TrimEnd('/');
+            }
+            catch
+            {
+                // Fallback to raw value trimmed
+                return env.TrimEnd('/');
+            }
+        }
+    // Prefer IPv4 loopback to avoid cases where localhost resolves to ::1 but Kestrel is bound to IPv4 only
+    return "http://127.0.0.1:8080";
+    }
+
     private IPlaywright? _playwright;
     private IBrowser? _browser;
     private IBrowserContext? _context;
@@ -46,15 +71,15 @@ public class DashboardLoginE2E : IAsyncLifetime
         var api = await _playwright!.APIRequest.NewContextAsync(
             new APIRequestNewContextOptions { IgnoreHTTPSErrors = true }
         );
-        async Task<bool> ReachableAsync(string url, bool okOnly)
+    async Task<bool> ReachableAsync(string url, bool okOnly)
         {
             try
             {
-                var res = await api.GetAsync(url);
-                if (okOnly)
-                    return res.Status == 200;
-                // For root readiness, accept 2xx/3xx
-                return res.Status is >= 200 and < 400;
+        var res = await api.GetAsync(url, new() { MaxRedirects = 0 });
+                    if (okOnly)
+                        return res.Status == 200;
+                    // For readiness, accept 2xx/3xx, and also auth challenges (401/403)
+                    return (res.Status is >= 200 and < 400) || res.Status is 401 or 403;
             }
             catch
             {
@@ -76,25 +101,28 @@ public class DashboardLoginE2E : IAsyncLifetime
         }
 
         // Gateway root: try HTTPS then HTTP; accept 2xx/3xx as ready
-        await WaitUntilAsync(async () =>
-            await ReachableAsync("https://localhost:7299/", okOnly: false)
-            || await ReachableAsync("http://localhost:5299/", okOnly: false)
-        );
-        // Identity discovery: require 200; try HTTPS then HTTP via gateway
+    var baseUrl = GetGatewayBaseUrl();
+    await WaitUntilAsync(async () => await ReachableAsync($"{baseUrl}/", okOnly: false));
+    // Identity discovery: require 200; try HTTPS then HTTP via gateway
         await WaitUntilAsync(async () =>
         {
-            var httpsOk = await ReachableAsync(
-                "https://localhost:7299/identity/.well-known/openid-configuration",
+            var disco = await ReachableAsync(
+                $"{baseUrl}/identity/.well-known/openid-configuration",
                 okOnly: true
             );
-            if (httpsOk) return true;
-            var httpOk = await ReachableAsync(
-                "http://localhost:5299/identity/.well-known/openid-configuration",
-                okOnly: true
-            );
-            return httpOk;
+            return disco;
         });
+    // Ensure the dashboard route itself is reachable (accept 2xx/3xx for initial redirect to Identity)
+        // Ensure the dashboard route itself is reachable (accept 2xx/3xx or 401/403 for initial challenge/redirect to Identity)
+        await WaitUntilAsync(async () => await ReachableAsync($"{baseUrl}/dashboard", okOnly: false));
         // Note: don't preflight-check Blazor framework asset here; it may 404 before first app access.
+
+        // Warm up browser connection to the gateway over HTTP
+        await page.GotoAsync(
+            $"{baseUrl}/identity/.well-known/openid-configuration",
+            new PageGotoOptions { WaitUntil = WaitUntilState.Load }
+        );
+        await page.WaitForTimeoutAsync(300);
 
         // Collect diagnostics as early as possible
         var responses = new List<IResponse>();
@@ -105,10 +133,22 @@ public class DashboardLoginE2E : IAsyncLifetime
             if (!string.IsNullOrWhiteSpace(msg.Text))
                 messages.Add(msg.Text);
         };
+        var wsConnected = false;
+        page.WebSocket += (_, ws) =>
+        {
+            try
+            {
+                if (ws.Url.Contains("/_blazor", StringComparison.OrdinalIgnoreCase))
+                {
+                    wsConnected = true;
+                }
+            }
+            catch { /* ignore */ }
+        };
 
         // 1) Navigate to the dashboard via the Gateway
         await page.GotoAsync(
-            "https://localhost:7299/dashboard",
+            $"{baseUrl}/dashboard",
             new PageGotoOptions { WaitUntil = WaitUntilState.DOMContentLoaded }
         );
 
@@ -163,7 +203,7 @@ public class DashboardLoginE2E : IAsyncLifetime
                     if (uri.AbsolutePath.StartsWith("/Identity/Account/Login", StringComparison.OrdinalIgnoreCase))
                     {
                         var rebuilt =
-                            "https://localhost:7299/identity/Identity/Account/Login"
+                            $"{baseUrl}/identity/Identity/Account/Login"
                             + uri.Query;
                         await page.GotoAsync(
                             rebuilt,
@@ -211,7 +251,7 @@ public class DashboardLoginE2E : IAsyncLifetime
                 }
                 // Regardless of redirect outcome, navigate to the dashboard explicitly
                 await page.GotoAsync(
-                    "https://localhost:7299/dashboard",
+                    $"{baseUrl}/dashboard",
                     new PageGotoOptions { WaitUntil = WaitUntilState.DOMContentLoaded }
                 );
             }
@@ -231,7 +271,7 @@ public class DashboardLoginE2E : IAsyncLifetime
         {
             // Retry once with a normalized trailing slash
             await page.GotoAsync(
-                "https://localhost:7299/dashboard/",
+                $"{baseUrl}/dashboard/",
                 new PageGotoOptions { WaitUntil = WaitUntilState.DOMContentLoaded }
             );
             await heading.WaitForAsync(new LocatorWaitForOptions { Timeout = 15000 });
@@ -259,8 +299,7 @@ public class DashboardLoginE2E : IAsyncLifetime
         responses
             .Should()
             .Contain(r => r.Url.EndsWith("/_framework/blazor.web.js") && r.Status == 200);
-        messages
-            .Any(m => m.Contains("WebSocket connected", StringComparison.OrdinalIgnoreCase))
+        (wsConnected || messages.Any(m => m.Contains("WebSocket connected", StringComparison.OrdinalIgnoreCase)))
             .Should()
             .BeTrue("Blazor Server should establish a WebSocket through the Gateway");
 
@@ -279,9 +318,9 @@ public class DashboardLoginE2E : IAsyncLifetime
         var api = await _playwright!.APIRequest.NewContextAsync(
             new APIRequestNewContextOptions { IgnoreHTTPSErrors = true }
         );
-        var db = await api.GetAsync("https://localhost:7299/db/health");
+    var db = await api.GetAsync($"{GetGatewayBaseUrl()}/db/health");
         db.Status.Should().Be(401);
-        var storage = await api.GetAsync("https://localhost:7299/storage/health");
+    var storage = await api.GetAsync($"{GetGatewayBaseUrl()}/storage/health");
         storage.Status.Should().Be(401);
     }
 }

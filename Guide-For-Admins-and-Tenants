@@ -2,7 +2,7 @@
 
 ## Overview
 
-Tansu.Cloud is a modern backend service platform built on .NET, providing identity, API gateway, dashboards, database and storage services, observability, and health management. This guide helps admins and tenant operators deploy, configure, and operate the platform.
+Tansu.Cloud is a modern backend-as-a-service (BaaS) platform built on .NET, providing identity, API gateway, dashboards, database and storage services, observability, and health management. This guide helps admins and tenant operators deploy, configure, and operate the platform.
 
 ## 1. Getting Started
 
@@ -191,6 +191,91 @@ Notes
 - Common startup issues
 - Certificate and TLS errors
 - OIDC discovery and token validation
+
+## 13. Testing & E2E validation
+
+This platform ships with lightweight health checks and end-to-end (E2E) tests that verify core paths through the gateway, identity, and backend services.
+
+### 13.1 Local quick checks
+
+- Health endpoints (all services):
+	- Live: `GET /health/live`
+	- Ready: `GET /health/ready`
+	- Via gateway for each service: `/`, `/identity/`, `/dashboard/`, `/db/`, `/storage/` then append `/health/live` or `/health/ready`.
+- Bring services up (developer workflow):
+	- VS Code → Run Task… → "dev: up" to build and start services.
+	- VS Code → Run Task… → "dev: down" to stop them.
+- Dev database (PostgreSQL) recommended for DB features:
+	- Use the persistent Citus/Postgres container described earlier, or the helper script at `dev/tools/start-dev-db.ps1`.
+
+### 13.2 Run E2E tests locally
+
+- The E2E test suite lives under `tests/TansuCloud.E2E.Tests` and targets the gateway at `http://localhost:8080` (default dev bind). If you enabled HTTPS on the gateway, adjust the base URL accordingly.
+- What is covered today:
+	- Health endpoints across services.
+	- Identity UI login alias via gateway.
+	- Token-based, idempotent tenant provisioning to Database via gateway.
+- How to run:
+	- Ensure services are up (see 13.1) and that a local PostgreSQL is reachable at `localhost:5432` (the default dev setup).
+	- In VS Code, Run Task… → "Run all E2E tests"; or run tests from your IDE/test explorer.
+	- Tip: you can run focused suites via provided VS Code tasks (e.g., "Run health E2E tests").
+- Notes:
+	- Tests accept development HTTPS certificates; no extra trust steps needed for local runs.
+	- The provisioning test obtains an access token using the dashboard client (scopes: `db.write admin.full`) and calls the Database provisioning API twice, asserting idempotency.
+
+### 13.5 Database API v1 quick reference
+
+Base path via gateway: `/db/api` (tenant required via `X-Tansu-Tenant` header). Auth scopes: `db.read` for reads, `db.write` for writes (in Development, `admin.full` implies both).
+
+- Collections
+	- `GET /collections` — list with pagination; supports weak ETag on the collection set.
+	- `GET /collections/{id}` — get by id; weak ETag; `If-None-Match` → 304.
+	- `POST /collections` — create.
+	- `PUT /collections/{id}` — update; `If-Match` required for conditional update; 412 on mismatch.
+	- `DELETE /collections/{id}` — delete; `If-Match` supported; 412 on mismatch.
+
+- Documents
+	- `GET /documents` — list with filters/sort and pagination.
+		- Query: `collectionId` (Guid?), `createdAfter`|`createdBefore` (RFC3339), `sortBy` in `id|collectionId|createdAt`, `sortDir` in `asc|desc`, `page` (>=1), `pageSize` (1..500).
+		- Weak ETag on the result; `If-None-Match` → 304.
+	- `GET /documents/{id}` — get by id; weak ETag; `If-None-Match` → 304.
+	- `POST /documents` — create; body includes `collectionId`, optional `embedding` (float[1536]) and `content` (JSON object). JSON payloads are stored as `jsonb`.
+	- `PUT /documents/{id}` — update; supports `If-Match`; 412 on mismatch.
+	- `DELETE /documents/{id}` — delete; supports `If-Match`; 412 on mismatch.
+
+- Vector search (pgvector)
+	- `POST /documents/search/vector` — KNN within a collection. Body: `collectionId` (Guid), `embedding` (float[1536]), `limit` (default 10).
+	- `POST /documents/search/vector-global` — ANN across collections with a two-step per-collection cap.
+	- Indexing: HNSW indexes are created by migrations when `vector` extension is available; otherwise sequential scan is used.
+
+ETags and conditional requests
+- Lists and items return weak ETags. If the ETag you send in `If-None-Match` matches, you’ll get `304 Not Modified`.
+- `PUT`/`DELETE` accept `If-Match`; if it doesn’t match the current ETag, you’ll get `412 Precondition Failed`.
+
+Development diagnostics
+- During development and E2E, the Database service adds `X-Tansu-Db` to responses to surface the normalized tenant database name (e.g., `tansu_tenant_e2e_server_ank`). This header is not intended for production.
+
+### 13.3 CI pipeline (GitHub Actions)
+
+- CI workflow file: `.github/workflows/e2e.yml`.
+- What it does:
+	- Provisions a PostgreSQL service (localhost:5432) for the Database service.
+	- Builds the solution, launches services in the background, waits for the gateway to become ready, then runs the E2E test project.
+	- Publishes TRX test results as an artifact.
+- When it runs:
+	- On pushes and pull requests targeting `master`.
+
+### 13.4 Troubleshooting test failures
+
+- Gateway not ready:
+	- Confirm `http://localhost:8080/health/ready` (or your configured HTTPS URL) returns 200. If not, inspect gateway logs and dependent service health endpoints (see 13.1).
+- Database provisioning failures:
+	- Ensure PostgreSQL is reachable at `localhost:5432` and credentials match dev settings.
+	- Verify the `Provisioning` options in `TansuCloud.Database` (AdminConnectionString, extensions) align with your environment.
+- Certificate issues:
+	- Local tests ignore TLS validation by design. For browser access, trust the dev cert or enable TLS on the gateway as described in section 5.
+- Identity/token issues:
+	- Check `/.well-known/openid-configuration` via gateway under `/identity` and verify `/identity/connect/token` is reachable.
 
 ## Appendix A: Docker Compose Examples
 

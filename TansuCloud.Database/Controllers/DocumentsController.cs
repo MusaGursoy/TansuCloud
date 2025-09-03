@@ -1,0 +1,567 @@
+// Tansu.Cloud Public Repository:    https://github.com/MusaGursoy/TansuCloud
+using System.Text.Json;
+using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Mvc;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Primitives;
+using TansuCloud.Database.EF;
+using TansuCloud.Database.Services;
+
+namespace TansuCloud.Database.Controllers;
+
+[ApiController]
+[Route("api/documents")]
+public sealed class DocumentsController(
+    ITenantDbContextFactory factory,
+    ILogger<DocumentsController> logger,
+    TansuCloud.Database.Outbox.IOutboxProducer outbox
+) : ControllerBase
+{
+    private readonly ITenantDbContextFactory _factory = factory;
+    private readonly ILogger<DocumentsController> _logger = logger;
+    private readonly TansuCloud.Database.Outbox.IOutboxProducer _outbox = outbox;
+
+    // Small helpers for conditional requests
+    private static bool WeakETagEquals(string? a, string? b)
+    {
+        static string Norm(string? s)
+        {
+            s = (s ?? string.Empty).Trim();
+            // Remove optional weakness and surrounding quotes
+            if (s.StartsWith("W/", StringComparison.Ordinal))
+                s = s.Substring(2).Trim();
+            if (s.Length > 1 && s[0] == '"' && s[^1] == '"')
+                s = s.Substring(1, s.Length - 2);
+            return s;
+        }
+        return string.Equals(Norm(a), Norm(b), StringComparison.Ordinal);
+    } // End of Method WeakETagEquals
+
+    private static bool AnyIfNoneMatchMatches(StringValues values, string current)
+    {
+        foreach (var raw in values)
+        {
+            if (raw is null)
+                continue;
+            foreach (var token in raw.Split(',', StringSplitOptions.RemoveEmptyEntries))
+            {
+                var t = token.Trim();
+                if (t == "*")
+                    return true; // any current representation matches
+                if (WeakETagEquals(t, current))
+                    return true;
+            }
+        }
+        return false;
+    } // End of Method AnyIfNoneMatchMatches
+
+    private static bool AnyIfMatchMatches(StringValues values, string current)
+    {
+        foreach (var raw in values)
+        {
+            if (raw is null)
+                continue;
+            foreach (var token in raw.Split(',', StringSplitOptions.RemoveEmptyEntries))
+            {
+                var t = token.Trim();
+                if (t == "*")
+                    return true; // resource exists, so wildcard matches
+                if (WeakETagEquals(t, current))
+                    return true;
+            }
+        }
+        return false;
+    } // End of Method AnyIfMatchMatches
+
+    public sealed record DocumentDto(
+        Guid id,
+        Guid collectionId,
+        JsonElement? content,
+        DateTimeOffset createdAt
+    );
+
+    // Accept arbitrary JSON for content; we'll persist the raw JSON text into a jsonb column.
+    public sealed record CreateDocumentDto(
+        Guid collectionId,
+        System.Text.Json.JsonElement? content,
+        float[]? embedding
+    );
+
+    public sealed record UpdateDocumentDto(
+        System.Text.Json.JsonElement? content,
+        float[]? embedding
+    );
+
+    private static JsonElement? ToElement(JsonDocument? doc)
+    {
+        if (doc is null)
+            return null;
+        return doc.RootElement.Clone();
+    }
+
+    [HttpGet]
+    [Authorize(Policy = "db.read")]
+    public async Task<ActionResult<object>> List(
+        [FromQuery] Guid? collectionId,
+        [FromQuery] int page = 1,
+        [FromQuery] int pageSize = 50,
+        [FromQuery] string? sortBy = "createdAt",
+        [FromQuery] string? sortDir = "desc",
+        [FromQuery] DateTimeOffset? createdAfter = null,
+        [FromQuery] DateTimeOffset? createdBefore = null,
+        CancellationToken ct = default
+    )
+    {
+        if (page <= 0 || pageSize <= 0 || pageSize > 500)
+            return Problem(
+                title: "Invalid pagination",
+                statusCode: StatusCodes.Status400BadRequest
+            );
+        await using var db = await _factory.CreateAsync(HttpContext, ct);
+        var q = db.Documents.AsNoTracking().AsQueryable();
+        if (collectionId is Guid cid && cid != Guid.Empty)
+            q = q.Where(d => d.CollectionId == cid);
+        if (createdAfter.HasValue)
+            q = q.Where(d => d.CreatedAt >= createdAfter.Value);
+        if (createdBefore.HasValue)
+            q = q.Where(d => d.CreatedAt <= createdBefore.Value);
+
+        // Sorting
+        var sort = (sortBy ?? "createdAt").Trim().ToLowerInvariant();
+        var dir = (sortDir ?? "desc").Trim().ToLowerInvariant();
+        var desc = dir is "desc" or "descending";
+        q = (sort) switch
+        {
+            "id" => desc ? q.OrderByDescending(d => d.Id) : q.OrderBy(d => d.Id),
+            "collectionid"
+                => desc ? q.OrderByDescending(d => d.CollectionId) : q.OrderBy(d => d.CollectionId),
+            _ => desc ? q.OrderByDescending(d => d.CreatedAt) : q.OrderBy(d => d.CreatedAt)
+        };
+        var total = await q.CountAsync(ct);
+        var etag = ETagHelper.ComputeWeakETag(
+            total.ToString(),
+            page.ToString(),
+            pageSize.ToString(),
+            collectionId?.ToString() ?? "",
+            sort,
+            dir,
+            createdAfter?.ToUnixTimeMilliseconds().ToString() ?? "",
+            createdBefore?.ToUnixTimeMilliseconds().ToString() ?? ""
+        );
+        // If-None-Match: short-circuit with 304 when ETag matches
+        var inm = Request.Headers.IfNoneMatch;
+        if (!StringValues.IsNullOrEmpty(inm) && AnyIfNoneMatchMatches(inm, etag))
+        {
+            Response.Headers.ETag = etag;
+            return StatusCode(StatusCodes.Status304NotModified);
+        }
+
+        var items = await q.Skip((page - 1) * pageSize)
+            .Take(pageSize)
+            .Select(d => new
+            {
+                d.Id,
+                d.CollectionId,
+                d.Content,
+                d.CreatedAt
+            })
+            .ToListAsync(ct);
+        var itemsDto = items
+            .Select(x => new DocumentDto(x.Id, x.CollectionId, ToElement(x.Content), x.CreatedAt))
+            .ToList();
+        Response.Headers.ETag = etag;
+        return Ok(
+            new
+            {
+                total,
+                page,
+                pageSize,
+                items = itemsDto
+            }
+        );
+    } // End of Method List
+
+    [HttpGet("{id:guid}")]
+    [Authorize(Policy = "db.read")]
+    public async Task<ActionResult<DocumentDto>> Get([FromRoute] Guid id, CancellationToken ct)
+    {
+        await using var db = await _factory.CreateAsync(HttpContext, ct);
+        var e = await db.Documents.AsNoTracking().FirstOrDefaultAsync(x => x.Id == id, ct);
+        if (e is null)
+            return NotFound();
+        var etag = ETagHelper.ComputeWeakETag(
+            e.Id.ToString(),
+            e.CreatedAt.ToUnixTimeMilliseconds().ToString()
+        );
+        var inm = Request.Headers.IfNoneMatch;
+        if (!StringValues.IsNullOrEmpty(inm) && AnyIfNoneMatchMatches(inm, etag))
+        {
+            Response.Headers.ETag = etag;
+            return StatusCode(StatusCodes.Status304NotModified);
+        }
+        Response.Headers.ETag = etag;
+        return Ok(new DocumentDto(e.Id, e.CollectionId, ToElement(e.Content), e.CreatedAt));
+    } // End of Method Get
+
+    [HttpPost]
+    [Authorize(Policy = "db.write")]
+    public async Task<ActionResult<DocumentDto>> Create(
+        [FromBody] CreateDocumentDto input,
+        CancellationToken ct
+    )
+    {
+        // Idempotency: if key is present and a prior event exists, return the original result
+        string? idem = Request.Headers["Idempotency-Key"].ToString();
+        if (!string.IsNullOrWhiteSpace(idem))
+        {
+            await using var dbCheck = await _factory.CreateAsync(HttpContext, ct);
+            var prior = await dbCheck
+                .OutboxEvents.AsNoTracking()
+                .Where(e => e.IdempotencyKey == idem && e.Type == "document.created")
+                .OrderByDescending(e => e.OccurredAt)
+                .FirstOrDefaultAsync(ct);
+            if (prior?.Payload is JsonDocument pdoc)
+            {
+                try
+                {
+                    var root = pdoc.RootElement;
+                    if (
+                        root.TryGetProperty("documentId", out var idProp)
+                        && Guid.TryParse(idProp.GetString(), out var priorDocId)
+                    )
+                    {
+                        await using var dbLookup = await _factory.CreateAsync(HttpContext, ct);
+                        var existing = await dbLookup
+                            .Documents.AsNoTracking()
+                            .FirstOrDefaultAsync(d => d.Id == priorDocId, ct);
+                        if (existing is not null)
+                        {
+                            var dtoExisting = new DocumentDto(
+                                existing.Id,
+                                existing.CollectionId,
+                                ToElement(existing.Content),
+                                existing.CreatedAt
+                            );
+                            Response.Headers.ETag = ETagHelper.ComputeWeakETag(
+                                existing.Id.ToString(),
+                                existing.CreatedAt.ToUnixTimeMilliseconds().ToString()
+                            );
+                            return CreatedAtAction(
+                                nameof(Get),
+                                new { id = existing.Id },
+                                dtoExisting
+                            );
+                        }
+                    }
+                }
+                catch { }
+            }
+        }
+        if (input.collectionId == Guid.Empty)
+            return Problem(
+                title: "collectionId is required",
+                statusCode: StatusCodes.Status400BadRequest
+            );
+        await using var db = await _factory.CreateAsync(HttpContext, ct);
+        // Ensure collection exists
+        var exists = await db
+            .Collections.AsNoTracking()
+            .AnyAsync(c => c.Id == input.collectionId, ct);
+        if (!exists)
+            return Problem(
+                title: "collection not found",
+                statusCode: StatusCodes.Status400BadRequest
+            );
+
+        var entity = new Document
+        {
+            Id = Guid.NewGuid(),
+            CollectionId = input.collectionId,
+            // Store structured JSON
+            Content = input.content.HasValue
+                ? JsonDocument.Parse(input.content.Value.GetRawText())
+                : null,
+            CreatedAt = DateTimeOffset.UtcNow
+        };
+        db.Documents.Add(entity);
+        // outbox enqueue (transactional); include idempotency key if present
+        idem = Request.Headers["Idempotency-Key"].ToString();
+        try
+        {
+            var tenant = Request.Headers["X-Tansu-Tenant"].ToString();
+            var payloadObj = new
+            {
+                tenant,
+                collectionId = entity.CollectionId,
+                documentId = entity.Id,
+                op = "document.created"
+            };
+            var payloadDoc = JsonDocument.Parse(JsonSerializer.Serialize(payloadObj));
+            _outbox.Enqueue(db, "document.created", payloadDoc, idem);
+        }
+        catch { }
+        await db.SaveChangesAsync(ct);
+
+        // Optional: upsert vector embedding if provided and column exists
+        if (input.embedding is { Length: > 0 })
+        {
+            try
+            {
+                var dim = input.embedding.Length;
+                var sql =
+                    "DO $$ BEGIN IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='documents' AND column_name='embedding') THEN UPDATE documents SET embedding = $1 WHERE id = $2; END IF; END$$;";
+                await db.Database.ExecuteSqlRawAsync(
+                    sql,
+                    new object[] { input.embedding, entity.Id },
+                    ct
+                );
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Vector upsert failed (embedding column may be missing)");
+            }
+        }
+
+        var dto = new DocumentDto(
+            entity.Id,
+            entity.CollectionId,
+            ToElement(entity.Content),
+            entity.CreatedAt
+        );
+        Response.Headers.ETag = ETagHelper.ComputeWeakETag(
+            entity.Id.ToString(),
+            entity.CreatedAt.ToUnixTimeMilliseconds().ToString()
+        );
+        return CreatedAtAction(nameof(Get), new { id = entity.Id }, dto);
+    } // End of Method Create
+
+    [HttpPut("{id:guid}")]
+    [Authorize(Policy = "db.write")]
+    public async Task<ActionResult<DocumentDto>> Update(
+        [FromRoute] Guid id,
+        [FromBody] UpdateDocumentDto input,
+        CancellationToken ct
+    )
+    {
+        await using var db = await _factory.CreateAsync(HttpContext, ct);
+        var e = await db.Documents.FirstOrDefaultAsync(x => x.Id == id, ct);
+        if (e is null)
+            return NotFound();
+        // If-Match precondition (when provided)
+        var currentEtag = ETagHelper.ComputeWeakETag(
+            e.Id.ToString(),
+            e.CreatedAt.ToUnixTimeMilliseconds().ToString()
+        );
+        var ifm = Request.Headers.IfMatch;
+        if (!StringValues.IsNullOrEmpty(ifm) && !AnyIfMatchMatches(ifm, currentEtag))
+        {
+            Response.Headers.ETag = currentEtag;
+            return StatusCode(StatusCodes.Status412PreconditionFailed);
+        }
+        if (input.content.HasValue)
+        {
+            e.Content = JsonDocument.Parse(input.content.Value.GetRawText());
+        }
+        // outbox enqueue
+        try
+        {
+            var tenant = Request.Headers["X-Tansu-Tenant"].ToString();
+            var payloadObj = new
+            {
+                tenant,
+                collectionId = e.CollectionId,
+                documentId = e.Id,
+                op = "document.updated"
+            };
+            var payloadDoc = JsonDocument.Parse(JsonSerializer.Serialize(payloadObj));
+            _outbox.Enqueue(db, "document.updated", payloadDoc);
+        }
+        catch { }
+        await db.SaveChangesAsync(ct);
+        if (input.embedding is { Length: > 0 })
+        {
+            try
+            {
+                var sql =
+                    "DO $$ BEGIN IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='documents' AND column_name='embedding') THEN UPDATE documents SET embedding = $1 WHERE id = $2; END IF; END$$;";
+                await db.Database.ExecuteSqlRawAsync(
+                    sql,
+                    new object[] { input.embedding, e.Id },
+                    ct
+                );
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Vector upsert failed (embedding column may be missing)");
+            }
+        }
+        Response.Headers.ETag = currentEtag;
+        return Ok(new DocumentDto(e.Id, e.CollectionId, ToElement(e.Content), e.CreatedAt));
+    } // End of Method Update
+
+    [HttpDelete("{id:guid}")]
+    [Authorize(Policy = "db.write")]
+    public async Task<ActionResult> Delete([FromRoute] Guid id, CancellationToken ct)
+    {
+        await using var db = await _factory.CreateAsync(HttpContext, ct);
+        var e = await db.Documents.FirstOrDefaultAsync(x => x.Id == id, ct);
+        if (e is null)
+            return NotFound();
+        // If-Match precondition (when provided)
+        var currentEtag = ETagHelper.ComputeWeakETag(
+            e.Id.ToString(),
+            e.CreatedAt.ToUnixTimeMilliseconds().ToString()
+        );
+        var ifm = Request.Headers.IfMatch;
+        if (!StringValues.IsNullOrEmpty(ifm) && !AnyIfMatchMatches(ifm, currentEtag))
+        {
+            Response.Headers.ETag = currentEtag;
+            return StatusCode(StatusCodes.Status412PreconditionFailed);
+        }
+        db.Documents.Remove(e);
+        try
+        {
+            var tenant = Request.Headers["X-Tansu-Tenant"].ToString();
+            var payloadObj = new
+            {
+                tenant,
+                collectionId = e.CollectionId,
+                documentId = e.Id,
+                op = "document.deleted"
+            };
+            var payloadDoc = JsonDocument.Parse(JsonSerializer.Serialize(payloadObj));
+            _outbox.Enqueue(db, "document.deleted", payloadDoc);
+        }
+        catch { }
+        await db.SaveChangesAsync(ct);
+        return NoContent();
+    } // End of Method Delete
+
+    public sealed record VectorSearchDto(Guid collectionId, float[] query, int k = 10);
+
+    [HttpPost("search/vector")]
+    [Authorize(Policy = "db.read")]
+    public async Task<ActionResult<object>> VectorSearch(
+        [FromBody] VectorSearchDto input,
+        CancellationToken ct
+    )
+    {
+        if (input.collectionId == Guid.Empty || input.query is not { Length: > 0 })
+            return Problem(
+                title: "collectionId and query are required",
+                statusCode: StatusCodes.Status400BadRequest
+            );
+        await using var db = await _factory.CreateAsync(HttpContext, ct);
+
+        // Guard if embedding column is missing
+        var hasEmbedding =
+            await db.Database.ExecuteSqlRawAsync(
+                "SELECT 1 FROM information_schema.columns WHERE table_name='documents' AND column_name='embedding'"
+            ) >= 0; // raw check in query below
+
+        try
+        {
+            // Use raw SQL to leverage pgvector ANN with cosine distance; limit by k
+            var sql =
+                @"SELECT id, collection_id, content, created_at FROM documents 
+                        WHERE collection_id = $1 AND embedding IS NOT NULL 
+                        ORDER BY embedding <-> $2 LIMIT $3";
+            var rowsRaw = await db.Set<Document>()
+                .FromSqlRaw(sql, input.collectionId, input.query, Math.Max(1, input.k))
+                .AsNoTracking()
+                .Select(d => new
+                {
+                    d.Id,
+                    d.CollectionId,
+                    d.Content,
+                    d.CreatedAt
+                })
+                .ToListAsync(ct);
+            var rows = rowsRaw
+                .Select(d => new DocumentDto(
+                    d.Id,
+                    d.CollectionId,
+                    ToElement(d.Content),
+                    d.CreatedAt
+                ))
+                .ToList();
+            return Ok(new { total = rows.Count, items = rows });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Vector search failed; is pgvector enabled and column present?");
+            return Problem(
+                title: "Vector search not available",
+                statusCode: StatusCodes.Status501NotImplemented
+            );
+        }
+    } // End of Method VectorSearch
+
+    public sealed record GlobalVectorSearchDto(float[] query, int k = 10, int perCollection = 0);
+
+    [HttpPost("search/vector-global")]
+    [Authorize(Policy = "db.read")]
+    public async Task<ActionResult<object>> VectorSearchGlobal(
+        [FromBody] GlobalVectorSearchDto input,
+        CancellationToken ct
+    )
+    {
+        if (input.query is not { Length: > 0 })
+            return Problem(title: "query is required", statusCode: StatusCodes.Status400BadRequest);
+
+        await using var db = await _factory.CreateAsync(HttpContext, ct);
+        try
+        {
+            // Two-step per-collection cap using window function, then global top-K by distance
+            var sql =
+                @"SELECT id, collection_id, content, created_at
+FROM (
+    SELECT id, collection_id, content, created_at,
+           embedding <-> $1 AS dist,
+           ROW_NUMBER() OVER (PARTITION BY collection_id ORDER BY embedding <-> $1) AS rn
+    FROM documents
+    WHERE embedding IS NOT NULL
+) q
+WHERE CASE WHEN $2 <= 0 THEN TRUE ELSE rn <= $2 END
+ORDER BY dist ASC
+LIMIT $3";
+
+            var itemsRaw = await db.Set<Document>()
+                .FromSqlRaw(
+                    sql,
+                    input.query,
+                    Math.Max(0, input.perCollection),
+                    Math.Max(1, input.k)
+                )
+                .AsNoTracking()
+                .Select(d => new
+                {
+                    d.Id,
+                    d.CollectionId,
+                    d.Content,
+                    d.CreatedAt
+                })
+                .ToListAsync(ct);
+            var items = itemsRaw
+                .Select(d => new DocumentDto(
+                    d.Id,
+                    d.CollectionId,
+                    ToElement(d.Content),
+                    d.CreatedAt
+                ))
+                .ToList();
+            return Ok(new { total = items.Count, items });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(
+                ex,
+                "Global vector search failed; is pgvector enabled and column present?"
+            );
+            return Problem(
+                title: "Vector search not available",
+                statusCode: StatusCodes.Status501NotImplemented
+            );
+        }
+    } // End of Method VectorSearchGlobal
+} // End of Class DocumentsController

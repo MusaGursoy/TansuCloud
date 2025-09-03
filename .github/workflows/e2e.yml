@@ -1,0 +1,87 @@
+name: E2E Tests
+
+on:
+  push:
+    branches: [ master ]
+  pull_request:
+    branches: [ master ]
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_USER: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U postgres" 
+          --health-interval=10s 
+          --health-timeout=5s 
+          --health-retries=5
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '9.0.x'
+
+      - name: Install Playwright browsers
+        shell: pwsh
+        run: |
+          Set-Location tests/TansuCloud.E2E.Tests
+          dotnet build -c Debug
+
+      - name: Build solution
+        run: dotnet build TansuCloud.sln -c Debug
+
+      - name: Generate dev cert
+        shell: pwsh
+        run: dev/make-dev-cert.ps1
+
+      - name: Start services (background)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Stop'
+          Start-Job -Name tansu-identity -ScriptBlock { dotnet run --no-build --project ./TansuCloud.Identity/TansuCloud.Identity.csproj -c Debug } | Out-Null
+          Start-Job -Name tansu-dashboard -ScriptBlock { dotnet run --no-build --project ./TansuCloud.Dashboard/TansuCloud.Dashboard.csproj -c Debug } | Out-Null
+          Start-Job -Name tansu-database -ScriptBlock { dotnet run --no-build --project ./TansuCloud.Database/TansuCloud.Database.csproj -c Debug } | Out-Null
+          Start-Job -Name tansu-storage -ScriptBlock { dotnet run --no-build --project ./TansuCloud.Storage/TansuCloud.Storage.csproj -c Debug } | Out-Null
+          Start-Sleep -Seconds 2
+          Start-Job -Name tansu-gateway -ScriptBlock { dotnet run --no-build --project ./TansuCloud.Gateway/TansuCloud.Gateway.csproj -c Debug } | Out-Null
+          Start-Sleep -Seconds 5
+
+      - name: Wait for gateway
+        shell: pwsh
+        run: |
+          $ProgressPreference='SilentlyContinue'
+          for ($i=0; $i -lt 60; $i++) {
+            try {
+              $r = Invoke-WebRequest -UseBasicParsing https://localhost:7299/health/ready
+              if ($r.StatusCode -lt 500) { exit 0 }
+            } catch { Start-Sleep -Milliseconds 500 }
+          }
+          exit 1
+
+      - name: Run E2E tests
+        run: dotnet test tests/TansuCloud.E2E.Tests/TansuCloud.E2E.Tests.csproj -c Debug --logger "trx;LogFileName=e2e.trx"
+
+      - name: Stop services
+        if: always()
+        shell: pwsh
+        run: |
+          Get-Job | Where-Object { $_.Name -like 'tansu-*' } | Stop-Job -Force
+          Get-Job | Remove-Job
+
+      - name: Publish test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-results
+          path: '**/*.trx'

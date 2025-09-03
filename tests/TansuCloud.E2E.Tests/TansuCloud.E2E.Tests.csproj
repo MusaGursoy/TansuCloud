@@ -13,10 +13,16 @@
     </PackageReference>
     <PackageReference Include="FluentAssertions" Version="8.6.0" />
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
-  <PackageReference Include="Microsoft.Extensions.Configuration.Json" Version="9.0.0" />
+  <PackageReference Include="Microsoft.Extensions.Configuration.Json" Version="9.0.8" />
+    <PackageReference Include="Npgsql" Version="9.0.3" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore" Version="9.0.8" />
+    <PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" Version="9.0.4" />
   </ItemGroup>
   <ItemGroup>
     <Using Include="Xunit" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\..\TansuCloud.Database\TansuCloud.Database.csproj" />
   </ItemGroup>
   <Target Name="PlaywrightInstall" AfterTargets="Build">
     <Exec Command="pwsh -NoProfile -ExecutionPolicy Bypass -File $(Playwright_BinPath)/playwright.ps1 install chromium" />

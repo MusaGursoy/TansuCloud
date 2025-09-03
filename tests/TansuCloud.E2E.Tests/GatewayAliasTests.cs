@@ -9,6 +9,13 @@ namespace TansuCloud.E2E.Tests
 {
     public class GatewayAliasTests
     {
+        private static string GetGatewayBaseUrl()
+        {
+            var env = Environment.GetEnvironmentVariable("GATEWAY_BASE_URL");
+            if (!string.IsNullOrWhiteSpace(env)) return env.TrimEnd('/');
+            return "http://localhost:8080";
+        }
+
         [Fact(DisplayName = "Gateway alias /Identity/Account/Login returns login form")]
         public async Task Gateway_LoginAlias_Returns_LoginForm()
         {
@@ -23,14 +30,15 @@ namespace TansuCloud.E2E.Tests
             };
             using var client = new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(10) };
 
-            var aliasUrl = "https://localhost:7299/Identity/Account/Login";
+            var baseUrl = GetGatewayBaseUrl();
+            var aliasUrl = $"{baseUrl}/Identity/Account/Login";
 
             // Tiny readiness: ensure gateway answers at root quickly.
             for (var i = 0; i < 6; i++)
             {
                 try
                 {
-                    using var ping = await client.GetAsync("https://localhost:7299/", cts.Token);
+                    using var ping = await client.GetAsync($"{baseUrl}/", cts.Token);
                     if ((int)ping.StatusCode < 400)
                     {
                         break;
@@ -67,7 +75,7 @@ namespace TansuCloud.E2E.Tests
                 // Follow once and verify form markers.
                 var followUrl = location.IsAbsoluteUri
                     ? location.AbsoluteUri
-                    : $"https://localhost:7299{location}";
+                    : $"{baseUrl}{location}";
                 using var res2 = await client.GetAsync(followUrl, cts.Token);
                 Assert.Equal(HttpStatusCode.OK, res2.StatusCode);
                 var html2 = await res2.Content.ReadAsStringAsync(cts.Token);

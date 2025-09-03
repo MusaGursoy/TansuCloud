@@ -1,6 +1,25 @@
 version: "3.9"
 
 services:
+  postgres:
+    image: tansu/citus-pgvector:local
+    container_name: tansudbpg
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+    volumes:
+      - tansu-pgdata:/var/lib/postgresql/data
+      - ./dev/db-init:/docker-entrypoint-initdb.d:ro
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD", "/bin/bash", "-lc", "pg_isready -U postgres -h 127.0.0.1 -p 5432"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+    networks:
+      - tansucloud-network
   otel-collector:
     image: otel/opentelemetry-collector:latest
     command: ["--config=/etc/otelcol/config.yaml"]
@@ -42,6 +61,8 @@ services:
       retries: 10
       start_period: 10s
     depends_on:
+      postgres:
+        condition: service_healthy
       identity:
         condition: service_healthy
       dashboard:
@@ -129,3 +150,7 @@ services:
 networks:
   tansucloud-network:
     driver: bridge
+
+volumes:
+  tansu-pgdata:
+    driver: local

@@ -93,25 +93,27 @@ builder.Services.AddHealthChecks();
 // CORS: tighten cross-origin access at the gateway; configure allowed origins via Gateway:Cors:AllowedOrigins
 builder.Services.AddCors(options =>
 {
-    options.AddPolicy("Default", policy =>
-    {
-        // Accept comma or semicolon separated list
-        var list = builder.Configuration["Gateway:Cors:AllowedOrigins"] ?? string.Empty;
-        var origins = list
-            .Split(new[] { ',', ';' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-        if (origins.Length > 0)
+    options.AddPolicy(
+        "Default",
+        policy =>
         {
-            policy.WithOrigins(origins)
-                  .AllowAnyHeader()
-                  .AllowAnyMethod()
-                  .AllowCredentials();
+            // Accept comma or semicolon separated list
+            var list = builder.Configuration["Gateway:Cors:AllowedOrigins"] ?? string.Empty;
+            var origins = list.Split(
+                new[] { ',', ';' },
+                StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries
+            );
+            if (origins.Length > 0)
+            {
+                policy.WithOrigins(origins).AllowAnyHeader().AllowAnyMethod().AllowCredentials();
+            }
+            else
+            {
+                // No origins configured -> deny all cross-site requests by default
+                policy.DisallowCredentials();
+            }
         }
-        else
-        {
-            // No origins configured -> deny all cross-site requests by default
-            policy.DisallowCredentials();
-        }
-    });
+    );
 });
 
 // Safety controls: Rate Limiting
@@ -172,8 +174,8 @@ builder
     .Services.AddReverseProxy()
     .LoadFromMemory(
         // Routes
-        new[]
-        {
+    new[]
+    {
             // Alias: ensure /Identity/Account/Login at gateway root resolves to Identity UI
             new RouteConfig
             {
@@ -763,7 +765,28 @@ app.Use(
             path.StartsWithSegments("/db/health", StringComparison.OrdinalIgnoreCase)
             || path.StartsWithSegments("/storage/health", StringComparison.OrdinalIgnoreCase);
 
-        if (requiresAuth && !isHealth)
+        // In Development, allow provisioning calls to pass without Authorization if a valid dev bypass key is present.
+        var isProvisioningBypass = false;
+        if (
+            app.Environment.IsDevelopment()
+            && path.StartsWithSegments(
+                "/db/api/provisioning/tenants",
+                StringComparison.OrdinalIgnoreCase
+            )
+        )
+        {
+            var key = app.Configuration["Dev:ProvisionBypassKey"];
+            if (!string.IsNullOrWhiteSpace(key))
+            {
+                var hdr = context.Request.Headers["X-Provision-Key"].ToString();
+                if (string.Equals(hdr, key, StringComparison.Ordinal))
+                {
+                    isProvisioningBypass = true;
+                }
+            }
+        }
+
+        if (requiresAuth && !isHealth && !isProvisioningBypass)
         {
             // Reject if no Authorization header present
             if (!context.Request.Headers.ContainsKey("Authorization"))

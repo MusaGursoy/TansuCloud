@@ -1,0 +1,12 @@
+# Use Citus Postgres and add pgvector so init scripts can enable it
+FROM citusdata/citus:latest
+
+USER root
+RUN set -eux; \
+    apt-get update; \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+        postgresql-17-pgvector \
+    && rm -rf /var/lib/apt/lists/*
+
+# Hand control back to default user
+USER postgres
