@@ -1,0 +1,54 @@
+@using Microsoft.AspNetCore.Components.Forms
+@using Microsoft.AspNetCore.Components
+@page "/admin/ml"
+
+<h3>ML Management</h3>
+
+<p>
+    This is a non-functional preview for managing ML-related settings and model artifacts. It documents conventions and
+    provides placeholders for future controls planned in Task 34.
+    Nothing here changes server behavior yet.
+</p>
+
+<h4>Conventions</h4>
+<ul>
+    <li>Suggested storage prefix: <code>models/{"{modelName}"}/{"{version}"}</code></li>
+    <li>Standard object metadata keys (set when uploading artifacts):
+        <ul>
+            <li><code>x-tansu-model-name</code> – model identifier (e.g., recommender-v1)</li>
+            <li><code>x-tansu-model-version</code> – version or build id (e.g., 1.0.0)</li>
+            <li><code>x-tansu-framework</code> – runtime/format (ml.net, onnx, pytorch)</li>
+            <li><code>x-tansu-checksum</code> – sha256 checksum of the content</li>
+            <li><code>x-tansu-created-at</code> – ISO 8601 creation timestamp</li>
+            <li><code>x-tansu-source</code> – pipeline/job id or URL</li>
+        </ul>
+    </li>
+</ul>
+
+<h4>Tenant-level settings (placeholder)</h4>
+<EditForm Model="this">
+    <div class="mb-3">
+        <label>Default Model Name</label>
+    <InputText class="form-control" @bind-value="DefaultModelName" />
+    </div>
+    <div class="mb-3">
+        <label>Default Version</label>
+    <InputText class="form-control" @bind-value="DefaultModelVersion" />
+    </div>
+    <div class="mb-3">
+        <label>Framework</label>
+    <InputText class="form-control" @bind-value="Framework" />
+    </div>
+    <div class="mb-3">
+        <label>Coverage Target (%)</label>
+    <InputNumber class="form-control" @bind-value="CoverageTargetPct" />
+    </div>
+    <button class="btn btn-primary" disabled title="Not wired yet">Save (coming soon)</button>
+</EditForm>
+
+@code {
+    public string? DefaultModelName { get; set; }
+    public string? DefaultModelVersion { get; set; }
+    public string? Framework { get; set; }
+    public int? CoverageTargetPct { get; set; }
+}

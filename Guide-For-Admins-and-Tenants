@@ -363,6 +363,44 @@ Development diagnostics
 - Identity/token issues:
 	- Check `/.well-known/openid-configuration` via gateway under `/identity` and verify `/identity/connect/token` is reachable.
 
+## 14. ML Management (Preview)
+
+This section introduces optional, non-breaking conventions and a preview admin page to prepare for Task 34 (ML recommendations and predictions). It does not change runtime behavior yet.
+
+Where to access
+
+- Dashboard page: /dashboard/admin/ml (preferred) or /admin/ml if your gateway exposes a root alias.
+- Requires admin access to the Dashboard.
+
+Storage model artifact conventions
+
+- Suggested object layout: models/{modelName}/{version}/...
+- Tag artifacts with these metadata keys when uploading:
+	- x-tansu-model-name — model identifier (e.g., recommender-v1)
+	- x-tansu-model-version — semantic version or build/build-id (e.g., 1.0.0)
+	- x-tansu-framework — model runtime/format (ml.net, onnx, pytorch)
+	- x-tansu-checksum — sha256 of content
+	- x-tansu-created-at — ISO 8601 timestamp
+	- x-tansu-source — pipeline/job id or URL
+
+Gateway metrics placeholders (for future wiring)
+
+- Metrics defined but not emitted by default:
+	- ml_recommendations_served (counter, items)
+	- ml_inference_latency_ms (histogram, ms)
+	- ml_recommendation_coverage_pct (observable gauge, percent)
+
+What you can do now
+
+- Organize and upload model artifacts using the conventions above so they’re ready for future rollout.
+- Preview the admin UI under ML Management to see planned fields (default model/version, framework, coverage target). Saving is disabled until Task 34.
+
+Next steps (when Task 34 starts)
+
+- Enable saving tenant-level defaults and switch-over controls in the Dashboard.
+- Expose admin APIs to list/select available models based on tagged artifacts in Storage.
+- Wire Gateway metrics and add dashboards/alerts.
+
 ## Appendix A: Docker Compose Examples
 
 - Base compose
@@ -459,11 +497,11 @@ Idempotency for write requests
 
 - Clients may send an `Idempotency-Key` header on write operations (e.g., create document). The Database service records the key and will return the original outcome on safe retries.
 - Use a strong, unique value per logical operation. Expire/rotate keys as needed on the client side.
- - The key is stored in `outbox_events.idempotency_key` with a partial unique index to prevent duplicates (when not null). The server may retain keys for operational analysis; clients should not reuse keys across unrelated requests.
+	- The key is stored in `outbox_events.idempotency_key` with a partial unique index to prevent duplicates (when not null). The server may retain keys for operational analysis; clients should not reuse keys across unrelated requests.
 
 Operations
 
 - Health: Redis container exposes `PING` in health checks; verify container is healthy before DB starts processing Outbox.
 - Observability: Outbox worker logs dispatched, retried, and dead-lettered events. Metrics are exported via OpenTelemetry when configured.
 - Failure handling: After max attempts, events transition to a dead-letter state; operators should inspect and decide to replay or ignore.
- - Redis channel: events are published to the configured channel (default `tansu.outbox`) as JSON envelopes including `{ tenant, collectionId?, documentId?, op }`. Consumers should treat the payload as a contract subject to additive changes.
+	- Redis channel: events are published to the configured channel (default `tansu.outbox`) as JSON envelopes including `{ tenant, collectionId?, documentId?, op }`. Consumers should treat the payload as a contract subject to additive changes.
