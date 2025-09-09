@@ -1,27 +1,68 @@
 // Tansu.Cloud Public Repository:    https://github.com/MusaGursoy/TansuCloud
+using System.IdentityModel.Tokens.Jwt; // For token inspection logging
 using System.Net.Http;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.AspNetCore.Authentication.OpenIdConnect;
 using Microsoft.AspNetCore.HttpOverrides;
-using TansuCloud.Dashboard.Components;
+using Microsoft.IdentityModel.Protocols; // For ConfigurationManager
+using Microsoft.IdentityModel.Protocols.OpenIdConnect; // For OpenIdConnectConfigurationRetriever
+using Microsoft.IdentityModel.Tokens;
+using OpenTelemetry.Logs;
 using OpenTelemetry.Metrics;
 using OpenTelemetry.Resources;
 using OpenTelemetry.Trace;
-using OpenTelemetry.Logs;
+using TansuCloud.Dashboard.Components;
+using TansuCloud.Dashboard.Hosting;
 
 var builder = WebApplication.CreateBuilder(args);
+
+// Resolve the public base URL (what browsers should see). Prefer explicit PublicBaseUrl, then GatewayBaseUrl, then localhost.
+var publicBaseUrl =
+    builder.Configuration["PublicBaseUrl"]
+    ?? builder.Configuration["GatewayBaseUrl"]
+    // Fallback defaults to IPv4 loopback to avoid localhost/::1 vs 127.0.0.1 divergence seen in tests and Identity issuer canonicalization.
+    ?? "http://127.0.0.1:8080";
+if (!publicBaseUrl.EndsWith('/'))
+{
+    publicBaseUrl += "/";
+}
+var publicBaseUri = new Uri(publicBaseUrl);
+
+// Development canonicalization: previously we rewrote localhost -> 127.0.0.1.
+// This caused issuer/authority divergence when other services emitted tokens using the original host.
+// To preserve parity and avoid subtle mismatches, we now opt-out by default. Enable only if explicitly requested.
+var canonicalizeLoopback = Environment.GetEnvironmentVariable("DASHBOARD_CANONICALIZE_LOOPBACK");
+if (
+    builder.Environment.IsDevelopment()
+    && string.Equals(canonicalizeLoopback, "1", StringComparison.OrdinalIgnoreCase)
+    && publicBaseUri.Host.Equals("localhost", StringComparison.OrdinalIgnoreCase)
+)
+{
+    var b = new UriBuilder(publicBaseUri) { Host = "127.0.0.1" };
+    publicBaseUri = b.Uri; // End of canonicalization adjustment
+    publicBaseUrl = publicBaseUri.ToString();
+}
 
 // OpenTelemetry baseline for Dashboard
 var dashName = "tansu.dashboard";
 var dashVersion = typeof(Program).Assembly.GetName().Version?.ToString() ?? "0.0.0";
-builder.Services.AddOpenTelemetry()
-    .ConfigureResource(rb => rb.AddService(dashName, serviceVersion: dashVersion, serviceInstanceId: Environment.MachineName)
-                             .AddAttributes(new KeyValuePair<string, object>[]
-                             {
-                                 new("deployment.environment", (object)builder.Environment.EnvironmentName)
-                             }))
+builder
+    .Services.AddOpenTelemetry()
+    .ConfigureResource(rb =>
+        rb.AddService(
+                dashName,
+                serviceVersion: dashVersion,
+                serviceInstanceId: Environment.MachineName
+            )
+            .AddAttributes(
+                new KeyValuePair<string, object>[]
+                {
+                    new("deployment.environment", (object)builder.Environment.EnvironmentName)
+                }
+            )
+    )
     .WithTracing(tracing =>
     {
         tracing.AddAspNetCoreInstrumentation(o => o.RecordException = true);
@@ -62,7 +103,12 @@ builder.Logging.AddOpenTelemetry(o =>
         }
     });
 });
+
+// Elevate our custom OIDC diagnostic categories
+builder.Logging.AddFilter("OIDC-Diagnostics", LogLevel.Information);
+builder.Logging.AddFilter("OIDC-Callback", LogLevel.Information);
 builder.Services.AddHealthChecks();
+
 // Enable detailed IdentityModel logs in Development to diagnose OIDC metadata retrieval
 if (builder.Environment.IsDevelopment())
 {
@@ -71,29 +117,62 @@ if (builder.Environment.IsDevelopment())
 
 // Add services to the container.
 builder.Services.AddRazorComponents().AddInteractiveServerComponents();
+
+// Configure SignalR (used by Blazor Server) keep-alives and client timeout for stability under load
+builder.Services.AddSignalR(o =>
+{
+    // Server ping to clients; keep this short to detect broken connections promptly
+    o.KeepAliveInterval = TimeSpan.FromSeconds(15);
+    // Allow clients to miss a few pings before the server considers them disconnected
+    o.ClientTimeoutInterval = TimeSpan.FromMinutes(2);
+});
 builder.Services.AddHttpContextAccessor();
 
-// OIDC sign-in (dev wiring)
+// OIDC sign-in (simplified deterministic preload)
 builder
     .Services.AddAuthentication(options =>
     {
         options.DefaultScheme = "Cookies";
         options.DefaultChallengeScheme = "oidc";
     })
-    .AddCookie("Cookies")
+    .AddCookie(
+        "Cookies",
+        o =>
+        {
+            o.Cookie.Path = "/";
+            // In Development over HTTP, SameSite=None without Secure is rejected by modern browsers.
+            // Use Lax so cookies flow on top-level GET redirects (OIDC callback) while remaining safe for subrequests.
+            o.Cookie.SameSite = SameSiteMode.Lax;
+            o.Cookie.SecurePolicy = CookieSecurePolicy.None;
+        }
+    )
     .AddOpenIdConnect(
         "oidc",
         options =>
         {
+            // Ensure authentication cookies (correlation, nonce, main auth) are scoped to root so they survive path base/prefix changes via gateway
+            options.CorrelationCookie.Path = "/"; // important behind /dashboard prefix
+            options.NonceCookie.Path = "/";
+            // In dev over HTTP, prefer Lax so the cookies are accepted and sent on the top-level GET callback.
+            options.CorrelationCookie.SameSite = SameSiteMode.Lax;
+            options.NonceCookie.SameSite = SameSiteMode.Lax;
+            // Allow non-secure cookies in Development so they flow over HTTP
+            options.CorrelationCookie.SecurePolicy = CookieSecurePolicy.None;
+            options.NonceCookie.SecurePolicy = CookieSecurePolicy.None;
+            options.SaveTokens = true;
+            // Default authority now uses the gateway-exposed public base URL to ensure discovery + JWKS succeed.
             options.Authority =
-                builder.Configuration["Oidc:Authority"] ?? "https://localhost:7299/identity";
+                builder.Configuration["Oidc:Authority"]
+                ?? new Uri(publicBaseUri, "identity").ToString().TrimEnd('/');
             // Explicitly set discovery document URL to avoid any authority/path-base ambiguity behind the gateway
             options.MetadataAddress =
                 builder.Configuration["Oidc:MetadataAddress"]
-                ?? (options.Authority!.TrimEnd('/') + "/.well-known/openid-configuration");
+                ?? ($"{options.Authority!.TrimEnd('/')}/.well-known/openid-configuration");
             options.ClientId = builder.Configuration["Oidc:ClientId"] ?? "tansu-dashboard";
             options.ClientSecret = builder.Configuration["Oidc:ClientSecret"] ?? "dev-secret";
             options.ResponseType = "code";
+            // Use query response mode to ensure callback is a top-level GET navigation, which works with Lax cookies in dev HTTP
+            options.ResponseMode = "query";
             options.UsePkce = true;
             options.SaveTokens = true;
             options.GetClaimsFromUserInfoEndpoint = true;
@@ -109,123 +188,385 @@ builder
             options.Scope.Add("offline_access");
             options.Scope.Add("admin.full");
 
-            // In Development, allow non-HTTPS authority metadata to simplify local runs behind Gateway
-            if (builder.Environment.IsDevelopment())
+            // If the initial metadata fetch yields no signing keys (e.g., JWKS not yet published when container is warming up)
+            // automatically trigger a configuration refresh instead of failing the sign-in.
+            options.RefreshOnIssuerKeyNotFound = true;
+
+            // Allow overriding HTTPS metadata requirement via configuration (useful for local gateway HTTP)
+            // Default: false in Development, true otherwise
+            var requireHttps = builder.Configuration.GetValue(
+                "Oidc:RequireHttpsMetadata",
+                builder.Environment.IsDevelopment() ? false : true
+            );
+            options.RequireHttpsMetadata = requireHttps;
+            // In local/dev scenarios, optionally accept any server certs for HTTPS backchannel
+            var acceptAny = builder.Configuration.GetValue(
+                "Oidc:AcceptAnyServerCert",
+                builder.Environment.IsDevelopment()
+            );
+            if (!requireHttps && acceptAny)
             {
-                options.RequireHttpsMetadata = false;
-                // Allow insecure dev certificates when fetching metadata/tokens via HTTPS
-                var acceptAny = builder.Configuration.GetValue("Oidc:AcceptAnyServerCert", true);
-                if (acceptAny)
+                var handler = new HttpClientHandler
                 {
-                    var handler = new HttpClientHandler
-                    {
-                        ServerCertificateCustomValidationCallback =
-                            HttpClientHandler.DangerousAcceptAnyServerCertificateValidator
-                    };
-                    // Explicitly set the Backchannel so OIDC uses this handler for metadata/token/userinfo
-                    var backchannel = new HttpClient(handler);
-                    // Prefer HTTP/1.1 to avoid dev HTTP/2/TLS quirks
-                    backchannel.DefaultRequestVersion = System.Net.HttpVersion.Version11;
-                    backchannel.DefaultVersionPolicy = HttpVersionPolicy.RequestVersionOrLower;
-                    options.Backchannel = backchannel;
-                }
+                    ServerCertificateCustomValidationCallback =
+                        HttpClientHandler.DangerousAcceptAnyServerCertificateValidator
+                };
+                // Explicitly set the Backchannel so OIDC uses this handler for metadata/token/userinfo
+                var backchannel = new HttpClient(handler);
+                // Prefer HTTP/1.1 to avoid dev HTTP/2/TLS quirks
+                backchannel.DefaultRequestVersion = System.Net.HttpVersion.Version11;
+                backchannel.DefaultVersionPolicy = HttpVersionPolicy.RequestVersionOrLower;
+                options.Backchannel = backchannel;
             }
 
-            // Ensure redirect URIs include the gateway path prefix when present
-            options.Events = new OpenIdConnectEvents
-            {
-                OnRedirectToIdentityProvider = ctx =>
-                {
-                    var prefix = ctx.Request.Headers["X-Forwarded-Prefix"].ToString();
-                    var scheme = ctx.Request.Scheme;
-                    var host = ctx.Request.Host.ToString();
-                    var callback = ctx.Options.CallbackPath.HasValue
-                        ? ctx.Options.CallbackPath.Value
-                        : "/signin-oidc";
-                    var full = string.IsNullOrEmpty(prefix) ? callback : $"{prefix}{callback}";
-                    ctx.ProtocolMessage.RedirectUri = $"{scheme}://{host}{full}";
-                    return Task.CompletedTask;
-                },
-                OnRedirectToIdentityProviderForSignOut = ctx =>
-                {
-                    var prefix = ctx.Request.Headers["X-Forwarded-Prefix"].ToString();
-                    var scheme = ctx.Request.Scheme;
-                    var host = ctx.Request.Host.ToString();
-                    var callback = ctx.Options.SignedOutCallbackPath.HasValue
-                        ? ctx.Options.SignedOutCallbackPath.Value
-                        : "/signout-callback-oidc";
-                    var full = string.IsNullOrEmpty(prefix) ? callback : $"{prefix}{callback}";
-                    ctx.ProtocolMessage.PostLogoutRedirectUri = $"{scheme}://{host}{full}";
-                    return Task.CompletedTask;
-                }
-            };
+            // Validation parameter baseline (can be temporarily relaxed via env var DASHBOARD_DISABLE_SIGKEY_VALIDATION=1 for diagnostics)
+            var disableSigValidation = Environment.GetEnvironmentVariable(
+                "DASHBOARD_DISABLE_SIGKEY_VALIDATION"
+            );
+            options.TokenValidationParameters.ValidateIssuerSigningKey = string.Equals(
+                disableSigValidation,
+                "1",
+                StringComparison.OrdinalIgnoreCase
+            )
+                ? false
+                : true;
+            options.TokenValidationParameters.ValidateAudience = true;
+            options.TokenValidationParameters.ValidAudience = options.ClientId; // OpenIddict ID token aud = client id
 
-            // Dev-only: Preload discovery and JWKS to a static configuration to avoid transient metadata fetch issues
-            if (builder.Environment.IsDevelopment())
+            // Optional DEV-only bypass of signature validation for isolation: DASHBOARD_BYPASS_IDTOKEN_SIGNATURE=1
+            var bypassSig = Environment.GetEnvironmentVariable(
+                "DASHBOARD_BYPASS_IDTOKEN_SIGNATURE"
+            );
+            if (string.Equals(bypassSig, "1", StringComparison.OrdinalIgnoreCase))
             {
-                var preload = builder.Configuration.GetValue("Oidc:PreloadDiscovery", true);
-                if (preload)
+                // In ASP.NET Core 8+/IdentityModel 6+, SignatureValidator must return a JsonWebToken when handling JWS/JWT strings.
+                // We also disable issuer signing key validation entirely. This is DEV-ONLY to isolate other issues.
+                options.TokenValidationParameters.ValidateIssuerSigningKey = false;
+                options.TokenValidationParameters.SignatureValidator = (token, parameters) =>
                 {
                     try
                     {
-                        var handler = new HttpClientHandler
-                        {
-                            ServerCertificateCustomValidationCallback =
-                                HttpClientHandler.DangerousAcceptAnyServerCertificateValidator
-                        };
-                        using var http = new HttpClient(handler)
-                        {
-                            Timeout = TimeSpan.FromSeconds(10)
-                        };
-                        http.DefaultRequestVersion = System.Net.HttpVersion.Version11;
-                        http.DefaultVersionPolicy = HttpVersionPolicy.RequestVersionOrLower;
-
-                        var metaUrl = options.MetadataAddress!;
-                        var metaJson = http.GetStringAsync(metaUrl).GetAwaiter().GetResult();
-                        var oidcConfig =
-                            Microsoft.IdentityModel.Protocols.OpenIdConnect.OpenIdConnectConfiguration.Create(
-                                metaJson
-                            );
-
-                        if (!string.IsNullOrWhiteSpace(oidcConfig.JwksUri))
-                        {
-                            var jwksJson = http.GetStringAsync(oidcConfig.JwksUri)
-                                .GetAwaiter()
-                                .GetResult();
-                            var jwks = new Microsoft.IdentityModel.Tokens.JsonWebKeySet(jwksJson);
-                            foreach (var key in jwks.GetSigningKeys())
-                            {
-                                oidcConfig.SigningKeys.Add(key);
-                            }
-                        }
-
-                        options.Configuration = oidcConfig;
+                        return new Microsoft.IdentityModel.JsonWebTokens.JsonWebToken(token);
                     }
-                    catch
+                    catch (Exception ex)
                     {
-                        // Best-effort preload; if it fails, the middleware will retry normally
+                        Console.WriteLine(
+                            $"[BypassSignatureValidator] Exception {ex.GetType().Name}: {ex.Message}"
+                        );
+                        // Fallback: parse a minimal structurally valid unsigned JWT (header.payload.)
+                        // header: {"alg":"none"} -> eyJhbGciOiJub25lIn0
+                        // payload: {} -> e30
+                        var minimal = "eyJhbGciOiJub25lIn0.e30.";
+                        return new Microsoft.IdentityModel.JsonWebTokens.JsonWebToken(minimal);
+                    }
+                };
+                Console.WriteLine(
+                    "[BypassSignatureValidator] ACTIVE: id_token signature verification is bypassed (DEV ONLY)"
+                );
+            }
+
+            // Deterministic metadata + JWKS preload (always) before handler constructed.
+            try
+            {
+                var metadataAddress = options.MetadataAddress;
+                if (string.IsNullOrWhiteSpace(metadataAddress))
+                    throw new InvalidOperationException("MetadataAddress missing");
+                Console.WriteLine(
+                    $"[OidcPreload] Beginning preload Authority={options.Authority} MetadataAddress={metadataAddress}"
+                );
+                var docRetriever = new HttpDocumentRetriever
+                {
+                    RequireHttps = options.RequireHttpsMetadata
+                };
+                var cfgManager = new ConfigurationManager<OpenIdConnectConfiguration>(
+                    metadataAddress,
+                    new OpenIdConnectConfigurationRetriever(),
+                    docRetriever
+                );
+                // Retrieve configuration deterministically (synchronous wait acceptable at startup)
+                var cfg = cfgManager
+                    .GetConfigurationAsync(CancellationToken.None)
+                    .GetAwaiter()
+                    .GetResult();
+                if (cfg.SigningKeys.Count == 0 && !string.IsNullOrWhiteSpace(cfg.JwksUri))
+                {
+                    using var http = options.Backchannel ?? new HttpClient();
+                    http.Timeout = TimeSpan.FromSeconds(5);
+                    var jwksJson = http.GetStringAsync(cfg.JwksUri).GetAwaiter().GetResult();
+                    var jwks = new JsonWebKeySet(jwksJson);
+                    foreach (var k in jwks.GetSigningKeys())
+                        cfg.SigningKeys.Add(k);
+                }
+                options.Configuration = cfg;
+                // Decide whether to freeze configuration: default (no) to allow key rotation (common under OpenIddict dev keys).
+                var freeze = Environment.GetEnvironmentVariable("DASHBOARD_FREEZE_OIDC_CONFIG");
+                var shouldFreeze = string.Equals(freeze, "1", StringComparison.OrdinalIgnoreCase);
+                if (cfg.SigningKeys.Count > 0)
+                {
+                    options.TokenValidationParameters.IssuerSigningKeys = cfg.SigningKeys.ToList();
+                    if (shouldFreeze)
+                    {
+                        options.ConfigurationManager =
+                            new StaticConfigurationManager<OpenIdConnectConfiguration>(cfg);
+                        Console.WriteLine(
+                            $"[OidcPreload] Loaded Issuer={cfg.Issuer} KeyCount={cfg.SigningKeys.Count} (static)"
+                        );
+                    }
+                    else
+                    {
+                        options.ConfigurationManager = cfgManager; // dynamic for refresh on rotation
+                        Console.WriteLine(
+                            $"[OidcPreload] Loaded Issuer={cfg.Issuer} KeyCount={cfg.SigningKeys.Count} (dynamic)"
+                        );
                     }
                 }
-
-                // Ensure endpoints are under the "/identity" base even if discovery advertises root paths
-                var authority =
-                    options.Authority?.TrimEnd('/') ?? "https://localhost:7299/identity";
-                if (!authority.EndsWith("/identity"))
+                else
                 {
-                    authority += "/identity";
+                    options.ConfigurationManager = cfgManager; // allow later refresh to pull keys when they appear
+                    Console.WriteLine(
+                        $"[OidcPreload] Loaded Issuer={cfg.Issuer} KeyCount=0 (dynamic manager retained)"
+                    );
                 }
-                var issuer = authority.EndsWith("/") ? authority : authority + "/";
-                var cfg =
-                    options.Configuration
-                    ?? new Microsoft.IdentityModel.Protocols.OpenIdConnect.OpenIdConnectConfiguration();
-                cfg.Issuer = issuer;
-                cfg.AuthorizationEndpoint = issuer + "connect/authorize";
-                cfg.TokenEndpoint = issuer + "connect/token";
-                cfg.JwksUri = issuer + ".well-known/jwks";
-                options.Configuration = cfg;
+                // Construct a permissive ValidIssuers set to absorb minor host/trailing slash differences in dev.
+                try
+                {
+                    var issuers = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                    if (!string.IsNullOrWhiteSpace(cfg.Issuer))
+                    {
+                        issuers.Add(cfg.Issuer.TrimEnd('/'));
+                        issuers.Add(cfg.Issuer.TrimEnd('/') + "/");
+                    }
+                    if (!string.IsNullOrWhiteSpace(options.Authority))
+                    {
+                        issuers.Add(options.Authority.TrimEnd('/'));
+                        issuers.Add(options.Authority.TrimEnd('/') + "/");
+                    }
+                    if (issuers.Count > 0)
+                    {
+                        options.TokenValidationParameters.ValidIssuers = issuers;
+                        // Ensure issuer validation is on (unless explicitly disabled earlier) now that we have a set.
+                        if (!options.TokenValidationParameters.ValidateIssuer)
+                        {
+                            options.TokenValidationParameters.ValidateIssuer = true;
+                        }
+                        Console.WriteLine(
+                            $"[OidcPreload] ValidIssuers={string.Join(',', issuers)}"
+                        );
+                    }
+                }
+                catch { }
+                // Fallback resolver: always attempt to use whatever keys are present in TVP or configuration at validation time.
+                options.TokenValidationParameters.IssuerSigningKeyResolver = (
+                    token,
+                    securityToken,
+                    kid,
+                    validationParameters
+                ) =>
+                {
+                    // Prefer explicitly assigned IssuerSigningKeys, then configuration keys.
+                    var explicitKeys = validationParameters.IssuerSigningKeys;
+                    if (explicitKeys != null && explicitKeys.Any())
+                        return explicitKeys;
+                    var cfgCurrent = options.Configuration; // may have been updated dynamically
+                    if (cfgCurrent?.SigningKeys != null && cfgCurrent.SigningKeys.Count > 0)
+                    {
+                        return cfgCurrent.SigningKeys;
+                    }
+                    return Enumerable.Empty<SecurityKey>();
+                };
             }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[OidcPreload] FAILED {ex.GetType().Name}: {ex.Message}");
+            }
+
+            // Minimal events: adjust redirect URI behind prefix and log token validation summary
+            var oidcEvents = new OpenIdConnectEvents();
+            oidcEvents.OnMessageReceived = ctx =>
+            {
+                try
+                {
+                    var logger = ctx
+                        .HttpContext.RequestServices.GetRequiredService<ILoggerFactory>()
+                        .CreateLogger("OIDC-Diagnostics");
+                    var monitor =
+                        ctx.HttpContext.RequestServices.GetRequiredService<Microsoft.Extensions.Options.IOptionsMonitor<OpenIdConnectOptions>>();
+                    var optsDiag = monitor.Get("oidc");
+                    var keyCount = optsDiag.Configuration?.SigningKeys.Count ?? 0;
+                    logger.LogInformation(
+                        "OIDC message received. Path={Path} KeyCount={KeyCount} HasConfig={HasConfig}",
+                        ctx.Request.Path,
+                        keyCount,
+                        optsDiag.Configuration != null
+                    );
+                }
+                catch { }
+                return Task.CompletedTask;
+            }; // End of OnMessageReceived
+            // Log id_token header as soon as token response is received (code flow)
+            oidcEvents.OnTokenResponseReceived = ctx =>
+            {
+                try
+                {
+                    var logger = ctx
+                        .HttpContext.RequestServices.GetRequiredService<ILoggerFactory>()
+                        .CreateLogger("OIDC-Diagnostics");
+                    var idt = ctx.TokenEndpointResponse?.IdToken;
+                    if (!string.IsNullOrWhiteSpace(idt))
+                    {
+                        var handler = new JwtSecurityTokenHandler();
+                        var jwt = handler.ReadJwtToken(idt);
+                        var kid = jwt.Header.Kid;
+                        var alg = jwt.Header.Alg;
+                        // Stash for later, e.g., AuthenticationFailed
+                        ctx.HttpContext.Items["diag.id_token.kid"] = kid ?? string.Empty;
+                        ctx.HttpContext.Items["diag.id_token.alg"] = alg ?? string.Empty;
+                        logger.LogInformation(
+                            "OIDC token response received. IdTokenHeader Kid={Kid} Alg={Alg}",
+                            kid,
+                            alg
+                        );
+                    }
+                }
+                catch { }
+                return Task.CompletedTask;
+            }; // End of OnTokenResponseReceived
+            oidcEvents.OnRedirectToIdentityProvider = ctx =>
+            {
+                var prefix = ctx.Request.Headers["X-Forwarded-Prefix"].ToString();
+                if (!string.IsNullOrEmpty(prefix))
+                {
+                    var callback = ctx.Options.CallbackPath.HasValue
+                        ? ctx.Options.CallbackPath.Value!
+                        : "/signin-oidc";
+                    var full = $"{prefix}{callback}";
+                    ctx.ProtocolMessage.RedirectUri = new Uri(publicBaseUri, full).ToString();
+                }
+                return Task.CompletedTask;
+            }; // End of OnRedirectToIdentityProvider
+            oidcEvents.OnRedirectToIdentityProviderForSignOut = ctx =>
+            {
+                var prefix = ctx.Request.Headers["X-Forwarded-Prefix"].ToString();
+                if (!string.IsNullOrEmpty(prefix))
+                {
+                    var callback = ctx.Options.SignedOutCallbackPath.HasValue
+                        ? ctx.Options.SignedOutCallbackPath.Value!
+                        : "/signout-callback-oidc";
+                    var full = $"{prefix}{callback}";
+                    ctx.ProtocolMessage.PostLogoutRedirectUri = new Uri(
+                        publicBaseUri,
+                        full
+                    ).ToString();
+                }
+                return Task.CompletedTask;
+            }; // End of OnRedirectToIdentityProviderForSignOut
+            oidcEvents.OnTokenValidated = ctx =>
+            {
+                try
+                {
+                    var logger = ctx
+                        .HttpContext.RequestServices.GetRequiredService<ILoggerFactory>()
+                        .CreateLogger("OIDC-Diagnostics");
+                    if (ctx.SecurityToken is JwtSecurityToken jwt)
+                    {
+                        logger.LogInformation(
+                            "OIDC token validated. Kid={Kid} Aud={Aud} Sub={Sub}",
+                            jwt.Header.Kid,
+                            string.Join(',', jwt.Audiences),
+                            jwt.Subject
+                        );
+                    }
+                }
+                catch { }
+                return Task.CompletedTask;
+            }; // End of OnTokenValidated
+            oidcEvents.OnAuthenticationFailed = ctx =>
+            {
+                try
+                {
+                    var logger = ctx
+                        .HttpContext.RequestServices.GetRequiredService<ILoggerFactory>()
+                        .CreateLogger("OIDC-Diagnostics");
+                    var monitor =
+                        ctx.HttpContext.RequestServices.GetRequiredService<Microsoft.Extensions.Options.IOptionsMonitor<OpenIdConnectOptions>>();
+                    var optsDiag = monitor.Get("oidc");
+                    var keyCount = optsDiag.Configuration?.SigningKeys.Count ?? 0;
+                    var tvpKeyCount =
+                        optsDiag.TokenValidationParameters.IssuerSigningKeys?.Count() ?? 0;
+                    var resolverSet =
+                        optsDiag.TokenValidationParameters.IssuerSigningKeyResolver != null;
+                    var cfgKids = (
+                        optsDiag.Configuration?.SigningKeys ?? Enumerable.Empty<SecurityKey>()
+                    )
+                        .OfType<JsonWebKey>()
+                        .Select(k => k.Kid ?? k.KeyId)
+                        .Where(x => !string.IsNullOrWhiteSpace(x))
+                        .ToArray();
+                    var tvpKids = (
+                        optsDiag.TokenValidationParameters.IssuerSigningKeys
+                        ?? Enumerable.Empty<SecurityKey>()
+                    )
+                        .OfType<JsonWebKey>()
+                        .Select(k => k.Kid ?? k.KeyId)
+                        .Where(x => !string.IsNullOrWhiteSpace(x))
+                        .ToArray();
+                    // Try to capture the KID/ALG the handler was looking for from the previously stored token response
+                    ctx.HttpContext.Items.TryGetValue("diag.id_token.kid", out var kidObj);
+                    ctx.HttpContext.Items.TryGetValue("diag.id_token.alg", out var algObj);
+                    var tokenKid = kidObj as string ?? string.Empty;
+                    var tokenAlg = algObj as string ?? string.Empty;
+                    // If the exception is a SecurityTokenSignatureKeyNotFoundException, surface that explicitly
+                    var exType = ctx.Exception.GetType().Name;
+                    logger.LogError(
+                        ctx.Exception,
+                        "OIDC authentication failed: {Message}. ExType={ExType} ConfigKeyCount={KeyCount} TVPKeyCount={TVPKeyCount} ResolverSet={ResolverSet} ValidateIssuerSigningKey={ValidateIssuerSigningKey} Authority={Authority} Metadata={Metadata} TokenKid={TokenKid} TokenAlg={TokenAlg} CfgKids=[{CfgKids}] TvpKids=[{TvpKids}]",
+                        ctx.Exception.Message,
+                        exType,
+                        keyCount,
+                        tvpKeyCount,
+                        resolverSet,
+                        optsDiag.TokenValidationParameters.ValidateIssuerSigningKey,
+                        optsDiag.Authority,
+                        optsDiag.MetadataAddress,
+                        tokenKid,
+                        tokenAlg,
+                        string.Join(',', cfgKids),
+                        string.Join(',', tvpKids)
+                    );
+                }
+                catch { }
+                return Task.CompletedTask;
+            }; // End of OnAuthenticationFailed
+            options.Events = oidcEvents; // End of OIDC events assignment
+
+            // Removed dynamic resolver: keys are deterministically preloaded.
         }
     );
+
+// PostConfigure to log final key count after all option modifications (verifies preload succeeded before handler construction)
+builder.Services.PostConfigure<OpenIdConnectOptions>(
+    "oidc",
+    opts =>
+    {
+        try
+        {
+            var keyCount = opts.Configuration?.SigningKeys.Count ?? 0;
+            var tvpKeyCount = opts.TokenValidationParameters.IssuerSigningKeys?.Count() ?? 0;
+            Console.WriteLine(
+                $"[OidcPostConfigure] ConfigKeyCount={keyCount} TVPKeyCount={tvpKeyCount} ValidateIssuerSigningKey={opts.TokenValidationParameters.ValidateIssuerSigningKey}"
+            );
+            Console.WriteLine(
+                $"[OidcPostConfigure] Authority={opts.Authority} Metadata={opts.MetadataAddress} ValidIssuers={(opts.TokenValidationParameters.ValidIssuers == null ? "<null>" : string.Join('|', opts.TokenValidationParameters.ValidIssuers))}"
+            );
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[OidcPostConfigure] Exception {ex.GetType().Name}: {ex.Message}");
+        }
+    }
+);
+
+// Removed warm-up hosted service & post-configure: deterministic preload above handles key availability.
 
 builder.Services.AddAuthorization();
 
@@ -255,16 +596,28 @@ if (!app.Environment.IsDevelopment())
 {
     app.UseExceptionHandler("/Error", createScopeForErrors: true);
 }
+else
+{
+    app.UseDeveloperExceptionPage();
+}
 
 // Respect proxy headers from the Gateway so Request.Scheme/Host reflect client
-app.UseForwardedHeaders(
-    new ForwardedHeadersOptions
-    {
-        ForwardedHeaders = ForwardedHeaders.XForwardedFor | ForwardedHeaders.XForwardedProto,
-        ForwardLimit = null,
-        AllowedHosts = { "*" }
-    }
-);
+var fwd = new ForwardedHeadersOptions
+{
+    ForwardedHeaders =
+        ForwardedHeaders.XForwardedFor
+        | ForwardedHeaders.XForwardedProto
+        | ForwardedHeaders.XForwardedHost,
+    ForwardLimit = null,
+};
+
+// In Development behind Docker bridge, clear the known proxies/networks so the headers are processed without warnings
+if (app.Environment.IsDevelopment())
+{
+    fwd.KnownNetworks.Clear();
+    fwd.KnownProxies.Clear();
+}
+app.UseForwardedHeaders(fwd);
 
 // Honor X-Forwarded-Prefix so the app behaves as if hosted under that base path (e.g., "/dashboard")
 app.Use(
@@ -279,8 +632,246 @@ app.Use(
     }
 );
 
+// EARLY OIDC CONFIG/JWKS FORCE-LOAD (before static files & authentication)
+// Purpose: eliminate timing race where first authorization redirect occurs before JWKS is loaded.
+app.Use(
+    async (context, next) =>
+    {
+        // Only attempt for unauthenticated interactive requests (avoid overhead for static assets and already signed-in users)
+        if (!context.User.Identity?.IsAuthenticated ?? true)
+        {
+            try
+            {
+                var sp = context.RequestServices;
+                var monitor =
+                    sp.GetRequiredService<Microsoft.Extensions.Options.IOptionsMonitor<OpenIdConnectOptions>>();
+                var opts = monitor.Get("oidc");
+                // Ensure ConfigurationManager exists
+                if (
+                    opts.ConfigurationManager == null
+                    && !string.IsNullOrWhiteSpace(opts.MetadataAddress)
+                )
+                {
+                    opts.ConfigurationManager =
+                        new ConfigurationManager<OpenIdConnectConfiguration>(
+                            opts.MetadataAddress,
+                            new OpenIdConnectConfigurationRetriever(),
+                            new HttpDocumentRetriever { RequireHttps = opts.RequireHttpsMetadata }
+                        );
+                }
+                // Fetch configuration if not loaded or no keys
+                if (
+                    opts.ConfigurationManager != null
+                    && (opts.Configuration == null || opts.Configuration.SigningKeys.Count == 0)
+                )
+                {
+                    var cfg = await opts.ConfigurationManager.GetConfigurationAsync(
+                        context.RequestAborted
+                    );
+                    opts.Configuration = cfg;
+                }
+                // Direct JWKS fetch if still no keys
+                if (
+                    opts.Configuration != null
+                    && opts.Configuration.SigningKeys.Count == 0
+                    && !string.IsNullOrWhiteSpace(opts.Configuration.JwksUri)
+                )
+                {
+                    using var http = opts.Backchannel ?? new HttpClient();
+                    http.Timeout = TimeSpan.FromSeconds(2);
+                    var jwksJson = await http.GetStringAsync(
+                        opts.Configuration.JwksUri,
+                        context.RequestAborted
+                    );
+                    var jwks = new JsonWebKeySet(jwksJson);
+                    foreach (var k in jwks.GetSigningKeys())
+                    {
+                        opts.Configuration.SigningKeys.Add(k);
+                    }
+                }
+                // Inject into TokenValidationParameters if empty
+                if (
+                    opts.Configuration?.SigningKeys.Count > 0
+                    && (
+                        opts.TokenValidationParameters.IssuerSigningKeys == null
+                        || !opts.TokenValidationParameters.IssuerSigningKeys.Any()
+                    )
+                )
+                {
+                    opts.TokenValidationParameters.IssuerSigningKeys =
+                        opts.Configuration.SigningKeys.ToList();
+                }
+                // Console diagnostics (bypass logging filters)
+                Console.WriteLine(
+                    $"[EarlyOidcInit] Path={context.Request.Path} HasConfig={(opts.Configuration != null)} KeyCount={opts.Configuration?.SigningKeys.Count ?? 0} ValidateIssuerSigningKey={opts.TokenValidationParameters.ValidateIssuerSigningKey}"
+                );
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[EarlyOidcInit] Exception: {ex.GetType().Name} {ex.Message}");
+            }
+        }
+        await next();
+    }
+);
+
 // Serve static files before auth so framework assets aren't gated
 app.UseStaticFiles();
+
+// Ensure WebSockets keep-alive pings are sent regularly for the Blazor circuit
+app.UseWebSockets(new WebSocketOptions { KeepAliveInterval = TimeSpan.FromSeconds(15) });
+
+// Pre-auth key hydration middleware: if OIDC config lacks signing keys just before a challenge, fetch JWKS now.
+app.Use(
+    async (context, next) =>
+    {
+        if (!context.User.Identity?.IsAuthenticated ?? true)
+        {
+            try
+            {
+                var monitor =
+                    context.RequestServices.GetRequiredService<Microsoft.Extensions.Options.IOptionsMonitor<OpenIdConnectOptions>>();
+                var opts = monitor.Get("oidc");
+                if (
+                    opts.Configuration != null
+                    && opts.Configuration.SigningKeys.Count == 0
+                    && !string.IsNullOrWhiteSpace(opts.Configuration.JwksUri)
+                )
+                {
+                    using var http = opts.Backchannel ?? new HttpClient();
+                    http.Timeout = TimeSpan.FromSeconds(3);
+                    var jwksJson = await http.GetStringAsync(
+                        opts.Configuration.JwksUri,
+                        context.RequestAborted
+                    );
+                    var jwks = new JsonWebKeySet(jwksJson);
+                    foreach (var k in jwks.GetSigningKeys())
+                        opts.Configuration.SigningKeys.Add(k);
+                    if (
+                        opts.Configuration.SigningKeys.Count > 0
+                        && (
+                            opts.TokenValidationParameters.IssuerSigningKeys == null
+                            || !opts.TokenValidationParameters.IssuerSigningKeys.Any()
+                        )
+                    )
+                    {
+                        opts.TokenValidationParameters.IssuerSigningKeys =
+                            opts.Configuration.SigningKeys.ToList();
+                    }
+                }
+            }
+            catch { }
+        }
+        await next();
+    }
+);
+
+// Diagnostic middleware to capture OIDC callback context early (before auth handler executes)
+app.Use(
+    async (context, next) =>
+    {
+        if (context.Request.Path.Equals("/signin-oidc", StringComparison.OrdinalIgnoreCase))
+        {
+            try
+            {
+                var logger = context
+                    .RequestServices.GetRequiredService<ILoggerFactory>()
+                    .CreateLogger("OIDC-Callback");
+                var query = context.Request.Query.ToDictionary(
+                    kvp => kvp.Key,
+                    kvp => kvp.Value.ToString()
+                );
+                var hasCode = query.ContainsKey("code");
+                var hasIdToken = query.ContainsKey("id_token");
+                var stateLen = query.TryGetValue("state", out var stateVal) ? stateVal.Length : 0;
+                logger.LogInformation(
+                    "/signin-oidc invoked. QueryKeys={Keys} HasCode={HasCode} HasIdToken={HasIdToken} StateLength={StateLength}",
+                    string.Join(',', query.Keys),
+                    hasCode,
+                    hasIdToken,
+                    stateLen
+                );
+                // Dump headers relevant to auth flow / proxying
+                var headerSnapshot = context
+                    .Request.Headers.Where(h =>
+                        h.Key.StartsWith("X-Forwarded", StringComparison.OrdinalIgnoreCase)
+                        || h.Key.StartsWith("X-", StringComparison.OrdinalIgnoreCase)
+                        || h.Key.Equals("Cookie", StringComparison.OrdinalIgnoreCase)
+                    )
+                    .ToDictionary(h => h.Key, h => h.Value.ToString());
+                logger.LogInformation(
+                    "/signin-oidc headers snapshot: {Headers}",
+                    System.Text.Json.JsonSerializer.Serialize(headerSnapshot)
+                );
+
+                // Correlation + nonce cookie presence diagnostics
+                var corrCookies = new List<string>();
+                foreach (var c in context.Request.Cookies.Keys)
+                {
+                    if (
+                        c.Contains(
+                            ".AspNetCore.Correlation.oidc",
+                            StringComparison.OrdinalIgnoreCase
+                        )
+                        || c.Contains(
+                            ".AspNetCore.OpenIdConnect.Nonce",
+                            StringComparison.OrdinalIgnoreCase
+                        )
+                    )
+                    {
+                        corrCookies.Add(c);
+                    }
+                }
+                logger.LogInformation(
+                    "/signin-oidc correlation/nonce cookies: {Cookies}",
+                    string.Join(',', corrCookies)
+                );
+            }
+            catch
+            { /* best effort */
+            }
+        }
+
+        if (context.Request.Path.Equals("/signin-oidc", StringComparison.OrdinalIgnoreCase))
+        {
+            try
+            {
+                await next();
+            }
+            catch (Exception ex)
+            {
+                try
+                {
+                    var logger = context
+                        .RequestServices.GetRequiredService<ILoggerFactory>()
+                        .CreateLogger("OIDC-Callback");
+                    logger.LogError(
+                        ex,
+                        "Unhandled exception in pipeline during /signin-oidc processing"
+                    );
+                    var diagnostics = new System.Text.StringBuilder();
+                    diagnostics.AppendLine($"Timestamp: {DateTime.UtcNow:o}");
+                    diagnostics.AppendLine("RequestPath=/signin-oidc");
+                    diagnostics.AppendLine("Query=" + context.Request.QueryString);
+                    diagnostics.AppendLine(
+                        "Cookies=" + string.Join(';', context.Request.Cookies.Select(k => k.Key))
+                    );
+                    diagnostics.AppendLine("Exception=" + ex.ToString());
+                    var file = Path.Combine(AppContext.BaseDirectory, "signin-oidc-error.log");
+                    File.AppendAllText(file, diagnostics.ToString());
+                }
+                catch
+                { /* ignore */
+                }
+                throw; // preserve original behavior (developer exception page)
+            }
+        }
+        else
+        {
+            await next();
+        }
+    }
+);
 
 app.UseAuthentication();
 app.UseAuthorization();
@@ -296,4 +887,66 @@ app.MapRazorComponents<App>().RequireAuthorization().AddInteractiveServerRenderM
 app.MapHealthChecks("/health/live").AllowAnonymous();
 app.MapHealthChecks("/health/ready").AllowAnonymous();
 
+// Development-only OIDC diagnostics endpoint exposing current client config & signing keys (not for production)
+if (app.Environment.IsDevelopment())
+{
+    app.MapGet(
+            "/diag/oidc",
+            (IServiceProvider sp) =>
+            {
+                var monitor =
+                    sp.GetRequiredService<Microsoft.Extensions.Options.IOptionsMonitor<OpenIdConnectOptions>>();
+                var opts = monitor.Get("oidc");
+                var cfg = opts.Configuration;
+                var keys = new List<object>();
+                if (cfg?.SigningKeys is not null)
+                {
+                    foreach (var k in cfg.SigningKeys)
+                    {
+                        keys.Add(new { k.KeyId, Type = k.GetType().Name });
+                    }
+                }
+                return Results.Json(
+                    new
+                    {
+                        opts.Authority,
+                        opts.MetadataAddress,
+                        RequireHttps = opts.RequireHttpsMetadata,
+                        ConfigLoaded = cfg is not null,
+                        Issuer = cfg?.Issuer,
+                        KeyCount = cfg?.SigningKeys.Count ?? 0,
+                        Keys = keys,
+                        ValidIssuers = opts.TokenValidationParameters.ValidIssuers,
+                        TvpKidList = (
+                            opts.TokenValidationParameters.IssuerSigningKeys
+                            ?? Enumerable.Empty<SecurityKey>()
+                        )
+                            .OfType<JsonWebKey>()
+                            .Select(k => k.Kid ?? k.KeyId)
+                            .Where(x => !string.IsNullOrWhiteSpace(x))
+                            .ToArray()
+                    }
+                );
+            }
+        )
+        .AllowAnonymous();
+}
+
 app.Run();
+
+// Support types (kept at end to avoid interfering with top-level statements above)
+namespace TansuCloud.Dashboard
+{
+    // Deterministic static configuration manager to avoid races once discovery & JWKS are loaded at startup.
+    sealed class StaticConfigurationManager<T> : IConfigurationManager<T>
+        where T : class
+    {
+        private readonly T _config;
+
+        public StaticConfigurationManager(T config) => _config = config; // End of Constructor StaticConfigurationManager
+
+        public Task<T> GetConfigurationAsync(CancellationToken cancel) => Task.FromResult(_config); // End of Method GetConfigurationAsync
+
+        public void RequestRefresh() { } // End of Method RequestRefresh
+    } // End of Class StaticConfigurationManager
+} // End of Namespace TansuCloud.Dashboard

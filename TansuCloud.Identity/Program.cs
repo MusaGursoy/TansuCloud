@@ -4,6 +4,8 @@ using System.Threading.Tasks;
 using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Caching.Hybrid;
+using Microsoft.Extensions.Caching.StackExchangeRedis;
 using Microsoft.Extensions.Options;
 using Microsoft.IdentityModel.Tokens;
 using OpenIddict.Abstractions;
@@ -98,9 +100,15 @@ if (useSqlite)
 }
 else
 {
-    var connectionString =
-        builder.Configuration.GetConnectionString("Default")
-        ?? "Host=localhost;Port=5432;Database=tansu_identity;Username=postgres;Password=postgres"; // dev fallback
+    var connectionString = builder.Configuration.GetConnectionString("Default");
+    if (string.IsNullOrWhiteSpace(connectionString))
+    {
+        // Prefer PgCat if running in compose with defaults
+        var user = builder.Configuration["POSTGRES_USER"] ?? "postgres";
+        var pass = builder.Configuration["POSTGRES_PASSWORD"] ?? "postgres";
+        connectionString =
+            $"Host=pgcat;Port=6432;Database=tansu_identity;Username={user};Password={pass}";
+    }
 
     builder.Services.AddDbContext<AppDbContext>(options =>
     {
@@ -113,6 +121,14 @@ else
 builder.Services.Configure<IdentityPolicyOptions>(
     builder.Configuration.GetSection(IdentityPolicyOptions.SectionName)
 );
+
+// HybridCache + Redis (optional)
+var redisConn = builder.Configuration["Cache:Redis"];
+if (!string.IsNullOrWhiteSpace(redisConn))
+{
+    builder.Services.AddStackExchangeRedisCache(o => o.Configuration = redisConn);
+    builder.Services.AddHybridCache();
+}
 builder.Services.AddSingleton<IHttpContextAccessor, HttpContextAccessor>();
 builder.Services.AddScoped<ISecurityAuditLogger, SecurityAuditLogger>();
 builder.Services.AddSingleton<JwksRotationService>();
@@ -163,10 +179,23 @@ builder
     .AddServer(options =>
     {
         // Explicit issuer so discovery and endpoints include the gateway path base ("/identity")
-    // dev default: go through gateway HTTP endpoint
-    var issuer = builder.Configuration["Oidc:Issuer"] ?? "http://localhost:8080/identity/";
+        // dev default: go through gateway HTTP endpoint
+        var issuer = builder.Configuration["Oidc:Issuer"] ?? "http://localhost:8080/identity/";
         if (!issuer.EndsWith('/'))
             issuer += "/";
+        // Development normalization: align localhost host with 127.0.0.1 so Dashboard authority host matches token issuer
+        try
+        {
+            var issuerUri = new Uri(issuer);
+            if (issuerUri.Host.Equals("localhost", StringComparison.OrdinalIgnoreCase))
+            {
+                var ub = new UriBuilder(issuerUri) { Host = "127.0.0.1" };
+                issuer = ub.Uri.ToString();
+            }
+        }
+        catch
+        { /* ignore */
+        }
         options.SetIssuer(new Uri(issuer));
 
         // Default relative endpoints; PathBase and Issuer ensure advertised URLs include "/identity"
@@ -174,8 +203,9 @@ builder
             .SetAuthorizationEndpointUris("/connect/authorize")
             .SetTokenEndpointUris("/connect/token")
             .SetIntrospectionEndpointUris("/connect/introspect");
+        // JWKS endpoint is served via JwksController at "/.well-known/jwks"; discovery override below advertises it.
 
-    options
+        options
             .AllowAuthorizationCodeFlow()
             .AllowRefreshTokenFlow() // Required for issuing/using refresh tokens with offline_access
             .RequireProofKeyForCodeExchange();
@@ -190,9 +220,9 @@ builder
             options.AllowClientCredentialsFlow();
         }
 
-    // Encryption key is required by OpenIddict server. Use an ephemeral key for dev/test.
-    // For production, persist encryption keys similarly to signing keys.
-    options.AddEphemeralEncryptionKey();
+        // Encryption key is required by OpenIddict server. Use an ephemeral key for dev/test.
+        // For production, persist encryption keys similarly to signing keys.
+        options.AddEphemeralEncryptionKey();
 
         options.RegisterScopes(
             OpenIddictConstants.Scopes.OpenId,
@@ -252,10 +282,10 @@ builder
                 .Build()
         );
 
-    // Emit signed (not encrypted) JWT access tokens so resource servers can validate via JWKS
-    options.DisableAccessTokenEncryption();
+        // Emit signed (not encrypted) JWT access tokens so resource servers can validate via JWKS
+        options.DisableAccessTokenEncryption();
 
-    // Token lifetimes from configuration
+        // Token lifetimes from configuration
         var policy =
             builder
                 .Configuration.GetSection(IdentityPolicyOptions.SectionName)

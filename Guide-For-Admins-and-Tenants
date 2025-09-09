@@ -28,6 +28,50 @@ Tansu.Cloud is a modern backend-as-a-service (BaaS) platform built on .NET, prov
 - Internal service networking
 - OpenTelemetry collector
 
+### 4.1 Custom domain and secrets (.env)
+
+Set your public base URL and sensitive values via a `.env` file next to `docker-compose.yml`. Docker Compose will auto-load it and substitute values into service environments.
+
+1) Create `.env` with your domain and secrets
+
+```env
+# Public HTTPS base URL of your gateway (include scheme; no trailing slash)
+PUBLIC_BASE_URL=https://your-domain
+
+# Dashboard OIDC confidential client secret (used by the Dashboard to obtain tokens)
+DASHBOARD_CLIENT_SECRET=replace-with-strong-secret
+
+# Postgres and PgCat credentials used by the stack
+POSTGRES_USER=postgres
+POSTGRES_PASSWORD=change-me
+PGCAT_ADMIN_USER=admin
+PGCAT_ADMIN_PASSWORD=change-me
+
+# If you enable TLS on the gateway (see section 5), set the PFX password
+GATEWAY_CERT_PASSWORD=changeit
+```
+
+2) What these influence
+
+- PUBLIC_BASE_URL configures all OIDC and callback URLs exposed externally:
+	- Identity issuer: `${PUBLIC_BASE_URL}/identity/`
+	- Dashboard OIDC authority: `${PUBLIC_BASE_URL}/identity`
+	- Redirect URIs (dashboard behind gateway path):
+		- `${PUBLIC_BASE_URL}/dashboard/signin-oidc`
+		- `${PUBLIC_BASE_URL}/dashboard/signout-callback-oidc`
+	- Root variants (if you front the dashboard at the domain root as an alternative):
+		- `${PUBLIC_BASE_URL}/signin-oidc`
+		- `${PUBLIC_BASE_URL}/signout-callback-oidc`
+- DASHBOARD_CLIENT_SECRET is injected into the Dashboard container as its client secret.
+- POSTGRES_* and PGCAT_* configure the database and PgCat admin access used by services.
+- GATEWAY_CERT_PASSWORD is only required when HTTPS is enabled on the gateway with a PFX (see 5.x).
+
+3) DNS and TLS
+
+- Point your domain (A/AAAA) to the gateway host.
+- Use a valid certificate (section 5) and set `PUBLIC_BASE_URL` to the HTTPS origin.
+- After the first start, confirm discovery at `${PUBLIC_BASE_URL}/identity/.well-known/openid-configuration`.
+
 ## 5. Certificates & TLS
 
 - Preparing a PFX certificate
@@ -156,6 +200,20 @@ Notes
 - Configuring OIDC issuer for downstream services (Oidc:Issuer)
 - Dashboard OIDC authority configuration
 
+Recommended settings
+
+- In production, set `PUBLIC_BASE_URL` to your HTTPS origin in `.env`. The compose file maps this to:
+	- Identity Issuer: `${PUBLIC_BASE_URL}/identity/`
+	- Dashboard Authority/Metadata: `${PUBLIC_BASE_URL}/identity`
+	- Dashboard Redirect URIs:
+		- `${PUBLIC_BASE_URL}/dashboard/signin-oidc`
+		- `${PUBLIC_BASE_URL}/dashboard/signout-callback-oidc`
+	- Optional root variants for alternative routing:
+		- `${PUBLIC_BASE_URL}/signin-oidc`
+		- `${PUBLIC_BASE_URL}/signout-callback-oidc`
+- Set the Dashboard confidential client secret via `DASHBOARD_CLIENT_SECRET` in `.env`.
+- Ensure reverse proxy forwarding headers are correct at the gateway; Identity relies on them for issuer/redirects.
+
 ## 7. Configuration & Secrets
 
 - Configuration sources (appsettings, environment, user secrets)
@@ -222,6 +280,34 @@ This platform ships with lightweight health checks and end-to-end (E2E) tests th
 - Notes:
 	- Tests accept development HTTPS certificates; no extra trust steps needed for local runs.
 	- The provisioning test obtains an access token using the dashboard client (scopes: `db.write admin.full`) and calls the Database provisioning API twice, asserting idempotency.
+
+### 13.2.1 Redis-dependent outbox test gating
+
+Some outbox E2E validation requires a real Redis instance (publishing and subscription). These tests are decorated with a custom attribute `RedisFactAttribute` and will be reported as Skipped unless the environment variable `REDIS_URL` is set.
+
+To enable the Redis E2E outbox test locally:
+
+1. Start (or ensure) a Redis container/service is running and reachable.
+2. Export `REDIS_URL` before running tests:
+
+```powershell
+$env:REDIS_URL = "localhost:6379" # or full configuration string supported by StackExchange.Redis
+dotnet test .\tests\TansuCloud.E2E.Tests\TansuCloud.E2E.Tests.csproj -c Debug --filter Full_Dispatcher_Redis_Publish
+```
+
+Example skip output when not configured:
+
+```
+Full dispatcher loop publishes to Redis and marks dispatched (E2E) [SKIP]
+	REDIS_URL not set; Redis-dependent test skipped
+```
+
+Rationale:
+- Keeps CI fast and deterministic when Redis isn’t provisioned.
+- Avoids false negatives due to missing ephemeral infrastructure.
+- Local developers can opt-in for the extra signal when modifying outbox/Redis code paths.
+
+If you routinely run with Redis, consider adding a VS Code test task that sets `REDIS_URL` inline so the attribute no longer skips the test.
 
 ### 13.5 Database API v1 quick reference
 
@@ -329,3 +415,55 @@ Place your `gateway.pfx` under `./certs` and set `GATEWAY_CERT_PASSWORD` in your
 ### Notes
 
 - This guide is a living document. Fill in environment-specific details (DNS, certs, backends) as they are finalized.
+
+## Appendix D: .env example (production-like)
+
+Place this `.env` beside `docker-compose.yml` and adjust values to your environment.
+
+```env
+PUBLIC_BASE_URL=https://app.yourdomain.com
+
+DASHBOARD_CLIENT_SECRET=your-strong-secret
+
+POSTGRES_USER=postgres
+POSTGRES_PASSWORD=your-db-password
+PGCAT_ADMIN_USER=admin
+PGCAT_ADMIN_PASSWORD=your-pgcat-password
+
+# If enabling TLS on the gateway with a PFX mounted under ./certs
+GATEWAY_CERT_PASSWORD=pfx-password
+```
+
+## Redis and Outbox (Database service)
+
+Purpose
+
+- The Outbox pattern ensures reliable event emission: write domain changes and an "outbox event" in the same database transaction. A background worker publishes the event to Redis later.
+
+Local/dev Redis
+
+- Docker Compose includes `redis:latest` with a named volume `tansu-redisdata` and default port 6379.
+- The Database service depends on Redis when Outbox is enabled.
+
+Outbox configuration (Database service)
+
+- Outbox is disabled unless a Redis connection is provided.
+- Keys (env or appsettings):
+	- `Outbox:RedisConnection` (e.g., `redis:6379` in compose)
+	- `Outbox:Channel` (default `tansu.outbox`)
+	- `Outbox:PollSeconds` (default `2`)
+	- `Outbox:BatchSize` (default `100`)
+	- `Outbox:MaxAttempts` (default `8`)
+
+Idempotency for write requests
+
+- Clients may send an `Idempotency-Key` header on write operations (e.g., create document). The Database service records the key and will return the original outcome on safe retries.
+- Use a strong, unique value per logical operation. Expire/rotate keys as needed on the client side.
+ - The key is stored in `outbox_events.idempotency_key` with a partial unique index to prevent duplicates (when not null). The server may retain keys for operational analysis; clients should not reuse keys across unrelated requests.
+
+Operations
+
+- Health: Redis container exposes `PING` in health checks; verify container is healthy before DB starts processing Outbox.
+- Observability: Outbox worker logs dispatched, retried, and dead-lettered events. Metrics are exported via OpenTelemetry when configured.
+- Failure handling: After max attempts, events transition to a dead-letter state; operators should inspect and decide to replay or ignore.
+ - Redis channel: events are published to the configured channel (default `tansu.outbox`) as JSON envelopes including `{ tenant, collectionId?, documentId?, op }`. Consumers should treat the payload as a contract subject to additive changes.

@@ -1,17 +1,15 @@
-version: "3.9"
-
 services:
   postgres:
     image: tansu/citus-pgvector:local
     container_name: tansudbpg
     environment:
-      - POSTGRES_USER=postgres
-      - POSTGRES_PASSWORD=postgres
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
     volumes:
       - tansu-pgdata:/var/lib/postgresql/data
       - ./dev/db-init:/docker-entrypoint-initdb.d:ro
     ports:
-      - "5432:5432"
+      - "5432:5432" # Host exposure for EfMigrationsIntegrationTests
     healthcheck:
       test: ["CMD", "/bin/bash", "-lc", "pg_isready -U postgres -h 127.0.0.1 -p 5432"]
       interval: 10s
@@ -20,98 +18,127 @@ services:
       start_period: 10s
     networks:
       - tansucloud-network
+
   otel-collector:
     image: otel/opentelemetry-collector:latest
     command: ["--config=/etc/otelcol/config.yaml"]
     volumes:
       - ./dev/otel-collector-config.yaml:/etc/otelcol/config.yaml:ro
     expose:
-      - "4317" # OTLP gRPC (internal only)
+      - "4317"
     networks:
       - tansucloud-network
 
-  gateway:
+  redis:
+    image: redis:latest
+    container_name: tansu-redis
+    command: ["redis-server", "--appendonly", "yes"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+    volumes:
+      - tansu-redisdata:/data
+    networks:
+      - tansucloud-network
+
+  pgcat:
+    image: ghcr.io/postgresml/pgcat:latest
+    container_name: tansu-pgcat
+    environment:
+      PGCAT_ADMIN_USER: ${PGCAT_ADMIN_USER}
+      PGCAT_ADMIN_PASSWORD: ${PGCAT_ADMIN_PASSWORD}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_HOST: tansudbpg
+    volumes:
+      - ./dev/pgcat/pgcat.toml:/etc/pgcat/pgcat.toml:ro
+    command: ["pgcat", "/etc/pgcat/pgcat.toml"]
+    expose:
+      - "6432"
+      - "9930"
+    healthcheck:
+      test: ["CMD", "/bin/sh", "-lc", "pgrep pgcat >/dev/null 2>&1"]
+      interval: 10s
+      timeout: 5s
+      retries: 15
+      start_period: 20s
+    networks:
+      - tansucloud-network
+
+  pgcat-config:
     build:
       context: .
-      dockerfile: TansuCloud.Gateway/Dockerfile
+      dockerfile: Dev.PgcatConfigurator/Dockerfile
     environment:
-      # Downstream service base URLs (internal Docker DNS names)
-      - Services__DashboardBaseUrl=http://dashboard:8080
-      - Services__IdentityBaseUrl=http://identity:8080
-      - Services__DatabaseBaseUrl=http://db:8080
-      - Services__StorageBaseUrl=http://storage:8080
-      # OpenTelemetry collector endpoint
-      - OpenTelemetry__Otlp__Endpoint=http://otel-collector:4317
-      # Optional Kestrel HTTPS endpoint (uncomment Kestrel lines below when enabling TLS, mind the indentation)
-      # - Kestrel__Endpoints__Https__Url=https://0.0.0.0:8443
-      # - Kestrel__Endpoints__Https__Certificate__Path=/certs/gateway.pfx
-      # Optional TLS certificate password for the PFX at /certs/gateway.pfx (uncomment below when enabling HTTPS, mind the indentation)
-      # - GATEWAY_CERT_PASSWORD=${GATEWAY_CERT_PASSWORD}
-    ports:
-      - "80:8080"
-      # Optional HTTPS (enable when you mount a PFX and provide the password, mind the indentation)
-      # - "443:8443"
-    # Optional. Mount a local certs folder that contains gateway.pfx into the container (uncomment below to enable HTTPS, mind the indentation)
-    # volumes:
-    #   - ./certs:/certs:ro
-    healthcheck:
-      test: ["CMD", "/bin/busybox", "wget", "-q", "-O", "-", "http://localhost:8080/health/ready"]
-      interval: 10s
-      timeout: 3s
-      retries: 10
-      start_period: 10s
-    depends_on:
-      postgres:
-        condition: service_healthy
-      identity:
-        condition: service_healthy
-      dashboard:
-        condition: service_healthy
-      db:
-        condition: service_healthy
-      storage:
-        condition: service_healthy
-      otel-collector:
-        condition: service_started
+      PG_ADMIN: "Host=tansudbpg;Port=5432;Database=postgres;Username=${POSTGRES_USER};Password=${POSTGRES_PASSWORD}"
+      PG_HOST: tansudbpg
+      PG_USER: ${POSTGRES_USER}
+      PG_PASSWORD: ${POSTGRES_PASSWORD}
+      TENANT_DB_PREFIX: tansu_tenant_
+      PGCAT_ADMIN_USER: ${PGCAT_ADMIN_USER}
+      PGCAT_ADMIN_PASSWORD: ${PGCAT_ADMIN_PASSWORD}
+      PGCAT_CONFIG: /out/pgcat.toml
+    volumes:
+      - ./dev/pgcat:/out
     networks:
       - tansucloud-network
+    depends_on:
+      - pgcat
 
   identity:
-    healthcheck:
-      test: ["CMD", "/bin/busybox", "wget", "-q", "-O", "-", "http://localhost:8080/health/ready"]
-      interval: 10s
-      timeout: 3s
-      retries: 10
-      start_period: 10s
     build:
       context: .
       dockerfile: TansuCloud.Identity/Dockerfile
     environment:
-      # Issuer must include "/identity/" and match what downstream validators use
-      - Oidc__Issuer=http://gateway:8080/identity/
-      - OpenTelemetry__Otlp__Endpoint=http://otel-collector:4317
-      # Database connection can be overridden here as needed in prod
-      # - ConnectionStrings__Default=Host=postgres;Port=5432;Database=tansu_identity;Username=postgres;Password=postgres
+      ASPNETCORE_ENVIRONMENT: Development
+      Oidc__Issuer: http://127.0.0.1:8080/identity/
+      Oidc__RedirectUri: http://127.0.0.1:8080/dashboard/signin-oidc
+      Oidc__PostLogoutRedirectUri: http://127.0.0.1:8080/dashboard/signout-callback-oidc
+      Oidc__Dashboard__RedirectUri: http://127.0.0.1:8080/dashboard/signin-oidc
+      Oidc__Dashboard__RedirectUriRoot: http://127.0.0.1:8080/signin-oidc
+      Oidc__Dashboard__ClientSecret: ${DASHBOARD_CLIENT_SECRET:-dev-secret}
+      Oidc__Dashboard__PostLogoutRedirectUri: http://127.0.0.1:8080/dashboard/signout-callback-oidc
+      Oidc__Dashboard__PostLogoutRedirectUriRoot: http://127.0.0.1:8080/signout-callback-oidc
+      OpenTelemetry__Otlp__Endpoint: http://otel-collector:4317
+      ConnectionStrings__Default: "Host=pgcat;Port=6432;Database=tansu_identity;Username=${POSTGRES_USER};Password=${POSTGRES_PASSWORD}"
+      Cache__Redis: redis:6379
+    healthcheck:
+      test: ["CMD", "/bin/busybox", "wget", "-q", "-O", "-", "http://localhost:8080/health/ready"]
+      interval: 10s
+      timeout: 5s
+      retries: 15
+      start_period: 25s
     networks:
       - tansucloud-network
+    depends_on:
+      - pgcat
 
   dashboard:
     build:
       context: .
       dockerfile: TansuCloud.Dashboard/Dockerfile
     environment:
-      - OpenTelemetry__Otlp__Endpoint=http://otel-collector:4317
-      - Oidc__Authority=http://gateway:8080/identity
-      - Oidc__MetadataAddress=http://gateway:8080/identity/.well-known/openid-configuration
-      - Oidc__ClientId=tansu-dashboard
-      - Oidc__ClientSecret=dev-secret
-      - GatewayBaseUrl=http://gateway:8080
+      ASPNETCORE_ENVIRONMENT: Development
+      PublicBaseUrl: http://127.0.0.1:8080
+      OpenTelemetry__Otlp__Endpoint: http://otel-collector:4317
+      Cache__Redis: redis:6379
+      Oidc__Authority: http://gateway:8080/identity
+      Oidc__MetadataAddress: http://gateway:8080/identity/.well-known/openid-configuration
+      Oidc__RequireHttpsMetadata: false
+      Oidc__ClientId: tansu-dashboard
+      Oidc__ClientSecret: ${DASHBOARD_CLIENT_SECRET:-dev-secret}
+      GatewayBaseUrl: http://gateway:8080
+      # Dev-only diagnostic: bypass ID token signature validation to isolate key mismatch issues
+      DASHBOARD_BYPASS_IDTOKEN_SIGNATURE: "0"
     healthcheck:
       test: ["CMD", "/bin/busybox", "wget", "-q", "-O", "-", "http://localhost:8080/health/ready"]
       interval: 10s
-      timeout: 3s
-      retries: 10
-      start_period: 10s
+      timeout: 5s
+      retries: 15
+      start_period: 25s
     networks:
       - tansucloud-network
 
@@ -120,30 +147,77 @@ services:
       context: .
       dockerfile: TansuCloud.Database/Dockerfile
     environment:
-      - Oidc__Issuer=http://gateway:8080/identity/
-      - OpenTelemetry__Otlp__Endpoint=http://otel-collector:4317
+      ASPNETCORE_ENVIRONMENT: Development
+      Oidc__Issuer: ${PUBLIC_BASE_URL:-http://gateway:8080}/identity/
+      OpenTelemetry__Otlp__Endpoint: http://otel-collector:4317
+      Outbox__RedisConnection: redis:6379
+      Outbox__Channel: tansu.outbox
+      Outbox__PollSeconds: 2
+      Outbox__BatchSize: 100
+      Outbox__MaxAttempts: 8
+      Outbox__DispatchTenant: acme-dev
+      Cache__Redis: redis:6379
+      Provisioning__AdminConnectionString: Host=tansudbpg;Port=5432;Database=postgres;Username=${POSTGRES_USER};Password=${POSTGRES_PASSWORD}
+      Provisioning__RuntimeConnectionString: Host=pgcat;Port=6432;Database=postgres;Username=${POSTGRES_USER};Password=${POSTGRES_PASSWORD}
+      Dev__ProvisionBypassKey: letmein
     healthcheck:
       test: ["CMD", "/bin/busybox", "wget", "-q", "-O", "-", "http://localhost:8080/health/ready"]
       interval: 10s
-      timeout: 3s
-      retries: 10
-      start_period: 10s
+      timeout: 5s
+      retries: 15
+      start_period: 25s
     networks:
       - tansucloud-network
+    depends_on:
+      - pgcat
+      - redis
 
   storage:
     build:
       context: .
       dockerfile: TansuCloud.Storage/Dockerfile
     environment:
-      - Oidc__Issuer=http://gateway:8080/identity/
-      - OpenTelemetry__Otlp__Endpoint=http://otel-collector:4317
+      Oidc__Issuer: ${PUBLIC_BASE_URL:-http://gateway:8080}/identity/
+      OpenTelemetry__Otlp__Endpoint: http://otel-collector:4317
+      Cache__Redis: redis:6379
     healthcheck:
       test: ["CMD", "/bin/busybox", "wget", "-q", "-O", "-", "http://localhost:8080/health/ready"]
       interval: 10s
-      timeout: 3s
-      retries: 10
-      start_period: 10s
+      timeout: 5s
+      retries: 15
+      start_period: 25s
+    networks:
+      - tansucloud-network
+
+  gateway:
+    build:
+      context: .
+      dockerfile: TansuCloud.Gateway/Dockerfile
+    environment:
+      ASPNETCORE_ENVIRONMENT: Development
+      Services__DashboardBaseUrl: http://dashboard:8080
+      Services__IdentityBaseUrl: http://identity:8080
+      Services__DatabaseBaseUrl: http://db:8080
+      Services__StorageBaseUrl: http://storage:8080
+      OpenTelemetry__Otlp__Endpoint: http://otel-collector:4317
+      Cache__Redis: redis:6379
+      Dev__ProvisionBypassKey: letmein
+    ports:
+      - "80:8080"
+      - "8080:8080"
+    healthcheck:
+      test: ["CMD", "/bin/busybox", "wget", "-q", "-O", "-", "http://localhost:8080/health/ready"]
+      interval: 10s
+      timeout: 5s
+      retries: 15
+      start_period: 25s
+    depends_on:
+      - postgres
+      - identity
+      - dashboard
+      - db
+      - storage
+      - otel-collector
     networks:
       - tansucloud-network
 
@@ -153,4 +227,6 @@ networks:
 
 volumes:
   tansu-pgdata:
+    driver: local
+  tansu-redisdata:
     driver: local

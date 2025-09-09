@@ -1,0 +1,60 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<TestRun id="b6f40447-4763-4ccf-9a3d-e1d43108214c" name="gurso@SERVER-ANK 2025-09-04 22:32:57" runUser="SERVER-ANK\gurso" xmlns="http://microsoft.com/schemas/VisualStudio/TeamTest/2010">
+  <Times creation="2025-09-04T22:32:57.5670646+03:00" queuing="2025-09-04T22:32:57.5670651+03:00" start="2025-09-04T22:31:02.9815272+03:00" finish="2025-09-04T22:32:57.5728589+03:00" />
+  <TestSettings name="default" id="7f573337-023e-4d9f-ad36-d26f64b8b5f8">
+    <Deployment runDeploymentRoot="gurso_SERVER-ANK_2025-09-04_22_32_57" />
+  </TestSettings>
+  <Results>
+    <UnitTestResult executionId="cc3ba299-f838-4b5d-a258-20679c6a6e29" testId="215a765a-0d2e-026c-d0fc-37fdbcda3f94" testName="Dashboard WebSocket soak: 50 sessions hold 3 minutes (dev quick-run)" computerName="SERVER-ANK" duration="00:01:53.9035756" startTime="2025-09-04T22:31:03.5528914+03:00" endTime="2025-09-04T22:32:57.4636834+03:00" testType="13cdc9d9-ddb5-4fa4-a97d-d965ccfc6d4b" outcome="Passed" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" relativeResultsDirectory="cc3ba299-f838-4b5d-a258-20679c6a6e29" />
+  </Results>
+  <TestDefinitions>
+    <UnitTest name="Dashboard WebSocket soak: 50 sessions hold 3 minutes (dev quick-run)" storage="c:\users\gurso\documents\net\tansucloud\tests\tansucloud.e2e.tests\bin\debug\net9.0\tansucloud.e2e.tests.dll" id="215a765a-0d2e-026c-d0fc-37fdbcda3f94">
+      <Execution id="cc3ba299-f838-4b5d-a258-20679c6a6e29" />
+      <TestMethod codeBase="C:\Users\gurso\Documents\NET\TansuCloud\tests\TansuCloud.E2E.Tests\bin\Debug\net9.0\TansuCloud.E2E.Tests.dll" adapterTypeName="executor://xunit/VsTestRunner3/netcore/" className="TansuCloud.E2E.Tests.DashboardWebsocketSoak" name="Soak_50_Sessions_3_Minutes" />
+    </UnitTest>
+  </TestDefinitions>
+  <TestEntries>
+    <TestEntry testId="215a765a-0d2e-026c-d0fc-37fdbcda3f94" executionId="cc3ba299-f838-4b5d-a258-20679c6a6e29" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+  </TestEntries>
+  <TestLists>
+    <TestList name="Results Not in a List" id="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestList name="All Loaded Results" id="19431567-8539-422a-85d7-44ee4e166bda" />
+  </TestLists>
+  <ResultSummary outcome="Completed">
+    <Counters total="1" executed="1" passed="1" failed="0" error="0" timeout="0" aborted="0" inconclusive="0" passedButRunAborted="0" notRunnable="0" notExecuted="0" disconnected="0" warning="0" completed="0" inProgress="0" pending="0" />
+    <Output>
+      <StdOut>[xUnit.net 00:00:00.00] xUnit.net VSTest Adapter v3.1.4+50e68bbb8b (64-bit .NET 9.0.8)&#xD;
+[xUnit.net 00:00:00.08]   Discovering: TansuCloud.E2E.Tests&#xD;
+[xUnit.net 00:00:00.12]   Discovered:  TansuCloud.E2E.Tests&#xD;
+[xUnit.net 00:00:00.14]   Starting:    TansuCloud.E2E.Tests&#xD;
+Disconnects: 0/100 (0.00%)&#xD;
+Navigation failures: 100&#xD;
+2025-09-04T19:32:53.0126640+00:00 nav failed after 8 attempts: net::ERR_HTTP_RESPONSE_CODE_FAILURE at http://localhost:8080/dashboard&#xD;
+Call log:&#xD;
+  - navigating to "http://localhost:8080/dashboard", waiting until "domcontentloaded"&#xD;
+2025-09-04T19:32:52.9029066+00:00 nav failed after 8 attempts: net::ERR_HTTP_RESPONSE_CODE_FAILURE at http://localhost:8080/dashboard&#xD;
+Call log:&#xD;
+  - navigating to "http://localhost:8080/dashboard", waiting until "domcontentloaded"&#xD;
+2025-09-04T19:32:50.9472510+00:00 nav failed after 8 attempts: net::ERR_HTTP_RESPONSE_CODE_FAILURE at http://localhost:8080/dashboard&#xD;
+Call log:&#xD;
+  - navigating to "http://localhost:8080/dashboard", waiting until "domcontentloaded"&#xD;
+2025-09-04T19:32:45.5225473+00:00 nav failed after 8 attempts: net::ERR_HTTP_RESPONSE_CODE_FAILURE at http://localhost:8080/dashboard&#xD;
+Call log:&#xD;
+  - navigating to "http://localhost:8080/dashboard", waiting until "domcontentloaded"&#xD;
+2025-09-04T19:32:42.5202876+00:00 nav failed after 8 attempts: net::ERR_HTTP_RESPONSE_CODE_FAILURE at http://localhost:8080/dashboard&#xD;
+Call log:&#xD;
+  - navigating to "http://localhost:8080/dashboard", waiting until "domcontentloaded"&#xD;
+     Warning:&#xD;
+     The component "Fluent Assertions" is governed by the rules defined in the Xceed License Agreement and&#xD;
+     the Xceed Fluent Assertions Community License. You may use Fluent Assertions free of charge for&#xD;
+     non-commercial use only. An active subscription is required to use Fluent Assertions for commercial use.&#xD;
+     Please contact Xceed Sales mailto:sales@xceed.com to acquire a subscription at a very low cost.&#xD;
+     A paid commercial license supports the development and continued increasing support of&#xD;
+     Fluent Assertions users under both commercial and community licenses. Help us&#xD;
+     keep Fluent Assertions at the forefront of unit testing.&#xD;
+     For more information, visit https://xceed.com/products/unit-testing/fluent-assertions/&#xD;
+[xUnit.net 00:01:54.07]   Finished:    TansuCloud.E2E.Tests&#xD;
+</StdOut>
+    </Output>
+  </ResultSummary>
+</TestRun>

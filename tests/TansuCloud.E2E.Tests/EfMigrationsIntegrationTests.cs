@@ -1,5 +1,6 @@
 // Tansu.Cloud Public Repository:    https://github.com/MusaGursoy/TansuCloud
 using System;
+using System.Net.Sockets;
 using System.Threading;
 using System.Threading.Tasks;
 using FluentAssertions;
@@ -11,6 +12,7 @@ using Xunit;
 
 namespace TansuCloud.E2E.Tests;
 
+ [Collection("Global")]
 public class EfMigrationsIntegrationTests
 {
     private static string GetBaseConnectionString()
@@ -30,9 +32,37 @@ public class EfMigrationsIntegrationTests
         // Arrange
         var baseCs = GetBaseConnectionString();
         await using var admin = new NpgsqlConnection(baseCs);
-        await admin.OpenAsync();
 
-    // Vector is optional; migration should succeed without it.
+        // Postgres container may not yet be ready when tests start; add a short bounded retry.
+        var opened = false;
+        var attempt = 0;
+        Exception? lastEx = null;
+    var maxAttempts = 40; // align with fixture upper bound (~30s window)
+    while (!opened && attempt < maxAttempts)
+        {
+            try
+            {
+                attempt++;
+                await admin.OpenAsync();
+                opened = true;
+            }
+            catch (Exception ex) when (ex is NpgsqlException or SocketException)
+            {
+                lastEx = ex;
+        var delay = TimeSpan.FromMilliseconds(Math.Min(200 * Math.Pow(1.25, attempt), 1750));
+        await Task.Delay(delay);
+            }
+        }
+
+        if (!opened)
+        {
+            throw new InvalidOperationException(
+                $"Could not open Postgres connection after {attempt} attempts (last error: {lastEx?.GetType().Name}: {lastEx?.Message}). Ensure docker compose service 'postgres' is up and port 5432 is free (no conflicting local Postgres).",
+                lastEx
+            );
+        }
+
+        // Vector is optional; migration should succeed without it.
 
         var tenantDb = $"tansu_test_{Guid.NewGuid():N}";
 
@@ -71,7 +101,8 @@ public class EfMigrationsIntegrationTests
         await check.OpenAsync();
         await using (var cmd = check.CreateCommand())
         {
-            cmd.CommandText = @"SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='public' AND table_name IN ('collections','documents');";
+            cmd.CommandText =
+                @"SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='public' AND table_name IN ('collections','documents');";
             var count = (long)(await cmd.ExecuteScalarAsync() ?? 0L);
             count.Should().Be(2);
         }
@@ -84,7 +115,8 @@ public class EfMigrationsIntegrationTests
             // Terminate connections then drop
             await using (var term = admin2.CreateCommand())
             {
-                term.CommandText = @"SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = @db AND pid <> pg_backend_pid();";
+                term.CommandText =
+                    @"SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = @db AND pid <> pg_backend_pid();";
                 term.Parameters.AddWithValue("@db", tenantDb);
                 await term.ExecuteNonQueryAsync();
             }

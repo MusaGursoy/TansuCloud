@@ -1,6 +1,7 @@
 // Tansu.Cloud Public Repository:    https://github.com/MusaGursoy/TansuCloud
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 
 namespace TansuCloud.Database.EF;
 
@@ -10,13 +11,20 @@ namespace TansuCloud.Database.EF;
 /// </summary>
 public class TansuDbContext(DbContextOptions<TansuDbContext> options) : DbContext(options)
 {
-    // Logical entities (kept minimal; vector column created via migration SQL)
     public DbSet<Collection> Collections => Set<Collection>();
     public DbSet<Document> Documents => Set<Document>();
     public DbSet<OutboxEvent> OutboxEvents => Set<OutboxEvent>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
+        // Detect InMemory provider; it cannot map JsonDocument directly, so apply a simple string converter.
+        var provider = Database.ProviderName;
+        var isInMemory =
+            provider != null && provider.Contains("InMemory", StringComparison.OrdinalIgnoreCase);
+        var jsonConverter = new ValueConverter<JsonDocument?, string?>(
+            v => v == null ? null : v.RootElement.GetRawText(),
+            v => v == null ? null : JsonDocument.Parse(v, new JsonDocumentOptions())
+        );
         // Collections
         modelBuilder.Entity<Collection>(eb =>
         {
@@ -34,7 +42,10 @@ public class TansuDbContext(DbContextOptions<TansuDbContext> options) : DbContex
             eb.HasKey(x => x.Id);
             eb.Property(x => x.Id).HasColumnName("id");
             eb.Property(x => x.CollectionId).HasColumnName("collection_id");
-            eb.Property(x => x.Content).HasColumnName("content").HasColumnType("jsonb"); // map JsonDocument to jsonb
+            if (isInMemory)
+                eb.Property(x => x.Content).HasColumnName("content").HasConversion(jsonConverter);
+            else
+                eb.Property(x => x.Content).HasColumnName("content").HasColumnType("jsonb"); // map JsonDocument to jsonb
             eb.Property(x => x.CreatedAt).HasColumnName("created_at");
             eb.HasOne<Collection>()
                 .WithMany()
@@ -51,12 +62,16 @@ public class TansuDbContext(DbContextOptions<TansuDbContext> options) : DbContex
             eb.Property(x => x.Id).HasColumnName("id");
             eb.Property(x => x.OccurredAt).HasColumnName("occurred_at");
             eb.Property(x => x.Type).HasColumnName("type");
-            eb.Property(x => x.Payload).HasColumnName("payload").HasColumnType("jsonb");
+            if (isInMemory)
+                eb.Property(x => x.Payload).HasColumnName("payload").HasConversion(jsonConverter);
+            else
+                eb.Property(x => x.Payload).HasColumnName("payload").HasColumnType("jsonb");
             eb.Property(x => x.Status).HasColumnName("status");
             eb.Property(x => x.Attempts).HasColumnName("attempts");
             eb.Property(x => x.NextAttemptAt).HasColumnName("next_attempt_at");
             eb.Property(x => x.IdempotencyKey).HasColumnName("idempotency_key");
-            eb.HasIndex(x => new { x.Status, x.NextAttemptAt }).HasDatabaseName("ix_outbox_status_next");
+            eb.HasIndex(x => new { x.Status, x.NextAttemptAt })
+                .HasDatabaseName("ix_outbox_status_next");
         });
     } // End of Method OnModelCreating
 } // End of Class TansuDbContext

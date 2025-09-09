@@ -3,6 +3,7 @@
 # Build and publish
 FROM mcr.microsoft.com/dotnet/sdk:9.0 AS build
 ARG BUILD_CONFIGURATION=Release
+ARG CACHE_BUST=2025-09-04-1
 WORKDIR /src
 COPY ["TansuCloud.Dashboard/TansuCloud.Dashboard.csproj", "TansuCloud.Dashboard/"]
 RUN dotnet restore "./TansuCloud.Dashboard/TansuCloud.Dashboard.csproj"

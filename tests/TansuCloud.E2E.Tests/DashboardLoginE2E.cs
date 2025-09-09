@@ -6,6 +6,7 @@ using Microsoft.Playwright;
 
 namespace TansuCloud.E2E.Tests;
 
+[Collection("Global")]
 public class DashboardLoginE2E : IAsyncLifetime
 {
     private static string GetGatewayBaseUrl()
@@ -17,9 +18,13 @@ public class DashboardLoginE2E : IAsyncLifetime
             {
                 var uri = new Uri(env);
                 // Normalize localhost/::1 to IPv4 loopback for Kestrel bindings
-                var host = (uri.Host.Equals("localhost", StringComparison.OrdinalIgnoreCase) || uri.Host == "::1")
-                    ? "127.0.0.1"
-                    : uri.Host;
+                var host =
+                    (
+                        uri.Host.Equals("localhost", StringComparison.OrdinalIgnoreCase)
+                        || uri.Host == "::1"
+                    )
+                        ? "127.0.0.1"
+                        : uri.Host;
                 var builder = new UriBuilder(uri) { Host = host };
                 return builder.Uri.ToString().TrimEnd('/');
             }
@@ -29,8 +34,8 @@ public class DashboardLoginE2E : IAsyncLifetime
                 return env.TrimEnd('/');
             }
         }
-    // Prefer IPv4 loopback to avoid cases where localhost resolves to ::1 but Kestrel is bound to IPv4 only
-    return "http://127.0.0.1:8080";
+        // Prefer IPv4 loopback to avoid cases where localhost resolves to ::1 but Kestrel is bound to IPv4 only
+        return "http://127.0.0.1:8080";
     }
 
     private IPlaywright? _playwright;
@@ -46,7 +51,17 @@ public class DashboardLoginE2E : IAsyncLifetime
             new BrowserTypeLaunchOptions
             {
                 Headless = true,
-                Args = new[] { "--ignore-certificate-errors" }
+                Args = new[]
+                {
+                    "--ignore-certificate-errors",
+                    // Disable system proxy which may break localhost/loopback in some environments
+                    "--no-proxy-server",
+                    // Force direct connection and bypass any env/system proxies
+                    "--proxy-server=direct://",
+                    "--proxy-bypass-list=*",
+                    // Force DNS mapping for common dev hostnames to IPv4 loopback for stability
+                    "--host-resolver-rules=MAP localhost 127.0.0.1,MAP gateway 127.0.0.1,MAP host.docker.internal 127.0.0.1,EXCLUDE nothing"
+                }
             }
         );
         _context = await _browser.NewContextAsync(
@@ -71,15 +86,15 @@ public class DashboardLoginE2E : IAsyncLifetime
         var api = await _playwright!.APIRequest.NewContextAsync(
             new APIRequestNewContextOptions { IgnoreHTTPSErrors = true }
         );
-    async Task<bool> ReachableAsync(string url, bool okOnly)
+        async Task<bool> ReachableAsync(string url, bool okOnly)
         {
             try
             {
-        var res = await api.GetAsync(url, new() { MaxRedirects = 0 });
-                    if (okOnly)
-                        return res.Status == 200;
-                    // For readiness, accept 2xx/3xx, and also auth challenges (401/403)
-                    return (res.Status is >= 200 and < 400) || res.Status is 401 or 403;
+                var res = await api.GetAsync(url, new() { MaxRedirects = 0 });
+                if (okOnly)
+                    return res.Status == 200;
+                // For readiness, accept 2xx/3xx, and also auth challenges (401/403)
+                return (res.Status is >= 200 and < 400) || res.Status is 401 or 403;
             }
             catch
             {
@@ -101,9 +116,9 @@ public class DashboardLoginE2E : IAsyncLifetime
         }
 
         // Gateway root: try HTTPS then HTTP; accept 2xx/3xx as ready
-    var baseUrl = GetGatewayBaseUrl();
-    await WaitUntilAsync(async () => await ReachableAsync($"{baseUrl}/", okOnly: false));
-    // Identity discovery: require 200; try HTTPS then HTTP via gateway
+        var baseUrl = GetGatewayBaseUrl();
+        await WaitUntilAsync(async () => await ReachableAsync($"{baseUrl}/", okOnly: false));
+        // Identity discovery: require 200; try HTTPS then HTTP via gateway
         await WaitUntilAsync(async () =>
         {
             var disco = await ReachableAsync(
@@ -112,17 +127,14 @@ public class DashboardLoginE2E : IAsyncLifetime
             );
             return disco;
         });
-    // Ensure the dashboard route itself is reachable (accept 2xx/3xx for initial redirect to Identity)
+        // Ensure the dashboard route itself is reachable (accept 2xx/3xx for initial redirect to Identity)
         // Ensure the dashboard route itself is reachable (accept 2xx/3xx or 401/403 for initial challenge/redirect to Identity)
-        await WaitUntilAsync(async () => await ReachableAsync($"{baseUrl}/dashboard", okOnly: false));
+        await WaitUntilAsync(
+            async () => await ReachableAsync($"{baseUrl}/dashboard", okOnly: false)
+        );
         // Note: don't preflight-check Blazor framework asset here; it may 404 before first app access.
 
-        // Warm up browser connection to the gateway over HTTP
-        await page.GotoAsync(
-            $"{baseUrl}/identity/.well-known/openid-configuration",
-            new PageGotoOptions { WaitUntil = WaitUntilState.Load }
-        );
-        await page.WaitForTimeoutAsync(300);
+        // Browser warm-up is unnecessary here; readiness was already probed via API client.
 
         // Collect diagnostics as early as possible
         var responses = new List<IResponse>();
@@ -143,14 +155,57 @@ public class DashboardLoginE2E : IAsyncLifetime
                     wsConnected = true;
                 }
             }
-            catch { /* ignore */ }
+            catch
+            { /* ignore */
+            }
         };
 
-        // 1) Navigate to the dashboard via the Gateway
-        await page.GotoAsync(
-            $"{baseUrl}/dashboard",
-            new PageGotoOptions { WaitUntil = WaitUntilState.DOMContentLoaded }
-        );
+        // 1) Navigate to the dashboard via the Gateway with resilient host fallbacks
+        async Task NavigateWithFallbackAsync(string urlBase)
+        {
+            var tried = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var host in new[] { "127.0.0.1", "localhost", "127.0.0.1" })
+            {
+                var candidate = urlBase;
+                try
+                {
+                    var uri = new Uri(urlBase);
+                    var builder = new UriBuilder(uri) { Host = host };
+                    candidate = builder.Uri.ToString().TrimEnd('/');
+                }
+                catch
+                { /* leave as-is */
+                }
+
+                if (!tried.Add(candidate))
+                    continue;
+
+                try
+                {
+                    await page.GotoAsync(
+                        $"{candidate}/dashboard",
+                        new PageGotoOptions { WaitUntil = WaitUntilState.DOMContentLoaded }
+                    );
+                    // Success
+                    baseUrl = candidate; // use for the rest of the test
+                    return;
+                }
+                catch (Microsoft.Playwright.PlaywrightException ex)
+                {
+                    var msg = ex.Message ?? string.Empty;
+                    if (!msg.Contains("ERR_NAME_NOT_RESOLVED", StringComparison.OrdinalIgnoreCase))
+                    {
+                        throw; // different failure; bubble up
+                    }
+                    // else try next host
+                }
+            }
+            throw new Microsoft.Playwright.PlaywrightException(
+                $"Failed to navigate to {urlBase}/dashboard via all host fallbacks (localhost/127.0.0.1)"
+            );
+        }
+
+        await NavigateWithFallbackAsync(baseUrl);
 
         // If redirected to Identity/Authorize or Login, perform login
         var emailSelector = "input[name='Input.Email'], #Input_Email, input[type=email]";
@@ -200,18 +255,23 @@ public class DashboardLoginE2E : IAsyncLifetime
                 try
                 {
                     var uri = new Uri(page.Url);
-                    if (uri.AbsolutePath.StartsWith("/Identity/Account/Login", StringComparison.OrdinalIgnoreCase))
+                    if (
+                        uri.AbsolutePath.StartsWith(
+                            "/Identity/Account/Login",
+                            StringComparison.OrdinalIgnoreCase
+                        )
+                    )
                     {
-                        var rebuilt =
-                            $"{baseUrl}/identity/Identity/Account/Login"
-                            + uri.Query;
+                        var rebuilt = $"{baseUrl}/identity/Identity/Account/Login" + uri.Query;
                         await page.GotoAsync(
                             rebuilt,
                             new PageGotoOptions { WaitUntil = WaitUntilState.DOMContentLoaded }
                         );
                     }
                 }
-                catch { /* ignore */ }
+                catch
+                { /* ignore */
+                }
             }
 
             if (await page.QuerySelectorAsync(emailSelector) is not null)
@@ -277,6 +337,34 @@ public class DashboardLoginE2E : IAsyncLifetime
             await heading.WaitForAsync(new LocatorWaitForOptions { Timeout = 15000 });
         }
         var h1 = await heading.InnerTextAsync();
+        if (!h1.Contains("Hello, world!", StringComparison.OrdinalIgnoreCase))
+        {
+            // Dump last 15 console messages and relevant network responses for diagnostics before failing
+            Console.WriteLine("[Diagnostics] Unexpected H1 content: '" + h1 + "'");
+            try
+            {
+                var consoleDump = await page.EvaluateAsync<string>(
+                    @"() => window.__tansuConsoleMessages ? window.__tansuConsoleMessages.join('\n') : ''"
+                );
+                if (!string.IsNullOrWhiteSpace(consoleDump))
+                {
+                    Console.WriteLine("[Diagnostics] Browser console messages:\n" + consoleDump);
+                }
+            }
+            catch { }
+            try
+            {
+                var html = await page.ContentAsync();
+                var dir = Path.Combine(Directory.GetCurrentDirectory(), "test-artifacts");
+                Directory.CreateDirectory(dir);
+                var path = Path.Combine(dir, "dashboard-login-failure.html");
+                File.WriteAllText(path, html);
+                Console.WriteLine("[Diagnostics] Saved failure HTML to " + path);
+            }
+            catch
+            { /* ignore */
+            }
+        }
         h1.Should().Contain("Hello, world!");
 
         // 3) Assert hashed CSS and framework script loaded successfully
@@ -299,7 +387,12 @@ public class DashboardLoginE2E : IAsyncLifetime
         responses
             .Should()
             .Contain(r => r.Url.EndsWith("/_framework/blazor.web.js") && r.Status == 200);
-        (wsConnected || messages.Any(m => m.Contains("WebSocket connected", StringComparison.OrdinalIgnoreCase)))
+        (
+            wsConnected
+            || messages.Any(m =>
+                m.Contains("WebSocket connected", StringComparison.OrdinalIgnoreCase)
+            )
+        )
             .Should()
             .BeTrue("Blazor Server should establish a WebSocket through the Gateway");
 
@@ -318,9 +411,9 @@ public class DashboardLoginE2E : IAsyncLifetime
         var api = await _playwright!.APIRequest.NewContextAsync(
             new APIRequestNewContextOptions { IgnoreHTTPSErrors = true }
         );
-    var db = await api.GetAsync($"{GetGatewayBaseUrl()}/db/health");
+        var db = await api.GetAsync($"{GetGatewayBaseUrl()}/db/health");
         db.Status.Should().Be(401);
-    var storage = await api.GetAsync($"{GetGatewayBaseUrl()}/storage/health");
+        var storage = await api.GetAsync($"{GetGatewayBaseUrl()}/storage/health");
         storage.Status.Should().Be(401);
     }
 }

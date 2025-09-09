@@ -3,7 +3,9 @@ using System.Text.Json;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Caching.Hybrid;
 using Microsoft.Extensions.Primitives;
+using TansuCloud.Database.Caching;
 using TansuCloud.Database.EF;
 using TansuCloud.Database.Services;
 
@@ -14,12 +16,25 @@ namespace TansuCloud.Database.Controllers;
 public sealed class DocumentsController(
     ITenantDbContextFactory factory,
     ILogger<DocumentsController> logger,
-    TansuCloud.Database.Outbox.IOutboxProducer outbox
+    TansuCloud.Database.Outbox.IOutboxProducer outbox,
+    Microsoft.Extensions.Caching.Hybrid.HybridCache? cache = null,
+    ITenantCacheVersion? versions = null
 ) : ControllerBase
 {
     private readonly ITenantDbContextFactory _factory = factory;
     private readonly ILogger<DocumentsController> _logger = logger;
     private readonly TansuCloud.Database.Outbox.IOutboxProducer _outbox = outbox;
+    private readonly Microsoft.Extensions.Caching.Hybrid.HybridCache? _cache = cache;
+    private readonly ITenantCacheVersion? _versions = versions;
+
+    private string Tenant() => Request.Headers["X-Tansu-Tenant"].ToString();
+
+    private string Key(params string[] parts)
+    {
+        var tenant = Tenant();
+        var ver = _versions?.Get(tenant) ?? 0;
+        return $"t:{tenant}:v{ver}:db:documents:{string.Join(':', parts)}";
+    }
 
     // Small helpers for conditional requests
     private static bool WeakETagEquals(string? a, string? b)
@@ -156,6 +171,54 @@ public sealed class DocumentsController(
             return StatusCode(StatusCodes.Status304NotModified);
         }
 
+        // Try HybridCache for list page
+        var cacheKey = Key(
+            "list",
+            collectionId?.ToString() ?? string.Empty,
+            page.ToString(),
+            pageSize.ToString(),
+            sort,
+            dir,
+            createdAfter?.ToUnixTimeMilliseconds().ToString() ?? string.Empty,
+            createdBefore?.ToUnixTimeMilliseconds().ToString() ?? string.Empty,
+            etag
+        );
+        if (_cache is not null)
+        {
+            var cached = await _cache.GetOrCreateAsync(
+                cacheKey,
+                async token =>
+                {
+                    var list = await q.Skip((page - 1) * pageSize)
+                        .Take(pageSize)
+                        .Select(d => new
+                        {
+                            d.Id,
+                            d.CollectionId,
+                            d.Content,
+                            d.CreatedAt
+                        })
+                        .ToListAsync(ct);
+                    var dto = list.Select(x => new DocumentDto(
+                            x.Id,
+                            x.CollectionId,
+                            ToElement(x.Content),
+                            x.CreatedAt
+                        ))
+                        .ToList();
+                    return new
+                        {
+                            total,
+                            page,
+                            pageSize,
+                            items = dto
+                        } as object;
+                }
+            );
+            Response.Headers.ETag = etag;
+            return Ok(cached);
+        }
+
         var items = await q.Skip((page - 1) * pageSize)
             .Take(pageSize)
             .Select(d => new
@@ -186,6 +249,42 @@ public sealed class DocumentsController(
     public async Task<ActionResult<DocumentDto>> Get([FromRoute] Guid id, CancellationToken ct)
     {
         await using var db = await _factory.CreateAsync(HttpContext, ct);
+        var cacheKeyItem = Key("item", id.ToString());
+        if (_cache is not null)
+        {
+            var cached = await _cache.GetOrCreateAsync(
+                cacheKeyItem,
+                async token =>
+                {
+                    var e0 = await db
+                        .Documents.AsNoTracking()
+                        .FirstOrDefaultAsync(x => x.Id == id, ct);
+                    return e0 is null
+                        ? null
+                        : new DocumentDto(
+                            e0.Id,
+                            e0.CollectionId,
+                            ToElement(e0.Content),
+                            e0.CreatedAt
+                        );
+                }
+            );
+            if (cached is null)
+                return NotFound();
+            var etag0 = ETagHelper.ComputeWeakETag(
+                cached.id.ToString(),
+                cached.createdAt.ToUnixTimeMilliseconds().ToString()
+            );
+            var inm0 = Request.Headers.IfNoneMatch;
+            if (!StringValues.IsNullOrEmpty(inm0) && AnyIfNoneMatchMatches(inm0, etag0))
+            {
+                Response.Headers.ETag = etag0;
+                return StatusCode(StatusCodes.Status304NotModified);
+            }
+            Response.Headers.ETag = etag0;
+            return Ok(cached);
+        }
+
         var e = await db.Documents.AsNoTracking().FirstOrDefaultAsync(x => x.Id == id, ct);
         if (e is null)
             return NotFound();
@@ -301,6 +400,11 @@ public sealed class DocumentsController(
         }
         catch { }
         await db.SaveChangesAsync(ct);
+        try
+        {
+            _versions?.Increment(Tenant());
+        }
+        catch { }
 
         // Optional: upsert vector embedding if provided and column exists
         if (input.embedding is { Length: > 0 })
@@ -378,6 +482,11 @@ public sealed class DocumentsController(
         }
         catch { }
         await db.SaveChangesAsync(ct);
+        try
+        {
+            _versions?.Increment(Tenant());
+        }
+        catch { }
         if (input.embedding is { Length: > 0 })
         {
             try
@@ -434,6 +543,11 @@ public sealed class DocumentsController(
         }
         catch { }
         await db.SaveChangesAsync(ct);
+        try
+        {
+            _versions?.Increment(Tenant());
+        }
+        catch { }
         return NoContent();
     } // End of Method Delete
 

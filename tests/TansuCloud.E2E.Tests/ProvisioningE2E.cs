@@ -32,9 +32,13 @@ public class ProvisioningE2E
             try
             {
                 var uri = new Uri(env);
-                var host = (uri.Host.Equals("localhost", StringComparison.OrdinalIgnoreCase) || uri.Host == "::1")
-                    ? "127.0.0.1"
-                    : uri.Host;
+                var host =
+                    (
+                        uri.Host.Equals("localhost", StringComparison.OrdinalIgnoreCase)
+                        || uri.Host == "::1"
+                    )
+                        ? "127.0.0.1"
+                        : uri.Host;
                 var builder = new UriBuilder(uri) { Host = host };
                 return builder.Uri.ToString().TrimEnd('/');
             }
@@ -77,10 +81,7 @@ public class ProvisioningE2E
         var baseUrl = GetGatewayBaseUrl();
 
         // 1) Get access token via client_credentials through the gateway
-        var tokenReq = new HttpRequestMessage(
-            HttpMethod.Post,
-            $"{baseUrl}/identity/connect/token"
-        );
+        var tokenReq = new HttpRequestMessage(HttpMethod.Post, $"{baseUrl}/identity/connect/token");
         tokenReq.Content = new StringContent(
             "grant_type=client_credentials&client_id=tansu-dashboard&client_secret=dev-secret&scope=db.write%20admin.full",
             Encoding.UTF8,

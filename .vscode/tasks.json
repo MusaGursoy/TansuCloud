@@ -1,108 +1,117 @@
 {
-  // Convenience tasks for local runs
-  "version": "2.0.0",
-  "tasks": [
-    {
-      "label": "Run all E2E tests",
-      "type": "shell",
-      "command": "dotnet test ./tests/TansuCloud.E2E.Tests/TansuCloud.E2E.Tests.csproj -c Debug",
-      "group": "build",
-      "problemMatcher": []
-    }
-  ]
-}
-{
 	"version": "2.0.0",
 	"tasks": [
-		{
-			"label": "Run alias test",
-			"type": "shell",
-			"command": "dotnet",
-			"args": [
-				"test",
-				"c:\\Users\\gurso\\Documents\\NET\\TansuCloud\\tests\\TansuCloud.E2E.Tests\\TansuCloud.E2E.Tests.csproj",
-				"-c",
-				"Debug",
-				"--filter",
-				"FullyQualifiedName~TansuCloud.E2E.Tests.GatewayAliasTests.Gateway_LoginAlias_Returns_LoginForm"
-			],
-			"isBackground": false,
-			"problemMatcher": [
-				"$msCompile"
-			],
-			"group": "build"
-		},
-		{
-			"label": "Run alias test (no warning)",
-			"type": "shell",
-			"command": "dotnet",
-			"args": [
-				"test",
-				"c:\\Users\\gurso\\Documents\\NET\\TansuCloud\\tests\\TansuCloud.E2E.Tests\\TansuCloud.E2E.Tests.csproj",
-				"-c",
-				"Debug",
-				"--filter",
-				"FullyQualifiedName~TansuCloud.E2E.Tests.GatewayAliasTests.Gateway_LoginAlias_Returns_LoginForm"
-			],
-			"isBackground": false,
-			"problemMatcher": [
-				"$msCompile"
-			],
-			"group": "build"
-		},
-		{
-			"label": "Build TansuCloud.sln (Debug)",
-			"type": "shell",
-			"command": "dotnet build \"c:\\Users\\gurso\\Documents\\NET\\TansuCloud\\TansuCloud.sln\" -c Debug"
-		},
-		{
-			"label": "Test Task 8 E2E and config",
-			"type": "shell",
-			"command": "dotnet test \"c:\\Users\\gurso\\Documents\\NET\\TansuCloud\\tests\\TansuCloud.E2E.Tests\\TansuCloud.E2E.Tests.csproj\" -c Debug --filter FullyQualifiedName~TansuCloud.E2E.Tests.HealthEndpointsE2E|FullyQualifiedName~TansuCloud.E2E.Tests.OpenTelemetryConfigTests"
-		},
-		{
-			"label": "Test Task 8 E2E and config (retry filter)",
-			"type": "shell",
-			"command": "dotnet test \"c:\\Users\\gurso\\Documents\\NET\\TansuCloud\\tests\\TansuCloud.E2E.Tests\\TansuCloud.E2E.Tests.csproj\" -c Debug --filter \"FullyQualifiedName~TansuCloud.E2E.Tests.HealthEndpointsE2E|FullyQualifiedName~TansuCloud.E2E.Tests.OpenTelemetryConfigTests\""
-		},
-		{
-			"label": "Test Task 8 E2E (class by class)",
-			"type": "shell",
-			"command": "dotnet test \"c:\\Users\\gurso\\Documents\\NET\\TansuCloud\\tests\\TansuCloud.E2E.Tests\\TansuCloud.E2E.Tests.csproj\" -c Debug --filter FullyQualifiedName~TansuCloud.E2E.Tests.HealthEndpointsE2E"
-		},
-		{
-			"label": "Test HealthEndpoints only",
-			"type": "shell",
-			"command": "dotnet test \"c:\\Users\\gurso\\Documents\\NET\\TansuCloud\\tests\\TansuCloud.E2E.Tests\\TansuCloud.E2E.Tests.csproj\" -c Debug --filter FullyQualifiedName~TansuCloud.E2E.Tests.HealthEndpointsE2E"
-		},
-		{
-			"label": "Test OpenTelemetryConfig only",
-			"type": "shell",
-			"command": "dotnet test \"c:\\Users\\gurso\\Documents\\NET\\TansuCloud\\tests\\TansuCloud.E2E.Tests\\TansuCloud.E2E.Tests.csproj\" -c Debug --filter FullyQualifiedName~TansuCloud.E2E.Tests.OpenTelemetryConfigTests"
-		},
-		{
-			"label": "Test HealthEndpoints only (retry)",
-			"type": "shell",
-			"command": "dotnet test \"c:\\Users\\gurso\\Documents\\NET\\TansuCloud\\tests\\TansuCloud.E2E.Tests\\TansuCloud.E2E.Tests.csproj\" -c Debug --filter FullyQualifiedName~TansuCloud.E2E.Tests.HealthEndpointsE2E"
-		},
-		{
-			"label": "Run HealthEndpointsE2E tests only (final)",
-			"type": "shell",
-			"command": "dotnet test \"c:\\Users\\gurso\\Documents\\NET\\TansuCloud\\tests\\TansuCloud.E2E.Tests\\TansuCloud.E2E.Tests.csproj\" -c Debug --filter \"FullyQualifiedName~TansuCloud.E2E.Tests.HealthEndpointsE2E\""
-		},
-		{
-			"label": "Run all E2E tests",
-			"type": "shell",
-			"command": "dotnet test \"c:\\Users\\gurso\\Documents\\NET\\TansuCloud\\tests\\TansuCloud.E2E.Tests\\TansuCloud.E2E.Tests.csproj\" -c Debug"
-		},
 		{
 			"label": "build-sln",
 			"type": "shell",
 			"command": "dotnet build .\\TansuCloud.sln -c Debug",
-			"isBackground": false,
+			"group": "build",
 			"problemMatcher": [
 				"$msCompile"
 			],
+			"isBackground": false
+		},
+		{
+			"label": "Run all E2E tests",
+			"type": "shell",
+			"command": "dotnet test .\\tests\\TansuCloud.E2E.Tests\\TansuCloud.E2E.Tests.csproj -c Debug",
+			"group": "build"
+		},
+		{
+			"label": "Run health E2E tests",
+			"type": "shell",
+			"command": "dotnet test .\\tests\\TansuCloud.E2E.Tests\\TansuCloud.E2E.Tests.csproj -c Debug --filter FullyQualifiedName~TansuCloud.E2E.Tests.HealthEndpointsE2E",
+			"group": "build"
+		},
+		{
+			"label": "dev: up",
+			"type": "shell",
+			"command": "$ErrorActionPreference='Stop'; dotnet build .\\TansuCloud.sln -c Debug; Start-Job -Name tansu-identity -ScriptBlock { dotnet run --no-build --project .\\TansuCloud.Identity\\TansuCloud.Identity.csproj -c Debug } | Out-Null; Start-Job -Name tansu-dashboard -ScriptBlock { dotnet run --no-build --project .\\TansuCloud.Dashboard\\TansuCloud.Dashboard.csproj -c Debug } | Out-Null; Start-Job -Name tansu-database -ScriptBlock { dotnet run --no-build --project .\\TansuCloud.Database\\TansuCloud.Database.csproj -c Debug } | Out-Null; Start-Job -Name tansu-storage -ScriptBlock { dotnet run --no-build --project .\\TansuCloud.Storage\\TansuCloud.Storage.csproj -c Debug } | Out-Null; Start-Sleep -Seconds 2; dotnet run --no-build --project .\\TansuCloud.Gateway\\TansuCloud.Gateway.csproj -c Debug",
+			"group": "build",
+			"isBackground": true
+		},
+		{
+			"label": "dev: down",
+			"type": "shell",
+			"command": "$jobs = Get-Job | Where-Object { $_.Name -like 'tansu-*' }; if ($jobs) { $jobs | Stop-Job -Force; $jobs | Remove-Job }; Get-Process -Name 'TansuCloud.Gateway' -ErrorAction SilentlyContinue | Stop-Process -Force",
+			"group": "build"
+		},
+		{
+			"label": "PgCat: SHOW DATABASES",
+			"type": "shell",
+			"command": "pwsh",
+			"args": [
+				"-NoProfile",
+				"-Command",
+				"$ErrorActionPreference='Stop'; $u=$env:POSTGRES_USER; $p=$env:POSTGRES_PASSWORD; if (-not $u -or -not $p) { throw 'Set POSTGRES_USER and POSTGRES_PASSWORD in your environment or .env' }; $cmd=\"PGPASSWORD=$p psql -h tansu-pgcat -p 6432 -U $u -d postgres -c 'SHOW DATABASES;'\"; docker exec tansudbpg bash -lc $cmd"
+			]
+		},
+		{
+			"label": "Provision tenant via Gateway (dev bypass)",
+			"type": "shell",
+			"command": "pwsh",
+			"args": [
+				"-NoProfile",
+				"-Command",
+				"Invoke-RestMethod -Method Post -Uri 'http://localhost/db/api/provisioning/tenants' -Headers @{ 'X-Provision-Key'='letmein'; 'Content-Type'='application/json' } -Body '{\"tenantId\":\"acme-dev\",\"displayName\":\"Acme Dev\"}' | ConvertTo-Json -Depth 5"
+			]
+		},
+		{
+			"label": "compose: up",
+			"type": "shell",
+			"command": "pwsh",
+			"args": [
+				"-NoProfile",
+				"-Command",
+				"$ErrorActionPreference='Stop'; docker compose up -d --build"
+			],
+			"group": "build"
+		},
+		{
+			"label": "compose: down",
+			"type": "shell",
+			"command": "pwsh",
+			"args": [
+				"-NoProfile",
+				"-Command",
+				"docker compose down -v"
+			],
+			"group": "build"
+		},
+		{
+			"label": "compose: logs (gateway)",
+			"type": "shell",
+			"command": "pwsh",
+			"args": [
+				"-NoProfile",
+				"-Command",
+				"docker compose logs -f gateway"
+			],
+			"isBackground": true
+		},
+		{
+			"label": "PgCat: health (process present)",
+			"type": "shell",
+			"command": "pwsh",
+			"args": [
+				"-NoProfile",
+				"-Command",
+				"$out = docker exec tansu-pgcat sh -lc 'pgrep pgcat >/dev/null 2>&1; echo $?' ; if ($out -eq 0) { Write-Host 'pgcat running' } else { throw 'pgcat not running' }"
+			],
+			"group": "build"
+		},
+		{
+			"label": "compose: up infra (pg + redis + pgcat)",
+			"type": "shell",
+			"command": "docker compose up -d postgres redis pgcat pgcat-config",
+			"isBackground": false,
+			"group": "build"
+		},
+		{
+			"label": "compose: up apps",
+			"type": "shell",
+			"command": "docker compose up -d identity dashboard db storage gateway",
+			"isBackground": false,
 			"group": "build"
 		},
 		{
@@ -111,71 +120,53 @@
 			"command": "dotnet test .\\tests\\TansuCloud.E2E.Tests\\TansuCloud.E2E.Tests.csproj -c Debug --filter FullyQualifiedName~TansuCloud.E2E.Tests.HealthEndpointsE2E"
 		},
 		{
-			"label": "dev: up",
+			"label": "compose: validate config",
 			"type": "shell",
-			"command": "$ErrorActionPreference='Stop'; dotnet build .\\TansuCloud.sln -c Debug; Start-Job -Name tansu-identity -ScriptBlock { dotnet run --no-build --project .\\TansuCloud.Identity\\TansuCloud.Identity.csproj -c Debug } | Out-Null; Start-Job -Name tansu-dashboard -ScriptBlock { dotnet run --no-build --project .\\TansuCloud.Dashboard\\TansuCloud.Dashboard.csproj -c Debug } | Out-Null; Start-Job -Name tansu-database -ScriptBlock { dotnet run --no-build --project .\\TansuCloud.Database\\TansuCloud.Database.csproj -c Debug } | Out-Null; Start-Job -Name tansu-storage -ScriptBlock { dotnet run --no-build --project .\\TansuCloud.Storage\\TansuCloud.Storage.csproj -c Debug } | Out-Null; Start-Sleep -Seconds 2; dotnet run --no-build --project .\\TansuCloud.Gateway\\TansuCloud.Gateway.csproj -c Debug",
-			"isBackground": true,
+			"command": "$ErrorActionPreference='Stop'; $env:POSTGRES_USER='postgres'; $env:POSTGRES_PASSWORD='postgres'; $env:PGCAT_ADMIN_USER='admin'; $env:PGCAT_ADMIN_PASSWORD='admin'; $env:DASHBOARD_CLIENT_SECRET='dev-secret'; $env:PUBLIC_BASE_URL='http://gateway:8080'; docker compose -f .\\docker-compose.yml config | Out-String -Width 4096"
+		},
+		{
+			"label": "Run Task 11 verification tests",
+			"type": "shell",
+			"command": "dotnet test .\\tests\\TansuCloud.E2E.Tests\\TansuCloud.E2E.Tests.csproj -c Debug --filter \"FullyQualifiedName~TansuCloud.E2E.Tests.GatewayAliasTests|FullyQualifiedName~TansuCloud.E2E.Tests.ProvisioningE2E\""
+		},
+		{
+			"label": "Run alias test (ad-hoc)",
+			"type": "shell",
+			"command": "dotnet test .\\tests\\TansuCloud.E2E.Tests\\TansuCloud.E2E.Tests.csproj -c Debug --filter FullyQualifiedName~TansuCloud.E2E.Tests.GatewayAliasTests.Gateway_LoginAlias_Returns_LoginForm"
+		},
+		{
+			"label": "Run alias test",
+			"type": "shell",
+			"command": "dotnet",
+			"args": [
+				"test",
+				"tests/TansuCloud.E2E.Tests/TansuCloud.E2E.Tests.csproj",
+				"-c",
+				"Debug",
+				"--filter",
+				"FullyQualifiedName~TansuCloud.E2E.Tests.GatewayAliasTests.Gateway_LoginAlias_Returns_LoginForm"
+			],
 			"group": "build"
 		},
 		{
-			"label": "dev: down",
+			"label": "Run provisioning test",
 			"type": "shell",
-			"command": "$jobs = Get-Job | Where-Object { $_.Name -like 'tansu-*' }; if ($jobs) { $jobs | Stop-Job -Force; $jobs | Remove-Job }; Get-Process -Name 'TansuCloud.Gateway' -ErrorAction SilentlyContinue | Stop-Process -Force",
-			"isBackground": false,
-			"group": "build"
+			"command": "dotnet test .\\tests\\TansuCloud.E2E.Tests\\TansuCloud.E2E.Tests.csproj -c Debug --filter FullyQualifiedName~TansuCloud.E2E.Tests.ProvisioningE2E.Provision_Tenant_Idempotent"
 		},
 		{
-			"label": "dev: up (foreground quick)",
+			"label": "Run dashboard WS soak (50x, 3min)",
 			"type": "shell",
-			"command": "$ErrorActionPreference='Stop'; dotnet build .\\TansuCloud.sln -c Debug; dotnet run --no-build --project .\\TansuCloud.Gateway\\TansuCloud.Gateway.csproj -c Debug",
-			"isBackground": false,
+			"command": "dotnet test .\\tests\\TansuCloud.E2E.Tests\\TansuCloud.E2E.Tests.csproj -c Debug --filter FullyQualifiedName~TansuCloud.E2E.Tests.DashboardWebsocketSoak.Soak_50_Sessions_3_Minutes",
+			"options": {
+				"env": {
+					"RUN_SOAK": "1",
+					"SOAK_SESSIONS": "50",
+					"SOAK_MINUTES": "3",
+					"GATEWAY_BASE_URL": "http://localhost:8080"
+				}
+			},
 			"group": "build"
-		},
-		{
-			"label": "rebuild and dev up",
-			"type": "shell",
-			"command": "$ErrorActionPreference='Stop'; dotnet build .\\TansuCloud.sln -c Debug; Start-Job -Name tansu-identity -ScriptBlock { dotnet run --no-build --project .\\TansuCloud.Identity\\TansuCloud.Identity.csproj -c Debug } | Out-Null; Start-Job -Name tansu-dashboard -ScriptBlock { dotnet run --no-build --project .\\TansuCloud.Dashboard\\TansuCloud.Dashboard.csproj -c Debug } | Out-Null; Start-Job -Name tansu-database -ScriptBlock { dotnet run --no-build --project .\\TansuCloud.Database\\TansuCloud.Database.csproj -c Debug } | Out-Null; Start-Job -Name tansu-storage -ScriptBlock { dotnet run --no-build --project .\\TansuCloud.Storage\\TansuCloud.Storage.csproj -c Debug } | Out-Null; Start-Sleep -Seconds 2; dotnet run --no-build --project .\\TansuCloud.Gateway\\TansuCloud.Gateway.csproj -c Debug",
-			"isBackground": true,
-			"group": "build"
-		},
-		{
-			"label": "rebuild+restart services (after identity tweak)",
-			"type": "shell",
-			"command": "$ErrorActionPreference='Stop'; dotnet build .\\TansuCloud.sln -c Debug; $jobs = Get-Job | Where-Object { $_.Name -like 'tansu-*' }; if ($jobs) { $jobs | Stop-Job -Force; $jobs | Remove-Job }; Start-Job -Name tansu-identity -ScriptBlock { dotnet run --no-build --project .\\TansuCloud.Identity\\TansuCloud.Identity.csproj -c Debug } | Out-Null; Start-Job -Name tansu-dashboard -ScriptBlock { dotnet run --no-build --project .\\TansuCloud.Dashboard\\TansuCloud.Dashboard.csproj -c Debug } | Out-Null; Start-Job -Name tansu-database -ScriptBlock { dotnet run --no-build --project .\\TansuCloud.Database\\TansuCloud.Database.csproj -c Debug } | Out-Null; Start-Job -Name tansu-storage -ScriptBlock { dotnet run --no-build --project .\\TansuCloud.Storage\\TansuCloud.Storage.csproj -c Debug } | Out-Null; Start-Sleep -Seconds 2; dotnet run --no-build --project .\\TansuCloud.Gateway\\TansuCloud.Gateway.csproj -c Debug",
-			"isBackground": true,
-			"group": "build"
-		},
-		{
-			"label": "rebuild identity only",
-			"type": "shell",
-			"command": "$ErrorActionPreference='Stop'; dotnet build .\\TansuCloud.Identity\\TansuCloud.Identity.csproj -c Debug",
-			"group": "build"
-		},
-		{
-			"label": "restart identity and gateway (after OpenIddict tweak)",
-			"type": "shell",
-			"command": "$ErrorActionPreference='Stop'; $jobs = Get-Job | Where-Object { $_.Name -like 'tansu-*' }; if ($jobs) { $jobs | Stop-Job -Force; $jobs | Remove-Job }; Get-Process -Name 'TansuCloud.Gateway' -ErrorAction SilentlyContinue | Stop-Process -Force; dotnet build .\\TansuCloud.Identity\\TansuCloud.Identity.csproj -c Debug; Start-Job -Name tansu-identity -ScriptBlock { dotnet run --no-build --project .\\TansuCloud.Identity\\TansuCloud.Identity.csproj -c Debug } | Out-Null; Start-Sleep -Seconds 2; dotnet run --no-build --project .\\TansuCloud.Gateway\\TansuCloud.Gateway.csproj -c Debug",
-			"isBackground": true,
-			"group": "build"
-		},
-		{
-			"label": "build identity and restart identity job",
-			"type": "shell",
-			"command": "$ErrorActionPreference='Stop'; dotnet build .\\TansuCloud.Identity\\TansuCloud.Identity.csproj -c Debug; $job = Get-Job -Name tansu-identity -ErrorAction SilentlyContinue; if ($job) { Stop-Job -Name tansu-identity -Force; Remove-Job -Name tansu-identity }; Start-Job -Name tansu-identity -ScriptBlock { dotnet run --no-build --project .\\TansuCloud.Identity\\TansuCloud.Identity.csproj -c Debug } | Out-Null; Start-Sleep -Seconds 2; Receive-Job -Name tansu-identity -Keep | Select-Object -Last 50",
-			"isBackground": false,
-			"group": "build"
-		},
-		{
-			"label": "rebuild identity and restart job (enable token passthrough)",
-			"type": "shell",
-			"command": "$ErrorActionPreference='Stop'; dotnet build .\\TansuCloud.Identity\\TansuCloud.Identity.csproj -c Debug; $job = Get-Job -Name tansu-identity -ErrorAction SilentlyContinue; if ($job) { Stop-Job -Name tansu-identity -Force; Remove-Job -Name tansu-identity }; Start-Job -Name tansu-identity -ScriptBlock { dotnet run --no-build --project .\\TansuCloud.Identity\\TansuCloud.Identity.csproj -c Debug } | Out-Null; Start-Sleep -Seconds 2; Receive-Job -Name tansu-identity -Keep | Select-Object -Last 50",
-			"isBackground": false,
-			"group": "build"
-		},
-		{
-			"label": "build identity and restart identity job",
-			"type": "shell",
-			"command": "$ErrorActionPreference='Stop'; dotnet build .\\TansuCloud.Identity\\TansuCloud.Identity.csproj -c Debug; $job = Get-Job -Name tansu-identity -ErrorAction SilentlyContinue; if ($job) { Stop-Job -Name tansu-identity -Force; Remove-Job -Name tansu-identity }; Start-Job -Name tansu-identity -ScriptBlock { dotnet run --no-build --project .\\TansuCloud.Identity\\TansuCloud.Identity.csproj -c Debug } | Out-Null; Start-Sleep -Seconds 2; Receive-Job -Name tansu-identity -Keep | Select-Object -Last 50"
 		}
+		
 	]
 }

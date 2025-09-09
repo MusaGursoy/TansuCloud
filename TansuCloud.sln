@@ -15,6 +15,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TansuCloud.Database", "Tans
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TansuCloud.E2E.Tests", "tests\TansuCloud.E2E.Tests\TansuCloud.E2E.Tests.csproj", "{9B4F1F89-45F0-4E6E-9E0E-8B7D4E2C5C33}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Dev.PgcatConfigurator", "Dev.PgcatConfigurator\Dev.PgcatConfigurator.csproj", "{3A02E1F8-7505-4C71-A4C8-9B3D4C9D8E0A}"
+EndProject
 Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "Solution Items", "Solution Items", "{089100B1-113F-4E66-888A-E83F3999EAFD}"
 	ProjectSection(SolutionItems) = preProject
 		Architecture-Study.md = Architecture-Study.md
@@ -110,6 +112,18 @@ Global
 		{9B4F1F89-45F0-4E6E-9E0E-8B7D4E2C5C33}.Release|x64.Build.0 = Release|Any CPU
 		{9B4F1F89-45F0-4E6E-9E0E-8B7D4E2C5C33}.Release|x86.ActiveCfg = Release|Any CPU
 		{9B4F1F89-45F0-4E6E-9E0E-8B7D4E2C5C33}.Release|x86.Build.0 = Release|Any CPU
+		{3A02E1F8-7505-4C71-A4C8-9B3D4C9D8E0A}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{3A02E1F8-7505-4C71-A4C8-9B3D4C9D8E0A}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{3A02E1F8-7505-4C71-A4C8-9B3D4C9D8E0A}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{3A02E1F8-7505-4C71-A4C8-9B3D4C9D8E0A}.Debug|x64.Build.0 = Debug|Any CPU
+		{3A02E1F8-7505-4C71-A4C8-9B3D4C9D8E0A}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{3A02E1F8-7505-4C71-A4C8-9B3D4C9D8E0A}.Debug|x86.Build.0 = Debug|Any CPU
+		{3A02E1F8-7505-4C71-A4C8-9B3D4C9D8E0A}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{3A02E1F8-7505-4C71-A4C8-9B3D4C9D8E0A}.Release|Any CPU.Build.0 = Release|Any CPU
+		{3A02E1F8-7505-4C71-A4C8-9B3D4C9D8E0A}.Release|x64.ActiveCfg = Release|Any CPU
+		{3A02E1F8-7505-4C71-A4C8-9B3D4C9D8E0A}.Release|x64.Build.0 = Release|Any CPU
+		{3A02E1F8-7505-4C71-A4C8-9B3D4C9D8E0A}.Release|x86.ActiveCfg = Release|Any CPU
+		{3A02E1F8-7505-4C71-A4C8-9B3D4C9D8E0A}.Release|x86.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE

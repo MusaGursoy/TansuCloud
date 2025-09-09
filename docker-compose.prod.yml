@@ -1,0 +1,31 @@
+
+services:
+  postgres:
+    ports: []
+  otel-collector:
+    expose:
+      - "4317"
+    ports: []
+  redis:
+    ports: []
+  pgcat:
+    expose:
+      - "6432"
+      - "9930"
+    ports: []
+  gateway:
+    ports:
+      - "80:8080"
+      # - "443:8443" # enable when TLS configured
+  identity:
+    ports: []
+  dashboard:
+    ports: []
+  db:
+    ports: []
+  storage:
+    ports: []
+
+networks:
+  tansucloud-network:
+    driver: bridge

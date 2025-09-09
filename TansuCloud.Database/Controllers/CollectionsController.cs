@@ -5,6 +5,8 @@ using Microsoft.EntityFrameworkCore;
 using TansuCloud.Database.EF;
 using TansuCloud.Database.Services;
 using System.Text.Json;
+using Microsoft.Extensions.Caching.Hybrid;
+using TansuCloud.Database.Caching;
 
 namespace TansuCloud.Database.Controllers;
 
@@ -13,12 +15,24 @@ namespace TansuCloud.Database.Controllers;
 public sealed class CollectionsController(
     ITenantDbContextFactory factory,
     ILogger<CollectionsController> logger,
-    TansuCloud.Database.Outbox.IOutboxProducer outbox
+    TansuCloud.Database.Outbox.IOutboxProducer outbox,
+    Microsoft.Extensions.Caching.Hybrid.HybridCache? cache = null,
+    ITenantCacheVersion? versions = null
 ) : ControllerBase
 {
     private readonly ITenantDbContextFactory _factory = factory;
     private readonly ILogger<CollectionsController> _logger = logger;
     private readonly TansuCloud.Database.Outbox.IOutboxProducer _outbox = outbox;
+    private readonly Microsoft.Extensions.Caching.Hybrid.HybridCache? _cache = cache;
+    private readonly ITenantCacheVersion? _versions = versions;
+
+    private string Tenant() => Request.Headers["X-Tansu-Tenant"].ToString();
+    private string Key(params string[] parts)
+    {
+        var tenant = Tenant();
+        var ver = _versions?.Get(tenant) ?? 0;
+        return $"t:{tenant}:v{ver}:db:collections:{string.Join(':', parts)}";
+    }
 
     public sealed record CreateCollectionDto(string name);
 
@@ -95,7 +109,7 @@ public sealed class CollectionsController(
                 statusCode: StatusCodes.Status400BadRequest
             );
 
-        await using var db = await _factory.CreateAsync(HttpContext, ct);
+    await using var db = await _factory.CreateAsync(HttpContext, ct);
         var q = db.Collections.AsNoTracking().OrderByDescending(c => c.CreatedAt);
         var total = await q.CountAsync(ct);
         var etag = ETagHelper.ComputeWeakETag(
@@ -114,20 +128,31 @@ public sealed class CollectionsController(
             return StatusCode(StatusCodes.Status304NotModified);
         }
 
+        // Try cache for list page
+    var cacheKey = Key("list", page.ToString(), pageSize.ToString(), etag);
+        if (_cache is not null)
+        {
+            var cached = await _cache.GetOrCreateAsync(
+                cacheKey,
+                async token =>
+                {
+                    var items = await q.Skip((page - 1) * pageSize)
+                        .Take(pageSize)
+                        .Select(c => new CollectionDto(c.Id, c.Name, c.CreatedAt))
+                        .ToListAsync(ct);
+                    return new { total, page, pageSize, items } as object;
+                }
+            );
+            Response.Headers.ETag = etag;
+            return Ok(cached);
+        }
+
         var items = await q.Skip((page - 1) * pageSize)
             .Take(pageSize)
             .Select(c => new CollectionDto(c.Id, c.Name, c.CreatedAt))
             .ToListAsync(ct);
         Response.Headers.ETag = etag;
-        return Ok(
-            new
-            {
-                total,
-                page,
-                pageSize,
-                items
-            }
-        );
+        return Ok(new { total, page, pageSize, items });
     } // End of Method List
 
     [HttpPost]
@@ -157,6 +182,7 @@ public sealed class CollectionsController(
         }
         catch { }
         await db.SaveChangesAsync(ct);
+    try { _versions?.Increment(Tenant()); } catch { }
         var dto = new CollectionDto(entity.Id, entity.Name, entity.CreatedAt);
         Response.Headers.ETag = ETagHelper.ComputeWeakETag(
             entity.Id.ToString(),
@@ -170,6 +196,29 @@ public sealed class CollectionsController(
     public async Task<ActionResult<CollectionDto>> Get([FromRoute] Guid id, CancellationToken ct)
     {
         await using var db = await _factory.CreateAsync(HttpContext, ct);
+    var cacheKey = Key("item", id.ToString());
+        if (_cache is not null)
+        {
+            var cached = await _cache.GetOrCreateAsync(
+                cacheKey,
+                async token =>
+                {
+                    var e0 = await db.Collections.AsNoTracking().FirstOrDefaultAsync(x => x.Id == id, ct);
+                    return e0 is null ? null : new CollectionDto(e0.Id, e0.Name, e0.CreatedAt);
+                }
+            );
+            if (cached is null) return NotFound();
+            var etag0 = ETagHelper.ComputeWeakETag(cached.id.ToString(), cached.createdAt.ToUnixTimeMilliseconds().ToString());
+            var inm0 = Request.Headers.IfNoneMatch;
+            if (!Microsoft.Extensions.Primitives.StringValues.IsNullOrEmpty(inm0) && AnyIfNoneMatchMatches(inm0, etag0))
+            {
+                Response.Headers.ETag = etag0;
+                return StatusCode(StatusCodes.Status304NotModified);
+            }
+            Response.Headers.ETag = etag0;
+            return Ok(cached);
+        }
+
         var e = await db.Collections.AsNoTracking().FirstOrDefaultAsync(x => x.Id == id, ct);
         if (e is null)
             return NotFound();
@@ -220,7 +269,7 @@ public sealed class CollectionsController(
             Response.Headers.ETag = currentEtag;
             return StatusCode(StatusCodes.Status412PreconditionFailed);
         }
-        e.Name = input.name;
+    e.Name = input.name;
         try
         {
             var tenant = Request.Headers["X-Tansu-Tenant"].ToString();
@@ -230,6 +279,8 @@ public sealed class CollectionsController(
         }
         catch { }
         await db.SaveChangesAsync(ct);
+    // Invalidate cache for tenant via tag
+    try { _versions?.Increment(Tenant()); } catch { }
         Response.Headers.ETag = currentEtag;
         return Ok(new CollectionDto(e.Id, e.Name, e.CreatedAt));
     } // End of Method Update
@@ -256,7 +307,7 @@ public sealed class CollectionsController(
             Response.Headers.ETag = currentEtag;
             return StatusCode(StatusCodes.Status412PreconditionFailed);
         }
-        db.Collections.Remove(e);
+    db.Collections.Remove(e);
         try
         {
             var tenant = Request.Headers["X-Tansu-Tenant"].ToString();
@@ -266,6 +317,11 @@ public sealed class CollectionsController(
         }
         catch { }
         await db.SaveChangesAsync(ct);
+        try
+        {
+            _versions?.Increment(Tenant());
+        }
+        catch { }
         return NoContent();
     } // End of Method Delete
 } // End of Class CollectionsController

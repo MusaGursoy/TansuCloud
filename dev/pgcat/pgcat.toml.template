@@ -1,0 +1,29 @@
+# Rendered by entrypoint.sh using env vars
+[general]
+host = "0.0.0.0"
+port = 6432
+enable_prometheus_exporter = true
+prometheus_exporter_port = 9930
+connect_timeout = 3000
+idle_timeout = 30000
+server_lifetime = 86400000
+ban_time = 60
+autoreload = 15000
+worker_threads = 4
+
+[plugins]
+
+[pools.identity]
+pool_mode = "transaction"
+query_parser_enabled = true
+primary_reads_enabled = true
+load_balancing_mode = "random"
+
+[pools.identity.users.0]
+username = "${POSTGRES_USER}"
+password = "${POSTGRES_PASSWORD}"
+pool_size = 20
+
+[pools.identity.shards.0]
+servers = [["postgres", 5432, "primary"]]
+database = "tansu_identity"

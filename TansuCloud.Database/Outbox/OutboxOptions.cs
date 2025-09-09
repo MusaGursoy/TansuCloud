@@ -17,4 +17,8 @@ public sealed class OutboxOptions
     public string RedisConnection { get; init; } = string.Empty;
 
     public string Channel { get; init; } = "tansu.outbox";
+
+    // Optional: fixed tenant to dispatch for in background (dev/test convenience)
+    // When set, the dispatcher will connect to this tenant's database to poll and publish outbox events.
+    public string? DispatchTenant { get; init; } = null;
 }

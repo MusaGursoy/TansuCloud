@@ -12,6 +12,7 @@ namespace TansuCloud.Database.Services;
 public interface ITenantDbContextFactory
 {
     Task<TansuDbContext> CreateAsync(HttpContext httpContext, CancellationToken ct);
+    Task<TansuDbContext> CreateAsync(string tenantId, CancellationToken ct);
 } // End of Interface ITenantDbContextFactory
 
 internal sealed class TenantDbContextFactory(
@@ -31,7 +32,11 @@ internal sealed class TenantDbContextFactory(
         }
 
         // Build tenant connection string by swapping the database name
-        var b = new NpgsqlConnectionStringBuilder(_opts.AdminConnectionString);
+        // Prefer runtime connection (e.g., pgcat) when available; fallback to admin connection
+        var baseConn = string.IsNullOrWhiteSpace(_opts.RuntimeConnectionString)
+            ? _opts.AdminConnectionString
+            : _opts.RuntimeConnectionString!;
+        var b = new NpgsqlConnectionStringBuilder(baseConn);
         var dbName = NormalizeDbName(tenant, _opts.DatabaseNamePrefix);
         b.Database = dbName;
 
@@ -53,6 +58,25 @@ internal sealed class TenantDbContextFactory(
         var ctx = new TansuDbContext(dbOptsBuilder.Options);
         return Task.FromResult(ctx);
     } // End of Method CreateAsync
+
+    public Task<TansuDbContext> CreateAsync(string tenantId, CancellationToken ct)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(tenantId);
+        var baseConn = string.IsNullOrWhiteSpace(_opts.RuntimeConnectionString)
+            ? _opts.AdminConnectionString
+            : _opts.RuntimeConnectionString!;
+        var b = new Npgsql.NpgsqlConnectionStringBuilder(baseConn);
+        var dbName = NormalizeDbName(tenantId, _opts.DatabaseNamePrefix);
+        b.Database = dbName;
+
+        _logger.LogDebug("[Background] Tenant '{Tenant}' -> Database '{Database}'", tenantId, dbName);
+
+        var dbOptsBuilder = new DbContextOptionsBuilder<TansuDbContext>()
+            .UseNpgsql(b.ConnectionString);
+        TryUseCompiledModel(dbOptsBuilder);
+        var ctx = new TansuDbContext(dbOptsBuilder.Options);
+        return Task.FromResult(ctx);
+    } // End of Method CreateAsync (tenantId)
 
     private static string NormalizeDbName(string tenantId, string? prefix)
     {

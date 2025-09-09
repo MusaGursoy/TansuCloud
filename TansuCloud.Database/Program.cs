@@ -2,17 +2,23 @@
 using System.IdentityModel.Tokens.Jwt;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Authorization;
+using Microsoft.Extensions.Caching.Hybrid;
+using Microsoft.Extensions.Caching.StackExchangeRedis;
+using Microsoft.Extensions.Options;
 using Microsoft.IdentityModel.Protocols;
 using Microsoft.IdentityModel.Protocols.OpenIdConnect;
 using Microsoft.IdentityModel.Tokens;
 using OpenIddict.Abstractions;
-using TansuCloud.Database.Security;
 using OpenTelemetry.Logs;
 using OpenTelemetry.Metrics;
 using OpenTelemetry.Resources;
 using OpenTelemetry.Trace;
-using TansuCloud.Database.Provisioning;
+using StackExchange.Redis;
+using TansuCloud.Database.Caching;
+using TansuCloud.Database.Hosting;
 using TansuCloud.Database.Outbox;
+using TansuCloud.Database.Provisioning;
+using TansuCloud.Database.Security;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -90,16 +96,87 @@ builder.Services.AddScoped<
     TansuCloud.Database.Services.ITenantDbContextFactory,
     TansuCloud.Database.Services.TenantDbContextFactory
 >();
-builder.Services.AddSingleton<TansuCloud.Database.Outbox.IOutboxProducer, TansuCloud.Database.Outbox.OutboxProducer>();
+builder.Services.AddSingleton<
+    TansuCloud.Database.Outbox.IOutboxProducer,
+    TansuCloud.Database.Outbox.OutboxProducer
+>();
+
+// Optional HybridCache backed by Redis when Cache:Redis is set
+var cacheRedis = builder.Configuration["Cache:Redis"];
+if (!string.IsNullOrWhiteSpace(cacheRedis))
+{
+    builder.Services.AddStackExchangeRedisCache(o => o.Configuration = cacheRedis);
+    builder.Services.AddHybridCache();
+}
+
+// Tenant cache versions for invalidation
+builder.Services.AddSingleton<ITenantCacheVersion, TenantCacheVersion>();
+
+// When Outbox Redis connection is provided, also subscribe to outbox channel and bump tenant cache versions
+var outboxRedis = builder.Configuration["Outbox:RedisConnection"];
+var outboxChannel = builder.Configuration["Outbox:Channel"] ?? "tansu.outbox";
+if (!string.IsNullOrWhiteSpace(outboxRedis))
+{
+    builder.Services.AddHostedService(sp => new BackgroundServiceWrapper(async ct =>
+    {
+        try
+        {
+            var mux = await ConnectionMultiplexer.ConnectAsync(outboxRedis);
+            var versions = sp.GetRequiredService<ITenantCacheVersion>();
+            var sub = mux.GetSubscriber();
+            await sub.SubscribeAsync(
+                new RedisChannel(outboxChannel, RedisChannel.PatternMode.Literal),
+                (c, v) =>
+                {
+                    try
+                    {
+                        // Extract tenant from payload JSON { tenant: "...", ... }
+                        var json = v.ToString();
+                        using var doc = System.Text.Json.JsonDocument.Parse(json);
+                        if (doc.RootElement.TryGetProperty("tenant", out var tEl))
+                        {
+                            var tenant = tEl.GetString();
+                            if (!string.IsNullOrWhiteSpace(tenant))
+                                versions.Increment(tenant!);
+                        }
+                    }
+                    catch { }
+                }
+            );
+        }
+        catch (Exception ex)
+        {
+            var logger = sp.GetRequiredService<ILoggerFactory>()
+                .CreateLogger("CacheVersionSubscriber");
+            logger.LogError(ex, "Cache version subscriber failed to start");
+        }
+        await Task.Delay(Timeout.Infinite, ct);
+    }));
+}
+
+// see BackgroundServiceWrapper in Hosting/BackgroundServiceWrapper.cs
 
 // Outbox options and conditional background dispatcher
-builder.Services.AddOptions<OutboxOptions>()
+builder
+    .Services.AddOptions<OutboxOptions>()
     .Bind(builder.Configuration.GetSection("Outbox"))
     .ValidateDataAnnotations();
 if (!string.IsNullOrWhiteSpace(builder.Configuration["Outbox:RedisConnection"]))
 {
     builder.Services.AddHostedService<OutboxDispatcher>();
+    builder.Services.AddSingleton<IOutboxPublisher>(sp =>
+    {
+        var opts = sp.GetRequiredService<IOptions<OutboxOptions>>().Value;
+        if (string.IsNullOrWhiteSpace(opts.RedisConnection))
+        {
+            return new NoopOutboxPublisher();
+        }
+        var mux = ConnectionMultiplexer.Connect(opts.RedisConnection);
+        return new RedisOutboxPublisher(mux);
+    });
 }
+
+// NoopOutboxPublisher moved to Outbox/NoopOutboxPublisher.cs (cannot declare types after top-level statements)
 
 // Authentication/Authorization (JWT Bearer validation via Identity issuer)
 builder
@@ -693,9 +770,10 @@ builder.Services.AddAuthorization(options =>
             "db.provision",
             policy =>
                 policy.RequireAssertion(ctx =>
-                    (ClaimsPrincipalExtensions.HasScope(ctx.User, "admin.full")
-                        || ClaimsPrincipalExtensions.HasScope(ctx.User, "db.write"))
-                    && ClaimsPrincipalExtensions.HasAudience(ctx.User, "tansu.db")
+                    (
+                        ClaimsPrincipalExtensions.HasScope(ctx.User, "admin.full")
+                        || ClaimsPrincipalExtensions.HasScope(ctx.User, "db.write")
+                    ) && ClaimsPrincipalExtensions.HasAudience(ctx.User, "tansu.db")
                 )
         );
     }

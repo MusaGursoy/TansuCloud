@@ -6,6 +6,8 @@ using OpenTelemetry.Metrics;
 using OpenTelemetry.Resources;
 using OpenTelemetry.Trace;
 using OpenTelemetry.Logs;
+using Microsoft.Extensions.Caching.Hybrid;
+using Microsoft.Extensions.Caching.StackExchangeRedis;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -59,6 +61,13 @@ builder.Logging.AddOpenTelemetry(o =>
     });
 });
 builder.Services.AddHealthChecks();
+// Optional HybridCache backed by Redis when Cache:Redis is provided
+var cacheRedis = builder.Configuration["Cache:Redis"];
+if (!string.IsNullOrWhiteSpace(cacheRedis))
+{
+    builder.Services.AddStackExchangeRedisCache(o => o.Configuration = cacheRedis);
+    builder.Services.AddHybridCache();
+}
 // Add services to the container.
 
 builder.Services.AddControllers();

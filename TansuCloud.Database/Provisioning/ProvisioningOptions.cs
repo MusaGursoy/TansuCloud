@@ -8,6 +8,9 @@ public sealed class ProvisioningOptions
     [Required]
     public string AdminConnectionString { get; set; } = string.Empty; // connects to 'postgres' database
 
+    // Optional separate connection string used for runtime tenant connections (e.g., via PgCat)
+    public string? RuntimeConnectionString { get; set; }
+
     public string DatabaseNamePrefix { get; set; } = "tansu_tenant_";
 
     // Comma-separated list of extensions to ensure in tenant DB
