@@ -1,0 +1,139 @@
+name: E2E Nightly
+
+on:
+  schedule:
+    - cron: '0 3 * * *' # daily at 03:00 UTC
+  workflow_dispatch:
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      DOTNET_SKIP_FIRST_TIME_EXPERIENCE: 1
+      DOTNET_NOLOGO: 1
+      # Base URL used by tests; prefer 127.0.0.1 over localhost to avoid IPv6 quirks
+      GATEWAY_BASE_URL: http://127.0.0.1:8080
+      # Enable soak and Redis-dependent tests in nightly runs
+      RUN_SOAK: '1'
+      SOAK_SESSIONS: '50'
+      SOAK_MINUTES: '3'
+      REDIS_URL: redis://localhost:6379
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET 9.x
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '9.0.x'
+
+      - name: Setup Node.js (for Playwright browsers install)
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install Playwright browsers (Chromium)
+        run: npx playwright install --with-deps chromium
+
+      - name: Docker Compose up (build)
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          PGCAT_ADMIN_USER: admin
+          PGCAT_ADMIN_PASSWORD: admin
+          DASHBOARD_CLIENT_SECRET: dev-secret
+          PUBLIC_BASE_URL: http://127.0.0.1:8080
+        run: docker compose up -d --build
+
+      - name: Wait for readiness - Gateway
+        run: |
+          for i in {1..60}; do
+            code=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:8080/health/live || true)
+            if [ "$code" -lt 500 ] && [ "$code" -ne 000 ]; then echo "Gateway ready ($code)"; break; fi
+            sleep 1
+          done
+
+      - name: Wait for readiness - Identity
+        run: |
+          for i in {1..90}; do
+            code=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:8080/identity/health/live || true)
+            if [ "$code" -lt 500 ] && [ "$code" -ne 000 ]; then echo "Identity ready ($code)"; break; fi
+            sleep 1
+          done
+
+      - name: Wait for readiness - Database
+        run: |
+          for i in {1..90}; do
+            code=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:8080/db/health/live || true)
+            if [ "$code" -lt 500 ] && [ "$code" -ne 000 ]; then echo "Database ready ($code)"; break; fi
+            sleep 1
+          done
+
+      - name: Pre-provision nightly tenant (dev bypass)
+        run: |
+          set -e
+          TENANT_ID="nightly-$(hostname | tr '[:upper:]' '[:lower:]')"
+          echo "Provisioning tenant: $TENANT_ID"
+          curl -fsS -X POST \
+            -H 'Content-Type: application/json' \
+            -H 'X-Provision-Key: letmein' \
+            -d "{\"tenantId\":\"$TENANT_ID\",\"displayName\":\"$TENANT_ID\"}" \
+            http://127.0.0.1:8080/db/api/provisioning/tenants || true
+
+      - name: Wait for PgCat pool (nightly tenant)
+        run: |
+          set -e
+          TENANT_ID="nightly-$(hostname | tr '[:upper:]' '[:lower:]')"
+          # Normalize to db name: non-alphanumeric -> '_' and prefix with tansu_tenant_
+          DB_KEY=$(echo "$TENANT_ID" | sed 's/[^[:alnum:]]/_/g')
+          POOL_NAME="tansu_tenant_${DB_KEY}"
+          echo "Waiting for PgCat pool: $POOL_NAME"
+          for i in {1..60}; do
+            # Try admin creds first, then fall back to postgres creds
+            if docker exec tansudbpg bash -lc "PGPASSWORD=admin psql -h tansu-pgcat -p 6432 -U admin -d postgres -t -c 'SHOW DATABASES;' | grep -q "^ *${POOL_NAME} *$""; then echo "PgCat pool present (admin): $POOL_NAME"; break; fi
+            if docker exec tansudbpg bash -lc "PGPASSWORD=postgres psql -h tansu-pgcat -p 6432 -U postgres -d postgres -t -c 'SHOW DATABASES;' | grep -q "^ *${POOL_NAME} *$""; then echo "PgCat pool present (postgres): $POOL_NAME"; break; fi
+            sleep 1
+          done
+
+      - name: Run E2E tests (nightly)
+        run: |
+          dotnet test ./tests/TansuCloud.E2E.Tests/TansuCloud.E2E.Tests.csproj -c Debug \
+            --logger "trx;LogFileName=nightly.trx" \
+            --results-directory ./tests/TansuCloud.E2E.Tests/TestResults
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-nightly-trx
+          path: |
+            tests/TansuCloud.E2E.Tests/TestResults/*.trx
+            tests/TansuCloud.E2E.Tests/TestResults/**/*.trx
+          if-no-files-found: warn
+
+      - name: Collect service logs
+        if: always()
+        run: |
+          mkdir -p artifacts
+          docker compose logs gateway > artifacts/gateway.log || true
+          docker compose logs identity > artifacts/identity.log || true
+          docker compose logs db > artifacts/db.log || true
+          docker compose logs storage > artifacts/storage.log || true
+          docker compose logs dashboard > artifacts/dashboard.log || true
+          docker compose logs redis > artifacts/redis.log || true
+          docker compose logs pgcat > artifacts/pgcat.log || true
+          docker compose logs pgcat-config > artifacts/pgcat-config.log || true
+
+      - name: Upload service logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-nightly-logs
+          path: artifacts
+          if-no-files-found: warn
+
+      - name: Docker Compose down
+        if: always()
+        run: docker compose down -v

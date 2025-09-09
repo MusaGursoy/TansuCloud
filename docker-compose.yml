@@ -148,6 +148,7 @@ services:
       dockerfile: TansuCloud.Database/Dockerfile
     environment:
       ASPNETCORE_ENVIRONMENT: Development
+      PUBLIC_BASE_URL: http://127.0.0.1:8080
       Oidc__Issuer: ${PUBLIC_BASE_URL:-http://gateway:8080}/identity/
       OpenTelemetry__Otlp__Endpoint: http://otel-collector:4317
       Outbox__RedisConnection: redis:6379
@@ -177,6 +178,7 @@ services:
       context: .
       dockerfile: TansuCloud.Storage/Dockerfile
     environment:
+      PUBLIC_BASE_URL: http://127.0.0.1:8080
       Oidc__Issuer: ${PUBLIC_BASE_URL:-http://gateway:8080}/identity/
       OpenTelemetry__Otlp__Endpoint: http://otel-collector:4317
       Cache__Redis: redis:6379

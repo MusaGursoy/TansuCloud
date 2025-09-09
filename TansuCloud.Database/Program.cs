@@ -789,6 +789,34 @@ if (app.Environment.IsDevelopment())
     app.MapOpenApi();
 }
 
+// Global exception handler to surface ProblemDetails on unhandled errors (helps E2E diagnose 500s)
+app.Use(async (ctx, next) =>
+{
+    try
+    {
+        await next();
+    }
+    catch (Exception ex)
+    {
+        var logger = ctx.RequestServices.GetRequiredService<ILoggerFactory>().CreateLogger("GlobalException");
+        logger.LogError(ex, "Unhandled exception processing {Method} {Path}", ctx.Request?.Method, ctx.Request?.Path.Value);
+        ctx.Response.StatusCode = StatusCodes.Status500InternalServerError;
+        ctx.Response.ContentType = "application/problem+json";
+        var problem = new
+        {
+            type = "https://tools.ietf.org/html/rfc7231#section-6.6.1",
+            title = "An unexpected error occurred.",
+            status = 500,
+            traceId = ctx.TraceIdentifier
+        };
+        try
+        {
+            await ctx.Response.WriteAsJsonAsync(problem);
+        }
+        catch { /* ignore */ }
+    }
+});
+
 app.UseAuthentication();
 app.UseAuthorization();
 

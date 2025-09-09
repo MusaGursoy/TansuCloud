@@ -151,7 +151,7 @@ builder.Services.AddRateLimiter(options =>
         {
             "db" => 200, // DB APIs
             "storage" => 150, // Storage APIs
-            "identity" => 300, // Auth endpoints
+            "identity" => 600, // Auth endpoints (discovery/token can burst during tests)
             "dashboard" => 300, // UI
             _ => 100
         };
@@ -163,7 +163,7 @@ builder.Services.AddRateLimiter(options =>
                 PermitLimit = permitLimit,
                 Window = TimeSpan.FromSeconds(10),
                 QueueProcessingOrder = QueueProcessingOrder.OldestFirst,
-                QueueLimit = permitLimit
+                QueueLimit = first == "identity" ? 0 : permitLimit // avoid queueing for identity to reduce timeouts
             }
         );
     });
@@ -733,6 +733,13 @@ reverseProxyBuilder.LoadFromMemory(
         new ClusterConfig
         {
             ClusterId = "identity",
+            // Align request handling with dashboard cluster to avoid HTTP version negotiation edge cases
+            HttpRequest = new()
+            {
+                ActivityTimeout = TimeSpan.FromMinutes(5),
+                Version = new Version(1, 1),
+                VersionPolicy = HttpVersionPolicy.RequestVersionOrLower
+            },
             Destinations = new Dictionary<string, DestinationConfig>
             {
                 ["i1"] = new() { Address = identityBase }
@@ -741,6 +748,12 @@ reverseProxyBuilder.LoadFromMemory(
         new ClusterConfig
         {
             ClusterId = "db",
+            HttpRequest = new()
+            {
+                ActivityTimeout = TimeSpan.FromMinutes(5),
+                Version = new Version(1, 1),
+                VersionPolicy = HttpVersionPolicy.RequestVersionOrLower
+            },
             Destinations = new Dictionary<string, DestinationConfig>
             {
                 ["db1"] = new() { Address = dbBase }
@@ -749,6 +762,12 @@ reverseProxyBuilder.LoadFromMemory(
         new ClusterConfig
         {
             ClusterId = "storage",
+            HttpRequest = new()
+            {
+                ActivityTimeout = TimeSpan.FromMinutes(5),
+                Version = new Version(1, 1),
+                VersionPolicy = HttpVersionPolicy.RequestVersionOrLower
+            },
             Destinations = new Dictionary<string, DestinationConfig>
             {
                 ["s1"] = new() { Address = storageBase }
@@ -761,7 +780,12 @@ reverseProxyBuilder.LoadFromMemory(
 reverseProxyBuilder.ConfigureHttpClient(
     (context, handler) =>
     {
-        if (string.Equals(context.ClusterId, "dashboard", StringComparison.OrdinalIgnoreCase))
+        if (
+            string.Equals(context.ClusterId, "dashboard", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(context.ClusterId, "identity", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(context.ClusterId, "db", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(context.ClusterId, "storage", StringComparison.OrdinalIgnoreCase)
+        )
         {
             handler.UseProxy = false;
             handler.AllowAutoRedirect = false;
@@ -919,6 +943,56 @@ app.MapGet("/", () => "TansuCloud Gateway is running");
 // Health endpoints
 app.MapHealthChecks("/health/live").AllowAnonymous();
 app.MapHealthChecks("/health/ready").AllowAnonymous();
+
+// Diagnostic middleware: log Identity token proxy 5xx to help deflake tests in Dev
+if (app.Environment.IsDevelopment())
+{
+    var diagLogger = app
+        .Services.GetRequiredService<ILoggerFactory>()
+        .CreateLogger("Gateway.IdentityProxy");
+    app.Use(
+        async (context, next) =>
+        {
+            var path = context.Request.Path;
+            var isTokenPath =
+                path.StartsWithSegments(
+                    "/identity/connect/token",
+                    StringComparison.OrdinalIgnoreCase
+                ) || path.StartsWithSegments("/connect/token", StringComparison.OrdinalIgnoreCase);
+            if (!isTokenPath)
+            {
+                await next();
+                return;
+            }
+
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            try
+            {
+                await next();
+            }
+            finally
+            {
+                sw.Stop();
+                var status = context.Response.StatusCode;
+                if (
+                    status >= 500
+                    || status == StatusCodes.Status502BadGateway
+                    || status == StatusCodes.Status504GatewayTimeout
+                )
+                {
+                    var host = context.Request.Headers.Host.ToString();
+                    diagLogger.LogError(
+                        "Identity token proxy returned {Status} for {Path} in {ElapsedMs} ms (Host={Host})",
+                        status,
+                        path.Value,
+                        sw.ElapsedMilliseconds,
+                        host
+                    );
+                }
+            }
+        }
+    ); // End of Middleware Identity Token Diagnostics
+}
 
 // Development-only: debug passthrough to verify direct HttpClient connectivity to dashboard without YARP
 if (app.Environment.IsDevelopment())

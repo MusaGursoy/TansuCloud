@@ -43,7 +43,7 @@
 			"args": [
 				"-NoProfile",
 				"-Command",
-				"$ErrorActionPreference='Stop'; $u=$env:POSTGRES_USER; $p=$env:POSTGRES_PASSWORD; if (-not $u -or -not $p) { throw 'Set POSTGRES_USER and POSTGRES_PASSWORD in your environment or .env' }; $cmd=\"PGPASSWORD=$p psql -h tansu-pgcat -p 6432 -U $u -d postgres -c 'SHOW DATABASES;'\"; docker exec tansudbpg bash -lc $cmd"
+				"$ErrorActionPreference=\"Stop\"; $u=$env:POSTGRES_USER; $p=$env:POSTGRES_PASSWORD; if (-not $u -or -not $p) { throw 'Set POSTGRES_USER and POSTGRES_PASSWORD in your environment or .env' }; $cmd=\"PGPASSWORD=$p psql -h tansu-pgcat -p 6432 -U $u -d postgres -c 'SHOW DATABASES;'\"; docker exec tansudbpg bash -lc $cmd"
 			]
 		},
 		{
@@ -63,7 +63,7 @@
 			"args": [
 				"-NoProfile",
 				"-Command",
-				"$ErrorActionPreference='Stop'; docker compose up -d --build"
+				"$ErrorActionPreference=\"Stop\"; docker compose up -d --build"
 			],
 			"group": "build"
 		},
@@ -122,7 +122,7 @@
 		{
 			"label": "compose: validate config",
 			"type": "shell",
-			"command": "$ErrorActionPreference='Stop'; $env:POSTGRES_USER='postgres'; $env:POSTGRES_PASSWORD='postgres'; $env:PGCAT_ADMIN_USER='admin'; $env:PGCAT_ADMIN_PASSWORD='admin'; $env:DASHBOARD_CLIENT_SECRET='dev-secret'; $env:PUBLIC_BASE_URL='http://gateway:8080'; docker compose -f .\\docker-compose.yml config | Out-String -Width 4096"
+			"command": "$ErrorActionPreference=\"Stop\"; $env:POSTGRES_USER='postgres'; $env:POSTGRES_PASSWORD='postgres'; $env:PGCAT_ADMIN_USER='admin'; $env:PGCAT_ADMIN_PASSWORD='admin'; $env:DASHBOARD_CLIENT_SECRET='dev-secret'; $env:PUBLIC_BASE_URL='http://gateway:8080'; docker compose -f .\\docker-compose.yml config | Out-String -Width 4096"
 		},
 		{
 			"label": "Run Task 11 verification tests",

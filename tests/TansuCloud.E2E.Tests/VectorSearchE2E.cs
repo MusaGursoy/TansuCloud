@@ -10,6 +10,18 @@ namespace TansuCloud.E2E.Tests;
 
 public class VectorSearchE2E
 {
+    private static float[] MakeEmbedding1536()
+    {
+        // Deterministic synthetic vector: low-variance repeating pattern to keep values bounded
+        var v = new float[1536];
+        for (int i = 0; i < v.Length; i++)
+        {
+            // 0.001 * (i % 1000) yields [0..0.999], then add a tiny phase shift to avoid too many equal segments
+            v[i] = (float)((i % 1000) * 0.001) + (float)((i % 7) * 1e-6);
+        }
+        return v;
+    }
+
     private static HttpClient CreateClient()
     {
         var handler = new HttpClientHandler
@@ -120,19 +132,54 @@ public class VectorSearchE2E
     private static async Task<string> GetAccessTokenAsync(HttpClient client, CancellationToken ct)
     {
         var baseUrl = GetGatewayBaseUrl();
-        using var tokenReq = new HttpRequestMessage(
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        HttpResponseMessage? last = null;
+        string? lastBody = null;
+        while (sw.Elapsed < TimeSpan.FromSeconds(30))
+        {
+            last?.Dispose();
+            try
+            {
+                using var tokenReq = new HttpRequestMessage(
+                    HttpMethod.Post,
+                    $"{baseUrl}/identity/connect/token"
+                );
+                tokenReq.Content = new StringContent(
+                    "grant_type=client_credentials&client_id=tansu-dashboard&client_secret=dev-secret&scope=db.write%20db.read",
+                    Encoding.UTF8,
+                    "application/x-www-form-urlencoded"
+                );
+                last = await client.SendAsync(tokenReq, ct);
+                if (last.StatusCode == HttpStatusCode.OK)
+                {
+                    var tokenJsonOk = await last.Content.ReadAsStringAsync(ct);
+                    using var tokenDocOk = JsonDocument.Parse(tokenJsonOk);
+                    return tokenDocOk.RootElement.GetProperty("access_token").GetString()!;
+                }
+                // Capture body for diagnostics and retry on transient 5xx/BadGateway or early 4xx during warm-up
+                lastBody = await last.Content.ReadAsStringAsync(ct);
+            }
+            catch
+            {
+                // ignore and retry
+            }
+            await Task.Delay(250, ct);
+        }
+
+        // Final attempt for assertion with better error message
+        using var finalReq = new HttpRequestMessage(
             HttpMethod.Post,
             $"{baseUrl}/identity/connect/token"
         );
-        tokenReq.Content = new StringContent(
+        finalReq.Content = new StringContent(
             "grant_type=client_credentials&client_id=tansu-dashboard&client_secret=dev-secret&scope=db.write%20db.read",
             Encoding.UTF8,
             "application/x-www-form-urlencoded"
         );
-        using var tokenRes = await client.SendAsync(tokenReq, ct);
-        Assert.Equal(HttpStatusCode.OK, tokenRes.StatusCode);
-        var tokenJson = await tokenRes.Content.ReadAsStringAsync(ct);
-        using var tokenDoc = JsonDocument.Parse(tokenJson);
+        using var finalRes = await client.SendAsync(finalReq, ct);
+        var finalBody = await finalRes.Content.ReadAsStringAsync(ct);
+        Assert.Equal(HttpStatusCode.OK, finalRes.StatusCode);
+        using var tokenDoc = JsonDocument.Parse(finalBody);
         return tokenDoc.RootElement.GetProperty("access_token").GetString()!;
     }
 
@@ -310,5 +357,66 @@ public class VectorSearchE2E
             res.StatusCode == HttpStatusCode.OK || res.StatusCode == HttpStatusCode.NotImplemented,
             $"Unexpected status {(int)res.StatusCode} {res.StatusCode}: {await res.Content.ReadAsStringAsync(cts.Token)}"
         );
+    }
+
+    [Fact(DisplayName = "Vector search: per-collection 1536-d returns self top-1 when available")]
+    public async Task Vector_PerCollection_1536D_Top1_WhenAvailable()
+    {
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(180));
+        using var client = CreateClient();
+        await WaitForAllAsync(client, cts.Token);
+        var token = await GetAccessTokenAsync(client, cts.Token);
+        var tenant = $"e2e-{Environment.MachineName.ToLowerInvariant()}";
+
+        var emb = MakeEmbedding1536();
+        var (docId, collId) = await SeedDocAsync(client, token, tenant, "Vec-1536", emb, cts.Token);
+
+        var baseUrl = GetGatewayBaseUrl();
+        using var res = await SendWithAuthRetryAsync(
+            client,
+            () =>
+            {
+                var r = new HttpRequestMessage(
+                    HttpMethod.Post,
+                    $"{baseUrl}/db/api/documents/search/vector"
+                );
+                r.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
+                r.Headers.TryAddWithoutValidation("X-Tansu-Tenant", tenant);
+                r.Content = new StringContent(
+                    JsonSerializer.Serialize(
+                        new
+                        {
+                            collectionId = collId,
+                            query = emb,
+                            k = 3
+                        }
+                    ),
+                    Encoding.UTF8,
+                    "application/json"
+                );
+                return r;
+            },
+            cts.Token
+        );
+
+        if (res.StatusCode == HttpStatusCode.NotImplemented)
+        {
+            // pgvector/embedding column not available; acceptable fallback
+            return;
+        }
+
+        Assert.Equal(HttpStatusCode.OK, res.StatusCode);
+        var json = await res.Content.ReadAsStringAsync(cts.Token);
+        using var doc = JsonDocument.Parse(json);
+        var root = doc.RootElement;
+        Assert.True(
+            root.TryGetProperty("items", out var items),
+            "Response should contain 'items'."
+        );
+        Assert.True(items.GetArrayLength() > 0, "Items should not be empty.");
+        var first = items[0];
+        Assert.True(first.TryGetProperty("id", out var idProp), "Item should have 'id'.");
+        var top1 = idProp.GetGuid();
+        Assert.Equal(docId, top1);
     }
 }

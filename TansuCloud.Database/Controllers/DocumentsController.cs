@@ -1,4 +1,5 @@
 // Tansu.Cloud Public Repository:    https://github.com/MusaGursoy/TansuCloud
+using System.Globalization;
 using System.Text.Json;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -411,14 +412,30 @@ public sealed class DocumentsController(
         {
             try
             {
-                var dim = input.embedding.Length;
-                var sql =
-                    "DO $$ BEGIN IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='documents' AND column_name='embedding') THEN UPDATE documents SET embedding = $1 WHERE id = $2; END IF; END$$;";
-                await db.Database.ExecuteSqlRawAsync(
-                    sql,
-                    new object[] { input.embedding, entity.Id },
-                    ct
-                );
+                // Only attempt upsert if dimension matches our schema (1536). Otherwise, skip gracefully.
+                if (input.embedding.Length == 1536)
+                {
+                    // Build vector literal like "[0.1,0.2,...]" and cast to vector(1536) to avoid driver type mapping issues
+                    var vec =
+                        "["
+                        + string.Join(
+                            ',',
+                            input.embedding.Select(f =>
+                                f.ToString("G9", CultureInfo.InvariantCulture)
+                            )
+                        )
+                        + "]";
+                    var sql =
+                        "DO $$ BEGIN IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='documents' AND column_name='embedding') THEN UPDATE documents SET embedding = CAST($1 AS vector(1536)) WHERE id = $2; END IF; END$$;";
+                    await db.Database.ExecuteSqlRawAsync(sql, new object[] { vec, entity.Id }, ct);
+                }
+                else
+                {
+                    _logger.LogInformation(
+                        "Skipping embedding upsert due to dimension mismatch: provided={Provided}, expected=1536",
+                        input.embedding.Length
+                    );
+                }
             }
             catch (Exception ex)
             {
@@ -491,13 +508,28 @@ public sealed class DocumentsController(
         {
             try
             {
-                var sql =
-                    "DO $$ BEGIN IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='documents' AND column_name='embedding') THEN UPDATE documents SET embedding = $1 WHERE id = $2; END IF; END$$;";
-                await db.Database.ExecuteSqlRawAsync(
-                    sql,
-                    new object[] { input.embedding, e.Id },
-                    ct
-                );
+                if (input.embedding.Length == 1536)
+                {
+                    var vec =
+                        "["
+                        + string.Join(
+                            ',',
+                            input.embedding.Select(f =>
+                                f.ToString("G9", CultureInfo.InvariantCulture)
+                            )
+                        )
+                        + "]";
+                    var sql =
+                        "DO $$ BEGIN IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='documents' AND column_name='embedding') THEN UPDATE documents SET embedding = CAST($1 AS vector(1536)) WHERE id = $2; END IF; END$$;";
+                    await db.Database.ExecuteSqlRawAsync(sql, new object[] { vec, e.Id }, ct);
+                }
+                else
+                {
+                    _logger.LogInformation(
+                        "Skipping embedding upsert due to dimension mismatch: provided={Provided}, expected=1536",
+                        input.embedding.Length
+                    );
+                }
             }
             catch (Exception ex)
             {

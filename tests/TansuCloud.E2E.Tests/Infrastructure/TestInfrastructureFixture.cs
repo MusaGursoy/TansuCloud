@@ -18,11 +18,11 @@ public sealed class TestInfrastructureFixture : IAsyncLifetime
 {
     public async Task InitializeAsync()
     {
-    Console.WriteLine("[Fixture] Initializing infrastructure readiness checks...");
-    await WaitForPostgres();
-    Console.WriteLine("[Fixture] Postgres ready.");
-    await WaitForIdentityJwks();
-    Console.WriteLine("[Fixture] Identity JWKS ready.");
+        Console.WriteLine("[Fixture] Initializing infrastructure readiness checks...");
+        await WaitForPostgres();
+        Console.WriteLine("[Fixture] Postgres ready.");
+        await WaitForIdentityJwks();
+        Console.WriteLine("[Fixture] Identity JWKS ready.");
     } // End of Method InitializeAsync
 
     public Task DisposeAsync() => Task.CompletedTask; // End of Method DisposeAsync
@@ -65,8 +65,10 @@ public sealed class TestInfrastructureFixture : IAsyncLifetime
     private static async Task WaitForIdentityJwks()
     {
         // Public base URL may be gateway or localhost per config; default to http://localhost:8080
-        var baseUrl = Environment.GetEnvironmentVariable("PUBLIC_BASE_URL") ?? "http://localhost:8080";
-        if (!baseUrl.EndsWith('/')) baseUrl += "/";
+        var baseUrl =
+            Environment.GetEnvironmentVariable("PUBLIC_BASE_URL") ?? "http://localhost:8080";
+        if (!baseUrl.EndsWith('/'))
+            baseUrl += "/";
         var jwksUrl = new Uri(new Uri(baseUrl), "identity/.well-known/jwks").ToString();
         using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
         var attempt = 0;
@@ -77,8 +79,10 @@ public sealed class TestInfrastructureFixture : IAsyncLifetime
             {
                 var json = await http.GetStringAsync(jwksUrl);
                 using var doc = JsonDocument.Parse(json);
-                if (doc.RootElement.TryGetProperty("keys", out var keys)
-                    && keys.GetArrayLength() > 0)
+                if (
+                    doc.RootElement.TryGetProperty("keys", out var keys)
+                    && keys.GetArrayLength() > 0
+                )
                 {
                     Console.WriteLine(
                         $"[Fixture] JWKS keys loaded (count={keys.GetArrayLength()}) from {jwksUrl}"
