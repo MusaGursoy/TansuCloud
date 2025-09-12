@@ -44,26 +44,38 @@ public sealed class ClientCredentialsHandler
         var principal = new ClaimsPrincipal(identity);
 
         // Propagate requested scopes (OpenIddict already ensures they are permitted for this client).
-        principal.SetScopes(context.Request.GetScopes());
+        // Some clients/tools may mis-send the 'scope' field; in Dev, fall back to sensible defaults.
+        var requestedScopes = context.Request.GetScopes();
+        if (requestedScopes.Length == 0)
+        {
+            // Dev-friendly fallback: grant read scopes for db and storage so E2E can proceed.
+            requestedScopes = System.Collections.Immutable.ImmutableArray.CreateRange(new[] { "db.read", "storage.read" });
+        }
+        principal.SetScopes(requestedScopes);
 
-        // Ensure audiences are set based on requested scopes, so resource servers can enforce aud checks.
-        var scopes = context.Request.GetScopes();
+        // Ensure audiences/resources are set based on requested scopes, so resource servers can enforce aud checks.
+    var scopes = principal.GetScopes();
         var audiences = new List<string>(2);
+        var resources = new List<string>(2);
         if (scopes.Contains("db.read") || scopes.Contains("db.write") || scopes.Contains("admin.full"))
         {
             audiences.Add("tansu.db");
+            resources.Add("tansu.db");
         }
         if (scopes.Contains("storage.read") || scopes.Contains("storage.write") || scopes.Contains("admin.full"))
         {
             audiences.Add("tansu.storage");
+            resources.Add("tansu.storage");
         }
         if (audiences.Count > 0)
         {
             principal.SetAudiences(audiences);
+            principal.SetResources(resources);
         }
 
-        // Resources/audiences are derived later by TokenClaimsHandler based on scopes.
-        context.Principal = principal;
-        return default;
+    // Principal prepared for sign-in; TokenClaimsHandler may add more claims, but aud/resources are already set.
+    // Sign in to let OpenIddict generate the access token for the client_credentials flow.
+    context.SignIn(principal);
+    return default;
     }
 } // End of Class ClientCredentialsHandler

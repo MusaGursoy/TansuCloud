@@ -280,6 +280,9 @@ This platform ships with lightweight health checks and end-to-end (E2E) tests th
 - Notes:
 	- Tests accept development HTTPS certificates; no extra trust steps needed for local runs.
 	- The provisioning test obtains an access token using the dashboard client (scopes: `db.write admin.full`) and calls the Database provisioning API twice, asserting idempotency.
+	- Playwright browsers: to avoid long installs during test runs, preinstall browsers once:
+		- Option A (recommended): run `pwsh -NoProfile -File tests/TansuCloud.E2E.Tests/playwright.ps1` once; the script is idempotent and skips if already installed.
+		- Option B: set `PLAYWRIGHT_SKIP_INSTALL=1` to skip installs in environments where browsers are pre-baked (e.g., CI agents).
 
 ### 13.2.1 Redis-dependent outbox test gating
 
@@ -308,6 +311,75 @@ Rationale:
 - Local developers can opt-in for the extra signal when modifying outbox/Redis code paths.
 
 If you routinely run with Redis, consider adding a VS Code test task that sets `REDIS_URL` inline so the attribute no longer skips the test.
+
+### 13.6 Storage API v1 quick reference
+
+Base path via gateway: `/storage/api`. All requests must include the tenant header `X-Tansu-Tenant: <tenant-id>`. Auth scopes: `storage.read` for reads, `storage.write` for writes. In Development, `admin.full` implies both.
+
+Buckets
+
+- `GET /buckets` — list buckets for the tenant.
+- `PUT /buckets/{bucket}` — create a bucket (idempotent).
+- `DELETE /buckets/{bucket}` — delete an empty bucket; returns 409 if not empty.
+
+Objects
+
+- `PUT /objects/{bucket}/{key}` — upload an object. Returns 201 Created with a weak `ETag` header.
+- `GET /objects/{bucket}/{key}` — download an object. Supports range requests (`Range: bytes=...`) returning 206 and `Content-Range`.
+- `HEAD /objects/{bucket}/{key}` — metadata only; returns `ETag`, `Content-Type`, and `Content-Length`.
+- `DELETE /objects/{bucket}/{key}` — delete an object.
+- `GET /objects?bucket={bucket}&prefix={prefix?}` — list objects in a bucket with optional prefix; items include `Key`, `ETag`, `Length`, `ContentType`, `LastModified`.
+
+Conditional requests
+
+- Lists and items return weak `ETag`s. Send `If-None-Match` on GET to receive `304 Not Modified` when unchanged.
+- Send `If-Match` on modifying requests when you need optimistic concurrency; `412 Precondition Failed` on mismatch.
+
+Presigned URLs
+
+- `POST /presign` — generate a temporary signed URL for anonymous access.
+	- Body (example):
+		- `{"Method":"PUT","Bucket":"bkt","Key":"path/file.txt","ExpirySeconds":300,"MaxBytes":2000000,"ContentType":"text/plain"}`
+	- Response: `{ "url": "/storage/api/objects/bkt/path/file.txt?exp=...&sig=...&ct=...&max=...", "expires": 1700000000 }`
+	- Enforcement at upload time:
+		- `exp` strictly enforced: expired presigned URLs return 403 Forbidden (no clock skew allowance).
+		- `max` limits the request `Content-Length`.
+		- `ct` enforces Content-Type by media type only (parameters like `charset` are ignored). For example, presigned as `text/plain` accepts uploads with `text/plain; charset=utf-8`.
+	- Anonymous client must still include tenant header: `X-Tansu-Tenant`.
+
+Multipart uploads
+
+- `POST /multipart/{bucket}/initiate/{key}` — returns `{ uploadId }`.
+- `PUT /multipart/{bucket}/parts/{partNumber}/{key}?uploadId=...` — upload a part; presign is supported.
+- `POST /multipart/{bucket}/complete/{key}?uploadId=...` + body `{ "Parts": [1,2,...] }` — assemble parts into the final object.
+- `DELETE /multipart/{bucket}/abort/{key}?uploadId=...` — abort and cleanup.
+- Minimum part size is enforced at Complete: all parts except the last must be at least the configured minimum.
+- Optional per-part size cap: when `Storage__MultipartMaxPartSizeBytes` > 0, each uploaded part (including the last) must be ≤ that size. Oversized parts are rejected with `413 Payload Too Large` during `PUT /multipart/.../parts/...` and will cause `Complete` to fail validation if somehow bypassed.
+
+Configuration keys (storage service)
+
+- `Storage__RootPath`: Filesystem path for object data (default `/data` inside the container).
+- `Storage__PresignSecret`: HMAC secret used to sign presigned URLs.
+- `Storage__MultipartMaxPartSizeBytes`: Per-part size cap in bytes for multipart uploads. Use `0` to disable the cap. In development compose, it's set to `1048576` (1 MiB) to exercise E2E coverage.
+
+Usage and quotas
+
+- `GET /usage` — returns tenant usage: `{ totalBytes, objectCount, maxTotalBytes?, maxObjectCount?, maxObjectSizeBytes? }`.
+- Quotas apply to regular and presigned uploads; violations return RFC7807 ProblemDetails with a descriptive reason.
+
+Admin Dashboard
+
+  - The Dashboard includes an admin page at `/admin/storage` that surfaces:
+    - Tenant usage header
+    - Bucket list/create/delete
+    - Object list by prefix (Key, ETag, Length, Content-Type, Last-Modified) and per-object delete
+    - Presigned anonymous upload flow with content-type and max-bytes controls
+    - HEAD metadata viewer for ETag/Content-Type/Length
+
+Notes
+
+- Always include `X-Tansu-Tenant` on requests through the gateway, including anonymous presigned calls.
+- ETags are weak and stable per object content; they enable efficient conditional requests and caching through the gateway.
 
 ### 13.5 Database API v1 quick reference
 

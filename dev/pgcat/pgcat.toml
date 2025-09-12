@@ -9,8 +9,8 @@ server_lifetime = 86400000
 ban_time = 60
 autoreload = 15000
 worker_threads = 4
-admin_username = "admin_user"
-admin_password = "admin_pass"
+admin_username = "admin"
+admin_password = "admin"
 
 [pools.postgres]
 pool_mode = "transaction"

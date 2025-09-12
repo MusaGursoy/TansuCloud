@@ -166,7 +166,32 @@
 				}
 			},
 			"group": "build"
+		},
+		{
+			"label": "build-sln",
+			"type": "shell",
+			"command": "dotnet build .\\TansuCloud.sln -c Debug",
+			"isBackground": false,
+			"group": "build"
+		},
+		{
+			"label": "temp: build-sln",
+			"type": "shell",
+			"command": "dotnet build .\\TansuCloud.sln -c Debug",
+			"isBackground": false,
+			"group": "build"
+		},
+		{
+			"label": "temp: build-dashboard",
+			"type": "shell",
+			"command": "dotnet build .\\TansuCloud.Dashboard\\TansuCloud.Dashboard.csproj -c Debug",
+			"isBackground": false,
+			"group": "build"
+		},
+		{
+			"label": "temp: build-sln",
+			"type": "shell",
+			"command": "dotnet build .\\TansuCloud.sln -c Debug"
 		}
-		
 	]
 }

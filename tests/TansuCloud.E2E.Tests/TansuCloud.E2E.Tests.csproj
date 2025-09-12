@@ -18,7 +18,7 @@
     <PackageReference Include="Microsoft.EntityFrameworkCore" Version="9.0.9" />
     <PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" Version="9.0.4" />
   <PackageReference Include="Microsoft.EntityFrameworkCore.InMemory" Version="9.0.9" />
-  <PackageReference Include="StackExchange.Redis" Version="2.9.11" />
+  <PackageReference Include="StackExchange.Redis" Version="2.9.17" />
   <PackageReference Include="Microsoft.AspNetCore.Http.Abstractions" Version="2.3.0" />
   </ItemGroup>
   <ItemGroup>
@@ -27,15 +27,9 @@
   <ItemGroup>
     <ProjectReference Include="..\..\TansuCloud.Database\TansuCloud.Database.csproj" />
   </ItemGroup>
-  <Target Name="PlaywrightInstall" AfterTargets="Build">
-    <Exec Command="pwsh -NoProfile -ExecutionPolicy Bypass -File $(Playwright_BinPath)/playwright.ps1 install chromium" />
-  </Target>
-  
-  <PropertyGroup>
-    <PlaywrightInstallBrowsers>true</PlaywrightInstallBrowsers>
-  </PropertyGroup>
 
-  <Target Name="PlaywrightInstall" AfterTargets="Build">
-    <Exec Command="pwsh -NoProfile -ExecutionPolicy Bypass -File $(TargetDir)playwright.ps1 install chromium" />
-  </Target>
+  <!-- Prevent automatic Playwright browser install during build to avoid long test startup times. -->
+  <PropertyGroup>
+    <PlaywrightInstallBrowsers>false</PlaywrightInstallBrowsers>
+  </PropertyGroup>
 </Project>

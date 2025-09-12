@@ -696,7 +696,14 @@ reverseProxyBuilder.LoadFromMemory(
                     ["Set"] = "/storage"
                 },
                 new Dictionary<string, string> { ["RequestHeadersCopy"] = "true" },
-                new Dictionary<string, string> { ["ResponseHeadersCopy"] = "true" }
+                new Dictionary<string, string> { ["ResponseHeadersCopy"] = "true" },
+                // Ensure downstream Vary: Accept-Encoding is present even when not compressed,
+                // so caches/keying remain correct (aligns with Storage service semantics).
+                new Dictionary<string, string>
+                {
+                    ["ResponseHeader"] = "Vary",
+                    ["Set"] = "Accept-Encoding"
+                }
             }
         }
     },
@@ -842,7 +849,7 @@ app.Use(
     }
 ); // End of Middleware Tenant Header
 
-// Enforce simple per-route auth guard at gateway until Identity is wired
+// Enforce simple per-route auth guard at gateway with a safe exception for presigned storage links
 app.Use(
     async (context, next) =>
     {
@@ -888,11 +895,44 @@ app.Use(
             }
         }
 
-        if (requiresAuth && !isHealth && !isProvisioningBypass)
+        // Development-only: permit anonymous access to presigned storage object URLs
+        // These URLs carry HMAC query params validated by the Storage service itself (sig/exp[/max/ct]).
+        var isPresignedStorage = false;
+        if (requiresAuth && path.StartsWithSegments("/storage", StringComparison.OrdinalIgnoreCase))
+        {
+            var q = context.Request.Query;
+            // Only allow for object routes, not arbitrary storage APIs
+            if (
+                (
+                    path.StartsWithSegments("/storage/api/objects", StringComparison.OrdinalIgnoreCase)
+                    || path.StartsWithSegments("/storage/api/transform", StringComparison.OrdinalIgnoreCase)
+                )
+                && q.ContainsKey("sig")
+                && q.ContainsKey("exp")
+            )
+            {
+                isPresignedStorage = true;
+            }
+        }
+
+        if (requiresAuth && !isHealth && !isProvisioningBypass && !isPresignedStorage)
         {
             // Reject if no Authorization header present
             if (!context.Request.Headers.ContainsKey("Authorization"))
             {
+                // Diagnostic: log why we are rejecting, include path/query and presign detection
+                try
+                {
+                    var qdump = string.Join('&', context.Request.Query.Select(kv => $"{kv.Key}={kv.Value}").ToArray());
+                    app.Logger.LogWarning(
+                        "AuthGuard: 401 unauthenticated request to {Path} (presigned={IsPresigned}, provisioningBypass={Bypass}). Query={Query}",
+                        context.Request.Path,
+                        isPresignedStorage,
+                        isProvisioningBypass,
+                        qdump
+                    );
+                }
+                catch { }
                 context.Response.StatusCode = StatusCodes.Status401Unauthorized;
                 context.Response.Headers["WWW-Authenticate"] = "Bearer";
                 return;
@@ -900,7 +940,7 @@ app.Use(
         }
 
         // If Authorization header present, instruct downstream to avoid caching the response
-        if (context.Request.Headers.ContainsKey("Authorization"))
+    if (context.Request.Headers.ContainsKey("Authorization"))
         {
             context.Response.Headers["Cache-Control"] = "no-store";
         }

@@ -1,0 +1,438 @@
+@page "/admin/storage"
+@using Microsoft.AspNetCore.Components.Forms
+@inject HttpClient Http
+
+<h3>Storage Management</h3>
+
+<div class="mb-3">
+    <label class="form-label">Tenant Id (X-Tansu-Tenant)</label>
+    <input class="form-control" @bind="tenantId" placeholder="acme-dev" />
+    <small class="text-muted">All storage calls include this tenant header.</small>
+</div>
+
+@if (usage is not null)
+{
+    <div class="alert alert-info" role="alert" style="max-width: 900px">
+        <div class="d-flex justify-content-between">
+            <div>
+                <strong>Usage</strong> — Objects: @usage.objectCount / @(usage.maxObjectCount ?? 0), Bytes: @usage.totalBytes / @(usage.maxTotalBytes ?? 0)
+            </div>
+            <div>
+                <button class="btn btn-sm btn-outline-secondary" @onclick="LoadUsageAsync">Refresh</button>
+            </div>
+        </div>
+    </div>
+}
+
+<hr />
+
+<h4>Buckets</h4>
+<div class="d-flex gap-2 align-items-end mb-2">
+    <div>
+        <label class="form-label">New bucket</label>
+        <input class="form-control" @bind="newBucket" />
+    </div>
+    <button class="btn btn-primary" @onclick="CreateBucketAsync">Create</button>
+    <button class="btn btn-secondary" @onclick="LoadBucketsAsync">Refresh</button>
+</div>
+
+@if (bucketError is not null)
+{
+    <p class="text-danger">@bucketError</p>
+}
+
+<table class="table table-sm" style="max-width: 900px" >
+    <thead>
+        <tr>
+            <th>Bucket</th>
+            <th></th>
+        </tr>
+    </thead>
+    <tbody>
+        @if (buckets is null)
+        {
+            <tr><td colspan="2"><em>Load buckets…</em></td></tr>
+        }
+        else if (buckets.Count == 0)
+        {
+            <tr><td colspan="2"><em>No buckets</em></td></tr>
+        }
+        else
+        {
+            @foreach (var b in buckets)
+            {
+                <tr>
+                    <td>@b</td>
+                    <td class="text-end">
+                        <button class="btn btn-outline-danger btn-sm" title="Delete bucket" @onclick="() => DeleteBucketAsync(b)">Delete</button>
+                    </td>
+                </tr>
+            }
+        }
+    </tbody>
+    
+    
+</table>
+
+<hr />
+
+<h4>Objects (presigned upload + HEAD)</h4>
+<div class="row g-3" style="max-width: 900px">
+    <div class="col-md-4">
+        <label class="form-label">Bucket</label>
+        <input class="form-control" @bind="objBucket" />
+    </div>
+    <div class="col-md-8">
+        <label class="form-label">Key</label>
+        <input class="form-control" @bind="objKey" />
+    </div>
+    <div class="col-md-6">
+        <label class="form-label">Prefix (list objects)</label>
+        <input class="form-control" @bind="objPrefix" />
+    </div>
+    <div class="col-md-6 d-flex align-items-end">
+        <button class="btn btn-outline-secondary me-2" @onclick="ListObjectsAsync">List objects</button>
+        <button class="btn btn-outline-secondary" @onclick="() => { objItems = null; }">Clear list</button>
+    </div>
+    <div class="col-md-6">
+        <label class="form-label">Select file to upload</label>
+        <InputFile OnChange="HandleSelected" class="form-control" />
+        <small class="text-muted">Uses a presigned anonymous PUT with media-type enforcement.</small>
+    </div>
+    <div class="col-md-3">
+        <label class="form-label">Max bytes (optional)</label>
+        <input class="form-control" type="number" @bind="presignMaxBytes" />
+    </div>
+    <div class="col-md-3 d-flex align-items-end">
+        <button class="btn btn-primary w-100" disabled="@(!canUpload)" @onclick="UploadPresignedAsync">Upload</button>
+    </div>
+    
+    <div class="col-md-12">
+        <button class="btn btn-outline-secondary" @onclick="HeadAsync">HEAD (metadata)</button>
+    </div>
+
+    @if (!string.IsNullOrEmpty(objStatus))
+    {
+        <div class="col-12"><pre>@objStatus</pre></div>
+    }
+
+    @if (!string.IsNullOrEmpty(objError))
+    {
+        <div class="col-12 text-danger">@objError</div>
+    }
+
+    @if (objItems is not null)
+    {
+        <div class="col-12">
+            <table class="table table-sm">
+                <thead>
+                    <tr>
+                        <th>Key</th>
+                        <th>ETag</th>
+                        <th>Length</th>
+                        <th>Content-Type</th>
+                        <th>Last Modified</th>
+                        <th></th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @if (objItems.Count == 0)
+                    {
+                        <tr><td colspan="6"><em>No objects</em></td></tr>
+                    }
+                    else
+                    {
+                        @foreach (var it in objItems)
+                        {
+                            <tr>
+                                <td>@it.Key</td>
+                                <td><code>@(string.IsNullOrWhiteSpace(it.ETag) ? "" : it.ETag)</code></td>
+                                <td>@it.Length</td>
+                                <td>@it.ContentType</td>
+                                <td>@it.LastModified?.ToString("u")</td>
+                                <td class="text-end">
+                                    <button class="btn btn-outline-danger btn-sm" @onclick="() => DeleteObjectAsync(objBucket, it.Key)">Delete</button>
+                                </td>
+                            </tr>
+                        }
+                    }
+                </tbody>
+            </table>
+        </div>
+    }
+</div>
+
+@code {
+    private string tenantId = "acme-dev";
+    private List<string>? buckets;
+    private string? newBucket;
+    private string? bucketError;
+
+    private string objBucket = string.Empty;
+    private string objKey = string.Empty;
+    private string? objPrefix;
+    private IBrowserFile? selectedFile;
+    private long? presignMaxBytes;
+    private string? objError;
+    private string? objStatus;
+    private UsageDto? usage;
+    private List<ObjectItem>? objItems;
+
+    private bool canUpload => !string.IsNullOrWhiteSpace(tenantId)
+        && !string.IsNullOrWhiteSpace(objBucket)
+        && !string.IsNullOrWhiteSpace(objKey)
+        && selectedFile is not null;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadUsageAsync();
+        await LoadBucketsAsync();
+    }
+
+    private async Task LoadUsageAsync()
+    {
+        try
+        {
+            var req = new HttpRequestMessage(HttpMethod.Get, "/storage/api/usage");
+            req.Headers.Add("X-Tansu-Tenant", tenantId);
+            var resp = await Http.SendAsync(req);
+            if (resp.IsSuccessStatusCode)
+            {
+                usage = await resp.Content.ReadFromJsonAsync<UsageDto>();
+            }
+        }
+        catch { /* ignore */ }
+    }
+
+    private async Task LoadBucketsAsync()
+    {
+        bucketError = null;
+        try
+        {
+            var req = new HttpRequestMessage(HttpMethod.Get, "/storage/api/buckets");
+            req.Headers.Add("X-Tansu-Tenant", tenantId);
+            var resp = await Http.SendAsync(req);
+            if (!resp.IsSuccessStatusCode)
+            {
+                bucketError = $"List buckets failed: {(int)resp.StatusCode} {resp.ReasonPhrase}";
+                buckets = new();
+                return;
+            }
+            var list = await resp.Content.ReadFromJsonAsync<List<string>>();
+            buckets = list ?? new();
+        }
+        catch (Exception ex)
+        {
+            bucketError = ex.Message;
+            buckets = new();
+        }
+    }
+
+    private async Task CreateBucketAsync()
+    {
+        bucketError = null;
+        if (string.IsNullOrWhiteSpace(newBucket)) return;
+        try
+        {
+            var req = new HttpRequestMessage(HttpMethod.Put, $"/storage/api/buckets/{Uri.EscapeDataString(newBucket!)}");
+            req.Headers.Add("X-Tansu-Tenant", tenantId);
+            var resp = await Http.SendAsync(req);
+            if (!resp.IsSuccessStatusCode)
+            {
+                bucketError = $"Create failed: {(int)resp.StatusCode} {resp.ReasonPhrase}";
+            }
+            else
+            {
+                newBucket = null;
+                await LoadBucketsAsync();
+            }
+        }
+        catch (Exception ex)
+        {
+            bucketError = ex.Message;
+        }
+    }
+
+    private async Task DeleteBucketAsync(string bucket)
+    {
+        bucketError = null;
+        try
+        {
+            var req = new HttpRequestMessage(HttpMethod.Delete, $"/storage/api/buckets/{Uri.EscapeDataString(bucket)}");
+            req.Headers.Add("X-Tansu-Tenant", tenantId);
+            var resp = await Http.SendAsync(req);
+            if (!resp.IsSuccessStatusCode)
+            {
+                bucketError = $"Delete failed: {(int)resp.StatusCode} {resp.ReasonPhrase}";
+            }
+            await LoadBucketsAsync();
+        }
+        catch (Exception ex)
+        {
+            bucketError = ex.Message;
+        }
+    }
+
+    private void HandleSelected(InputFileChangeEventArgs e)
+    {
+        selectedFile = e.FileCount > 0 ? e.File : null;
+    }
+
+    private async Task UploadPresignedAsync()
+    {
+        objError = null; objStatus = null;
+        try
+        {
+            // Use previously selected file
+            var file = selectedFile;
+            if (file is null) { objError = "No file selected"; return; }
+
+            var contentType = file.ContentType ?? "application/octet-stream";
+            var create = new PresignReq
+            {
+                Method = "PUT",
+                Bucket = objBucket,
+                Key = objKey,
+                MaxBytes = presignMaxBytes,
+                ContentType = contentType,
+                ExpirySeconds = 300
+            };
+            var preReq = new HttpRequestMessage(HttpMethod.Post, "/storage/api/presign");
+            preReq.Headers.Add("X-Tansu-Tenant", tenantId);
+            preReq.Content = JsonContent.Create(create);
+            var preResp = await Http.SendAsync(preReq);
+            if (!preResp.IsSuccessStatusCode)
+            {
+                objError = $"Presign failed: {(int)preResp.StatusCode} {preResp.ReasonPhrase}";
+                return;
+            }
+            var presign = await preResp.Content.ReadFromJsonAsync<PresignResp>();
+            if (presign is null) { objError = "No presign body"; return; }
+
+            var absolute = new Uri(Http.BaseAddress!, presign.url);
+            using var anon = new HttpClient();
+            using var fs = file.OpenReadStream(long.MaxValue);
+            using var put = new HttpRequestMessage(HttpMethod.Put, absolute);
+            put.Headers.Add("X-Tansu-Tenant", tenantId);
+            put.Content = new StreamContent(fs);
+            put.Content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue(contentType);
+            var putResp = await anon.SendAsync(put);
+            var body = await putResp.Content.ReadAsStringAsync();
+            objStatus = $"PUT {(int)putResp.StatusCode} {putResp.ReasonPhrase}\n{body}";
+            if (!putResp.IsSuccessStatusCode)
+            {
+                objError = objStatus;
+            }
+            else
+            {
+                await LoadUsageAsync();
+                await ListObjectsAsync();
+            }
+        }
+        catch (Exception ex)
+        {
+            objError = ex.Message;
+        }
+    }
+
+    private async Task HeadAsync()
+    {
+        objError = null; objStatus = null;
+        try
+        {
+            var req = new HttpRequestMessage(HttpMethod.Head, $"/storage/api/objects/{Uri.EscapeDataString(objBucket)}/{Uri.EscapeDataString(objKey)}");
+            req.Headers.Add("X-Tansu-Tenant", tenantId);
+            var resp = await Http.SendAsync(req);
+            objStatus = $"HEAD {(int)resp.StatusCode} {resp.ReasonPhrase}\nETag: {resp.Headers.ETag?.Tag}\nCT: {resp.Content.Headers.ContentType}\nLen: {resp.Content.Headers.ContentLength}";
+            if (!resp.IsSuccessStatusCode)
+            {
+                objError = objStatus;
+            }
+        }
+        catch (Exception ex)
+        {
+            objError = ex.Message;
+        }
+    }
+
+    private async Task ListObjectsAsync()
+    {
+        objError = null;
+        objItems = null;
+        try
+        {
+            if (string.IsNullOrWhiteSpace(objBucket))
+            {
+                objItems = new();
+                return;
+            }
+            var url = $"/storage/api/objects?bucket={Uri.EscapeDataString(objBucket)}" +
+                      (string.IsNullOrWhiteSpace(objPrefix) ? string.Empty : $"&prefix={Uri.EscapeDataString(objPrefix)}");
+            var req = new HttpRequestMessage(HttpMethod.Get, url);
+            req.Headers.Add("X-Tansu-Tenant", tenantId);
+            var resp = await Http.SendAsync(req);
+            if (!resp.IsSuccessStatusCode)
+            {
+                objError = $"List objects failed: {(int)resp.StatusCode} {resp.ReasonPhrase}";
+                objItems = new();
+                return;
+            }
+            var list = await resp.Content.ReadFromJsonAsync<List<ObjectItem>>();
+            objItems = list ?? new();
+        }
+        catch (Exception ex)
+        {
+            objError = ex.Message;
+            objItems = new();
+        }
+    }
+
+    private async Task DeleteObjectAsync(string bucket, string key)
+    {
+        try
+        {
+            var req = new HttpRequestMessage(HttpMethod.Delete, $"/storage/api/objects/{Uri.EscapeDataString(bucket)}/{Uri.EscapeDataString(key)}");
+            req.Headers.Add("X-Tansu-Tenant", tenantId);
+            var resp = await Http.SendAsync(req);
+            if (!resp.IsSuccessStatusCode)
+            {
+                objError = $"Delete object failed: {(int)resp.StatusCode} {resp.ReasonPhrase}";
+            }
+            await LoadUsageAsync();
+            await ListObjectsAsync();
+        }
+        catch (Exception ex)
+        {
+            objError = ex.Message;
+        }
+    }
+
+    
+
+    private sealed class PresignReq
+    {
+        public string Method { get; set; } = "PUT";
+        public string Bucket { get; set; } = string.Empty;
+        public string Key { get; set; } = string.Empty;
+        public int? ExpirySeconds { get; set; }
+        public long? MaxBytes { get; set; }
+        public string? ContentType { get; set; }
+    }
+    private sealed class PresignResp { public string url { get; set; } = string.Empty; public long expires { get; set; } }
+    private sealed class UsageDto
+    {
+        public long totalBytes { get; set; }
+        public int objectCount { get; set; }
+        public long? maxTotalBytes { get; set; }
+        public int? maxObjectCount { get; set; }
+        public long? maxObjectSizeBytes { get; set; }
+    }
+    private sealed class ObjectItem
+    {
+        public string Key { get; set; } = string.Empty;
+        public string? ETag { get; set; }
+        public long Length { get; set; }
+        public string? ContentType { get; set; }
+        public DateTimeOffset? LastModified { get; set; }
+    }
+}

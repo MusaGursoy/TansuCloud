@@ -324,7 +324,7 @@ builder.Services.AddHttpClient(
     "local",
     c =>
     {
-        c.BaseAddress = new Uri("http://localhost:5095");
+    c.BaseAddress = new Uri("http://127.0.0.1:5095");
     }
 );
 

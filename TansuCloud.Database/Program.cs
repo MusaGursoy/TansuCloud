@@ -191,7 +191,7 @@ builder
         // Include detailed error descriptions in WWW-Authenticate for easier diagnostics (Dev only)
         options.IncludeErrorDetails = true;
         // Accept both issuer forms (with and without trailing slash)
-        var configured = builder.Configuration["Oidc:Issuer"] ?? "http://localhost:8080/identity/";
+    var configured = builder.Configuration["Oidc:Issuer"] ?? "http://127.0.0.1:8080/identity/";
         var issuerNoSlash = configured.TrimEnd('/');
         var issuerWithSlash = issuerNoSlash + "/";
 

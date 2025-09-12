@@ -94,7 +94,7 @@ services:
       dockerfile: TansuCloud.Identity/Dockerfile
     environment:
       ASPNETCORE_ENVIRONMENT: Development
-      Oidc__Issuer: http://127.0.0.1:8080/identity/
+      Oidc__Issuer: http://gateway:8080/identity/
       Oidc__RedirectUri: http://127.0.0.1:8080/dashboard/signin-oidc
       Oidc__PostLogoutRedirectUri: http://127.0.0.1:8080/dashboard/signout-callback-oidc
       Oidc__Dashboard__RedirectUri: http://127.0.0.1:8080/dashboard/signin-oidc
@@ -148,8 +148,7 @@ services:
       dockerfile: TansuCloud.Database/Dockerfile
     environment:
       ASPNETCORE_ENVIRONMENT: Development
-      PUBLIC_BASE_URL: http://127.0.0.1:8080
-      Oidc__Issuer: ${PUBLIC_BASE_URL:-http://gateway:8080}/identity/
+      Oidc__Issuer: http://gateway:8080/identity/
       OpenTelemetry__Otlp__Endpoint: http://otel-collector:4317
       Outbox__RedisConnection: redis:6379
       Outbox__Channel: tansu.outbox
@@ -177,11 +176,18 @@ services:
     build:
       context: .
       dockerfile: TansuCloud.Storage/Dockerfile
+    user: "0:0"
     environment:
-      PUBLIC_BASE_URL: http://127.0.0.1:8080
-      Oidc__Issuer: ${PUBLIC_BASE_URL:-http://gateway:8080}/identity/
+      ASPNETCORE_ENVIRONMENT: Development
+      Oidc__Issuer: http://gateway:8080/identity/
       OpenTelemetry__Otlp__Endpoint: http://otel-collector:4317
       Cache__Redis: redis:6379
+      # Use a writable path for filesystem-backed storage inside the container
+      Storage__RootPath: /data
+      # Dev-only presign secret to enable presigned URL validation in E2E
+      Storage__PresignSecret: dev-presign
+      # Enforce a max per-part size for multipart uploads (1 MiB) to validate E2E behavior
+      Storage__MultipartMaxPartSizeBytes: 1048576
     healthcheck:
       test: ["CMD", "/bin/busybox", "wget", "-q", "-O", "-", "http://localhost:8080/health/ready"]
       interval: 10s
@@ -190,6 +196,8 @@ services:
       start_period: 25s
     networks:
       - tansucloud-network
+    volumes:
+      - tansu-storagedata:/data
 
   gateway:
     build:
@@ -231,4 +239,6 @@ volumes:
   tansu-pgdata:
     driver: local
   tansu-redisdata:
+    driver: local
+  tansu-storagedata:
     driver: local

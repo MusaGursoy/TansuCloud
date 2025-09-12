@@ -51,14 +51,24 @@ public sealed class TokenClaimsHandler
         plan ??= _config["Plan:Default"] ?? "dev";
         principal.SetClaim(ClaimTypes.Plan, plan);
 
-        // Audiences based on scopes
+        // Resources/audiences based on scopes so resource servers can enforce aud checks
         var audiences = new List<string>(2);
+        var resources = new List<string>(2);
         if (principal.HasScope("db.read") || principal.HasScope("db.write"))
+        {
             audiences.Add("tansu.db");
+            resources.Add("tansu.db");
+        }
         if (principal.HasScope("storage.read") || principal.HasScope("storage.write"))
+        {
             audiences.Add("tansu.storage");
+            resources.Add("tansu.storage");
+        }
         if (audiences.Count > 0)
+        {
             principal.SetAudiences(audiences);
+            principal.SetResources(resources);
+        }
 
         // Ensure roles are present when scope "roles" is granted
         if (principal.HasScope(OpenIddictConstants.Scopes.Roles))
