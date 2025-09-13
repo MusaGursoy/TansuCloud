@@ -1,6 +1,7 @@
 // Tansu.Cloud Public Repository:    https://github.com/MusaGursoy/TansuCloud
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.Extensions.Caching.Hybrid;
 using Microsoft.Net.Http.Headers;
 using TansuCloud.Storage.Services;
 
@@ -14,9 +15,17 @@ public sealed class ObjectsController(
     IPresignService presign,
     IQuotaService quotas,
     IAntivirusScanner av,
-    ILogger<ObjectsController> logger
+    ILogger<ObjectsController> logger,
+    ITenantCacheVersion versions,
+    Microsoft.Extensions.Caching.Hybrid.HybridCache? cache = null
 ) : ControllerBase
 {
+    private string CacheKey(params string[] parts)
+    {
+        var v = versions.Get(tenant.TenantId);
+        return $"t:{tenant.TenantId}:v{v}:storage:" + string.Join(':', parts);
+    } // End of Method CacheKey
+
     // GET /api/objects?bucket=...&prefix=...
     [HttpGet]
     [Authorize(Policy = "storage.read")]
@@ -28,9 +37,49 @@ public sealed class ObjectsController(
     {
         if (string.IsNullOrWhiteSpace(bucket))
             return Problem(statusCode: StatusCodes.Status400BadRequest, detail: "bucket required");
+        // Cached listing (tenant/version-aware)
+        var listKey = CacheKey("list", bucket, prefix ?? string.Empty);
+        if (cache is not null)
+        {
+            StorageMetrics.CacheAttempts.Add(
+                1,
+                new System.Collections.Generic.KeyValuePair<string, object?>("op", "list")
+            );
+            var miss = false;
+            var cached = await cache.GetOrCreateAsync(
+                listKey,
+                async token =>
+                {
+                    // miss path (factory executed)
+                    miss = true;
+                    StorageMetrics.CacheMisses.Add(
+                        1,
+                        new System.Collections.Generic.KeyValuePair<string, object?>("op", "list")
+                    );
+                    var list = await storage.ListObjectsAsync(bucket, prefix, ct);
+                    var dto = list.Select(o => new
+                        {
+                            o.Key,
+                            o.ETag,
+                            o.Length,
+                            o.ContentType,
+                            lastModified = o.LastModified
+                        })
+                        .ToArray();
+                    return dto as object;
+                },
+                new HybridCacheEntryOptions { Expiration = TimeSpan.FromSeconds(30) }
+            );
+            if (!miss)
+                StorageMetrics.CacheHits.Add(
+                    1,
+                    new System.Collections.Generic.KeyValuePair<string, object?>("op", "list")
+                );
+            return Ok(cached);
+        }
+
         var list = await storage.ListObjectsAsync(bucket, prefix, ct);
-        // Return a lightweight DTO: key + etag + length + contentType + lastModified
-        var dto = list.Select(o => new
+        var dto2 = list.Select(o => new
         {
             o.Key,
             o.ETag,
@@ -38,7 +87,7 @@ public sealed class ObjectsController(
             o.ContentType,
             lastModified = o.LastModified
         });
-        return Ok(dto);
+        return Ok(dto2);
     }
 
     // PUT /api/objects/{bucket}/{*key}
@@ -47,7 +96,7 @@ public sealed class ObjectsController(
     public async Task<IActionResult> Put(string bucket, string key, CancellationToken ct)
     {
         // Normalize key from route (decode % escapes like %2F)
-        key = Uri.UnescapeDataString(key);
+        key = RouteKeyNormalizer.Normalize(key);
         StorageMetrics.Requests.Add(1, new("tenant", tenant.TenantId), new("op", "PUT"));
         // support presigned anonymous PUT via query when no auth context
         long? presignMax = null;
@@ -161,6 +210,11 @@ public sealed class ObjectsController(
         // optional AV scan (no-op currently)
         _ = av.ScanObjectAsync(bucket, key, ct);
         Response.Headers.ETag = head?.ETag;
+        try
+        {
+            _ = versions.Increment(tenant.TenantId);
+        }
+        catch { }
         return Created(
             $"/api/objects/{bucket}/{key}",
             new
@@ -180,7 +234,43 @@ public sealed class ObjectsController(
     public async Task<IActionResult> Head(string bucket, string key, CancellationToken ct)
     {
         // Normalize key from route (decode % escapes like %2F)
-        key = Uri.UnescapeDataString(key);
+        key = RouteKeyNormalizer.Normalize(key);
+        // Try cache for HEAD metadata
+        var headKey = CacheKey("head", bucket, key);
+        if (cache is not null)
+        {
+            StorageMetrics.CacheAttempts.Add(
+                1,
+                new System.Collections.Generic.KeyValuePair<string, object?>("op", "head")
+            );
+            var miss = false;
+            var cached = await cache.GetOrCreateAsync(
+                headKey,
+                async token =>
+                {
+                    miss = true;
+                    StorageMetrics.CacheMisses.Add(
+                        1,
+                        new System.Collections.Generic.KeyValuePair<string, object?>("op", "head")
+                    );
+                    return await storage.HeadObjectAsync(bucket, key, ct);
+                },
+                new HybridCacheEntryOptions { Expiration = TimeSpan.FromSeconds(60) }
+            );
+            if (cached is null)
+                return NotFound();
+            if (!miss)
+                StorageMetrics.CacheHits.Add(
+                    1,
+                    new System.Collections.Generic.KeyValuePair<string, object?>("op", "head")
+                );
+            Response.Headers.ETag = cached.ETag;
+            Response.Headers["Last-Modified"] = cached.LastModified.ToString("R");
+            Response.Headers["Content-Length"] = cached.Length.ToString();
+            Response.Headers["Content-Type"] = cached.ContentType;
+            return Ok();
+        }
+
         var meta = await storage.HeadObjectAsync(bucket, key, ct);
         if (meta is null)
             return NotFound();
@@ -197,7 +287,7 @@ public sealed class ObjectsController(
     public async Task<IActionResult> Get(string bucket, string key, CancellationToken ct)
     {
         // Normalize key from route (decode % escapes like %2F)
-        key = Uri.UnescapeDataString(key);
+        key = RouteKeyNormalizer.Normalize(key);
         StorageMetrics.Requests.Add(1, new("tenant", tenant.TenantId), new("op", "GET"));
         // support presigned anonymous GET via query when no auth context
         if (!User.Identity?.IsAuthenticated ?? true)
@@ -359,9 +449,18 @@ public sealed class ObjectsController(
     public async Task<IActionResult> Delete(string bucket, string key, CancellationToken ct)
     {
         // Normalize key from route (decode % escapes like %2F)
-        key = Uri.UnescapeDataString(key);
+        key = RouteKeyNormalizer.Normalize(key);
         var ok = await storage.DeleteObjectAsync(bucket, key, ct);
-        return ok ? NoContent() : NotFound();
+        if (ok)
+        {
+            try
+            {
+                _ = versions.Increment(tenant.TenantId);
+            }
+            catch { }
+            return NoContent();
+        }
+        return NotFound();
     }
 
     private bool TryValidatePresign(

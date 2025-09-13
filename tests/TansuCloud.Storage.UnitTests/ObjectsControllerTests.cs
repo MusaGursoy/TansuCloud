@@ -3,6 +3,7 @@ using System.Text;
 using FluentAssertions;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Moq;
 using TansuCloud.Storage.Controllers;
@@ -10,6 +11,28 @@ using TansuCloud.Storage.Services;
 
 public sealed class ObjectsControllerTests
 {
+    private sealed class FakeVersions : ITenantCacheVersion
+    {
+        private readonly Dictionary<string, int> _versions = new();
+
+        public int Get(string tenantId)
+        {
+            if (!_versions.TryGetValue(tenantId, out var v))
+            {
+                v = 0;
+                _versions[tenantId] = v;
+            }
+            return v;
+        }
+
+        public int Increment(string tenantId)
+        {
+            var v = Get(tenantId) + 1;
+            _versions[tenantId] = v;
+            return v;
+        }
+    }
+
     private static ObjectsController Create(
         out Mock<IObjectStorage> storage,
         out Mock<ITenantContext> tenant,
@@ -25,14 +48,160 @@ public sealed class ObjectsControllerTests
         av = new Mock<IAntivirusScanner>(MockBehavior.Strict);
         tenant.Setup(t => t.TenantId).Returns("tenant-ut");
         var logger = Mock.Of<ILogger<ObjectsController>>();
+        var versions = new Mock<ITenantCacheVersion>();
+        versions.Setup(v => v.Get(It.IsAny<string>())).Returns(0);
         return new ObjectsController(
             storage.Object,
             tenant.Object,
             presign.Object,
             quotas.Object,
             av.Object,
-            logger
+            logger,
+            versions.Object,
+            cache: null
         );
+    }
+
+    [Fact]
+    public async Task List_Uses_HybridCache_With_TTL_And_Version()
+    {
+        // Arrange: controller with an in-memory HybridCache (no Redis) and fake version source
+        var storage = new Mock<IObjectStorage>(MockBehavior.Strict);
+        var tenant = new Mock<ITenantContext>(MockBehavior.Strict);
+        var presign = new Mock<IPresignService>(MockBehavior.Strict);
+        var quotas = new Mock<IQuotaService>(MockBehavior.Strict);
+        var av = new Mock<IAntivirusScanner>(MockBehavior.Strict);
+        var logger = Mock.Of<ILogger<ObjectsController>>();
+        var versions = new FakeVersions();
+        tenant.Setup(t => t.TenantId).Returns("tenant-ut");
+
+        var services = new ServiceCollection();
+        services.AddHybridCache();
+        using var provider = services.BuildServiceProvider();
+        var cache = provider.GetRequiredService<Microsoft.Extensions.Caching.Hybrid.HybridCache>();
+
+        var bucket = "b";
+        var prefix = "p";
+        var listItems =
+            new List<ObjectInfo>
+            {
+                new ObjectInfo(
+                    bucket,
+                    "p/k.txt",
+                    1,
+                    "text/plain",
+                    "W\"e\"",
+                    DateTimeOffset.UtcNow,
+                    new Dictionary<string, string>()
+                )
+            } as IReadOnlyList<ObjectInfo>;
+        storage.Setup(s => s.ListObjectsAsync(bucket, prefix, default)).ReturnsAsync(listItems);
+
+        var controller = new ObjectsController(
+            storage.Object,
+            tenant.Object,
+            presign.Object,
+            quotas.Object,
+            av.Object,
+            logger,
+            versions,
+            cache
+        );
+
+        var httpCtx = new DefaultHttpContext();
+        httpCtx.User = new System.Security.Claims.ClaimsPrincipal(
+            new System.Security.Claims.ClaimsIdentity(
+                new[] { new System.Security.Claims.Claim("scope", "storage.read") },
+                authenticationType: "test"
+            )
+        );
+        var ctrlCtx = new ControllerContext { HttpContext = httpCtx };
+        controller.ControllerContext = ctrlCtx;
+
+        // Act: first call should hit storage (miss) and populate cache
+        var result1 = await controller.List(bucket, prefix, default);
+        result1.Should().BeOfType<OkObjectResult>();
+        storage.Verify(s => s.ListObjectsAsync(bucket, prefix, default), Times.Once);
+
+        // Act: second call should be served from cache (no additional storage call)
+        var result2 = await controller.List(bucket, prefix, default);
+        result2.Should().BeOfType<OkObjectResult>();
+        storage.Verify(s => s.ListObjectsAsync(bucket, prefix, default), Times.Once);
+
+        // Invalidate via version bump and verify storage is called again
+        versions.Increment("tenant-ut");
+        var result3 = await controller.List(bucket, prefix, default);
+        result3.Should().BeOfType<OkObjectResult>();
+        storage.Verify(s => s.ListObjectsAsync(bucket, prefix, default), Times.Exactly(2));
+    }
+
+    [Fact]
+    public async Task Head_Uses_HybridCache_And_Invalidates_On_Version()
+    {
+        // Arrange
+        var storage = new Mock<IObjectStorage>(MockBehavior.Strict);
+        var tenant = new Mock<ITenantContext>(MockBehavior.Strict);
+        var presign = new Mock<IPresignService>(MockBehavior.Strict);
+        var quotas = new Mock<IQuotaService>(MockBehavior.Strict);
+        var av = new Mock<IAntivirusScanner>(MockBehavior.Strict);
+        var logger = Mock.Of<ILogger<ObjectsController>>();
+        var versions = new FakeVersions();
+        tenant.Setup(t => t.TenantId).Returns("tenant-ut");
+
+        var services = new ServiceCollection();
+        services.AddHybridCache();
+        using var provider = services.BuildServiceProvider();
+        var cache = provider.GetRequiredService<Microsoft.Extensions.Caching.Hybrid.HybridCache>();
+
+        var bucket = "b";
+        var key = "k.txt";
+        var meta = new ObjectInfo(
+            bucket,
+            key,
+            3,
+            "text/plain",
+            "W\"e1\"",
+            DateTimeOffset.UtcNow,
+            new Dictionary<string, string>()
+        );
+        storage.Setup(s => s.HeadObjectAsync(bucket, key, default)).ReturnsAsync(meta);
+
+        var controller = new ObjectsController(
+            storage.Object,
+            tenant.Object,
+            presign.Object,
+            quotas.Object,
+            av.Object,
+            logger,
+            versions,
+            cache
+        );
+
+        var httpCtx = new DefaultHttpContext();
+        httpCtx.User = new System.Security.Claims.ClaimsPrincipal(
+            new System.Security.Claims.ClaimsIdentity(
+                new[] { new System.Security.Claims.Claim("scope", "storage.read") },
+                authenticationType: "test"
+            )
+        );
+        var ctrlCtx = new ControllerContext { HttpContext = httpCtx };
+        controller.ControllerContext = ctrlCtx;
+
+        // Act: first head → miss
+        var r1 = await controller.Head(bucket, key, default);
+        r1.Should().BeOfType<OkResult>();
+        storage.Verify(s => s.HeadObjectAsync(bucket, key, default), Times.Once);
+
+        // Act: second head → hit
+        var r2 = await controller.Head(bucket, key, default);
+        r2.Should().BeOfType<OkResult>();
+        storage.Verify(s => s.HeadObjectAsync(bucket, key, default), Times.Once);
+
+        // Invalidate and ensure call goes to storage again
+        versions.Increment("tenant-ut");
+        var r3 = await controller.Head(bucket, key, default);
+        r3.Should().BeOfType<OkResult>();
+        storage.Verify(s => s.HeadObjectAsync(bucket, key, default), Times.Exactly(2));
     }
 
     [Fact]

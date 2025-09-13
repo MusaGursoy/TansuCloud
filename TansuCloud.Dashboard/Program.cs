@@ -15,6 +15,7 @@ using OpenTelemetry.Resources;
 using OpenTelemetry.Trace;
 using TansuCloud.Dashboard.Components;
 using TansuCloud.Dashboard.Hosting;
+using TansuCloud.Dashboard.Observability;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -127,6 +128,11 @@ builder.Services.AddSignalR(o =>
     o.ClientTimeoutInterval = TimeSpan.FromMinutes(2);
 });
 builder.Services.AddHttpContextAccessor();
+
+// Observability: Prometheus options + HTTP client and query service
+builder.Services.Configure<PrometheusOptions>(builder.Configuration.GetSection("Prometheus"));
+builder.Services.AddHttpClient("prometheus");
+builder.Services.AddSingleton<IPrometheusQueryService, PrometheusQueryService>();
 
 // OIDC sign-in (simplified deterministic preload)
 builder
@@ -288,6 +294,63 @@ builder
                     .GetConfigurationAsync(CancellationToken.None)
                     .GetAwaiter()
                     .GetResult();
+                // Force public browser-visible endpoints (host 127.0.0.1, under /identity) regardless of backchannel MetadataAddress
+                try
+                {
+                    // Separate front-channel (browser) vs backchannel (server) endpoints.
+                    // Front-channel should use public host (127.0.0.1) so browser never sees 'gateway'.
+                    // Backchannel must use in-cluster host derived from MetadataAddress (gateway:8080/identity).
+                    var publicRoot = new Uri(publicBaseUrl);
+                    cfg.AuthorizationEndpoint = new Uri(
+                        publicRoot,
+                        "connect/authorize"
+                    ).AbsoluteUri;
+
+                    // Derive gateway base from MetadataAddress: http://gateway:8080/identity/.well-known/openid-configuration
+                    // -> base http://gateway:8080/identity/
+                    try
+                    {
+                        var md = new Uri(options.MetadataAddress!);
+                        // one level up from .well-known -> identity/
+                        var gatewayBase = new Uri(md, "../");
+                        // Normalize to ensure trailing slash
+                        var gatewayBaseStr = gatewayBase.ToString();
+                        if (!gatewayBaseStr.EndsWith('/'))
+                        {
+                            gatewayBaseStr += "/";
+                        }
+                        var gatewayBaseUri = new Uri(gatewayBaseStr);
+                        // Backchannel endpoints: token/userinfo/introspection
+                        cfg.TokenEndpoint = new Uri(gatewayBaseUri, "connect/token").AbsoluteUri;
+                        if (!string.IsNullOrWhiteSpace(cfg.UserInfoEndpoint))
+                        {
+                            cfg.UserInfoEndpoint = new Uri(
+                                gatewayBaseUri,
+                                "connect/userinfo"
+                            ).AbsoluteUri;
+                        }
+                        if (!string.IsNullOrWhiteSpace(cfg.IntrospectionEndpoint))
+                        {
+                            cfg.IntrospectionEndpoint = new Uri(
+                                gatewayBaseUri,
+                                "connect/introspect"
+                            ).AbsoluteUri;
+                        }
+                        // Rebase JWKS to gateway host so the container can fetch keys
+                        cfg.JwksUri = new Uri(gatewayBaseUri, ".well-known/jwks").AbsoluteUri;
+                    }
+                    catch { }
+
+                    // Optional: end-session for browser sign-out
+                    if (!string.IsNullOrWhiteSpace(cfg.EndSessionEndpoint))
+                    {
+                        cfg.EndSessionEndpoint = new Uri(
+                            publicRoot,
+                            "connect/endsession"
+                        ).AbsoluteUri;
+                    }
+                }
+                catch { }
                 if (cfg.SigningKeys.Count == 0 && !string.IsNullOrWhiteSpace(cfg.JwksUri))
                 {
                     using var http = options.Backchannel ?? new HttpClient();
@@ -433,7 +496,30 @@ builder
             }; // End of OnTokenResponseReceived
             oidcEvents.OnRedirectToIdentityProvider = ctx =>
             {
+                // Ensure browser-visible RedirectUri honors the dashboard prefix.
+                // Prefer X-Forwarded-Prefix from the gateway; fallback to PathBase (behaves like UsePathBase)
+                // and only then infer from the incoming request path.
                 var prefix = ctx.Request.Headers["X-Forwarded-Prefix"].ToString();
+                if (string.IsNullOrEmpty(prefix))
+                {
+                    var pb = ctx.Request.PathBase.HasValue
+                        ? ctx.Request.PathBase.Value!
+                        : string.Empty;
+                    if (
+                        !string.IsNullOrEmpty(pb)
+                        && pb.StartsWith("/dashboard", StringComparison.OrdinalIgnoreCase)
+                    )
+                    {
+                        prefix = "/dashboard";
+                    }
+                    else if (
+                        ctx.Request.Path.HasValue
+                        && ctx.Request.Path.StartsWithSegments("/dashboard")
+                    )
+                    {
+                        prefix = "/dashboard";
+                    }
+                }
                 if (!string.IsNullOrEmpty(prefix))
                 {
                     var callback = ctx.Options.CallbackPath.HasValue
@@ -442,11 +528,150 @@ builder
                     var full = $"{prefix}{callback}";
                     ctx.ProtocolMessage.RedirectUri = new Uri(publicBaseUri, full).ToString();
                 }
+
+                // Always set the post-authentication return URL explicitly to the original requested URL
+                // built from PathBase/Path/Query, ensuring the dashboard prefix is included.
+                try
+                {
+                    var pathBase = ctx.Request.PathBase.HasValue
+                        ? ctx.Request.PathBase.Value!
+                        : string.Empty;
+                    var path = ctx.Request.Path.HasValue ? ctx.Request.Path.Value! : string.Empty;
+                    var query = ctx.Request.QueryString.HasValue
+                        ? ctx.Request.QueryString.Value
+                        : string.Empty;
+                    var pathAndQuery = string.Concat(pathBase, path, query);
+                    // If no PathBase was applied but we can infer the dashboard prefix, prepend it.
+                    if (
+                        string.IsNullOrEmpty(pathBase)
+                        && !string.IsNullOrEmpty(prefix)
+                        && !pathAndQuery.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)
+                    )
+                    {
+                        var joiner = (pathAndQuery.StartsWith("/") ? string.Empty : "/");
+                        pathAndQuery = prefix.TrimEnd('/') + joiner + pathAndQuery.TrimStart('/');
+                    }
+                    var absoluteDesired = new Uri(publicBaseUri, pathAndQuery).ToString();
+                    // Persist our canonical desired URL so callback can use it deterministically
+                    if (ctx.Properties is AuthenticationProperties propsSet1)
+                    {
+                        propsSet1.RedirectUri = absoluteDesired;
+                        propsSet1.Items["tansu.returnUri"] = absoluteDesired;
+                    }
+                }
+                catch { }
+
+                // Force the authorize endpoint to use the public 127.0.0.1 host to avoid 'gateway' redirects in the browser
+                try
+                {
+                    // Prefer the gateway's root alias for OIDC authorize with the public host (127.0.0.1)
+                    // This avoids exposing the in-cluster name 'gateway' to the browser and works with our YARP root alias.
+                    var authorize = new Uri(publicBaseUri, "connect/authorize").AbsoluteUri;
+                    ctx.ProtocolMessage.IssuerAddress = authorize;
+                }
+                catch { }
+
+                // Also normalize any pre-existing post-authentication return URL to include the dashboard prefix
+                try
+                {
+                    // If we previously stashed our canonical desired URL, prefer it and avoid overriding it later.
+                    if (
+                        ctx.Properties?.Items is not null
+                        && ctx.Properties.Items.TryGetValue("tansu.returnUri", out var stashedAbs)
+                        && !string.IsNullOrWhiteSpace(stashedAbs)
+                    )
+                    {
+                        if (ctx.Properties is AuthenticationProperties props)
+                        {
+                            props.RedirectUri = stashedAbs;
+                        }
+                        return Task.CompletedTask;
+                    }
+                    // If we previously stashed our canonical desired URL, prefer it.
+                    if (
+                        ctx.Properties?.Items is not null
+                        && ctx.Properties.Items.TryGetValue("tansu.returnUri", out var stashedStr)
+                        && !string.IsNullOrWhiteSpace(stashedStr)
+                    )
+                    {
+                        if (ctx.Properties is AuthenticationProperties propsSet2)
+                        {
+                            propsSet2.RedirectUri = stashedStr;
+                        }
+                    }
+                    else
+                    {
+                        var desired = ctx.Properties?.RedirectUri;
+                        if (!string.IsNullOrWhiteSpace(desired))
+                        {
+                            var effPrefix = ctx.Request.Headers["X-Forwarded-Prefix"].ToString();
+                            if (
+                                string.IsNullOrEmpty(effPrefix)
+                                && ctx.Request.Path.HasValue
+                                && ctx.Request.Path.StartsWithSegments("/dashboard")
+                            )
+                            {
+                                effPrefix = "/dashboard";
+                            }
+                            string pathAndQuery;
+                            if (Uri.TryCreate(desired, UriKind.Absolute, out var abs))
+                            {
+                                pathAndQuery = abs.PathAndQuery;
+                            }
+                            else
+                            {
+                                pathAndQuery = desired;
+                            }
+                            // Prepend prefix if missing
+                            if (
+                                !string.IsNullOrEmpty(effPrefix)
+                                && !pathAndQuery.StartsWith(
+                                    effPrefix,
+                                    StringComparison.OrdinalIgnoreCase
+                                )
+                            )
+                            {
+                                var joiner = pathAndQuery.StartsWith("/") ? string.Empty : "/";
+                                pathAndQuery =
+                                    effPrefix.TrimEnd('/') + joiner + pathAndQuery.TrimStart('/');
+                            }
+                            // Build absolute public URL
+                            if (ctx.Properties is AuthenticationProperties propsSet3)
+                            {
+                                propsSet3.RedirectUri = new Uri(
+                                    publicBaseUri,
+                                    pathAndQuery
+                                ).ToString();
+                            }
+                        }
+                    }
+                }
+                catch { }
                 return Task.CompletedTask;
             }; // End of OnRedirectToIdentityProvider
             oidcEvents.OnRedirectToIdentityProviderForSignOut = ctx =>
             {
                 var prefix = ctx.Request.Headers["X-Forwarded-Prefix"].ToString();
+                if (string.IsNullOrEmpty(prefix))
+                {
+                    var pb = ctx.Request.PathBase.HasValue
+                        ? ctx.Request.PathBase.Value!
+                        : string.Empty;
+                    if (
+                        !string.IsNullOrEmpty(pb)
+                        && pb.StartsWith("/dashboard", StringComparison.OrdinalIgnoreCase)
+                    )
+                    {
+                        prefix = "/dashboard";
+                    }
+                    else if (
+                        ctx.Request.Path.HasValue
+                        && ctx.Request.Path.StartsWithSegments("/dashboard")
+                    )
+                    {
+                        prefix = "/dashboard";
+                    }
+                }
                 if (!string.IsNullOrEmpty(prefix))
                 {
                     var callback = ctx.Options.SignedOutCallbackPath.HasValue
@@ -474,6 +699,91 @@ builder
                             jwt.Header.Kid,
                             string.Join(',', jwt.Audiences),
                             jwt.Subject
+                        );
+                    }
+
+                    // Normalize the post-authentication RedirectUri to include the dashboard prefix when hosted behind the gateway.
+                    // In some flows, the saved RedirectUri is a root-anchored path like "/admin/metrics" without the "/dashboard" prefix,
+                    // which leads to a 404 at the gateway. Force-prefix it when needed and build an absolute public URL.
+                    // Prefer our stashed canonical desired URL, if present, and do not override it.
+                    if (
+                        ctx.Properties?.Items is not null
+                        && ctx.Properties.Items.TryGetValue(
+                            "tansu.returnUri",
+                            out var stashedDesired
+                        )
+                        && !string.IsNullOrWhiteSpace(stashedDesired)
+                    )
+                    {
+                        if (ctx.Properties is AuthenticationProperties propsSet4)
+                        {
+                            propsSet4.RedirectUri = stashedDesired;
+                        }
+                        return Task.CompletedTask;
+                    }
+                    var desired = ctx.Properties?.RedirectUri;
+                    var effPrefix = ctx
+                        .HttpContext.Request.Headers["X-Forwarded-Prefix"]
+                        .ToString();
+                    if (string.IsNullOrEmpty(effPrefix))
+                    {
+                        var req = ctx.HttpContext.Request;
+                        if (req.Path.HasValue && req.Path.StartsWithSegments("/dashboard"))
+                        {
+                            effPrefix = "/dashboard";
+                        }
+                        else if (
+                            req.PathBase.HasValue
+                            && req.PathBase.Value!.StartsWith(
+                                "/dashboard",
+                                StringComparison.OrdinalIgnoreCase
+                            )
+                        )
+                        {
+                            effPrefix = "/dashboard";
+                        }
+                    }
+                    if (!string.IsNullOrEmpty(effPrefix))
+                    {
+                        string pathAndQuery;
+                        if (string.IsNullOrWhiteSpace(desired))
+                        {
+                            // Fall back to original request path if RedirectUri is empty
+                            var req = ctx.HttpContext.Request;
+                            var pathBase = req.PathBase.HasValue
+                                ? req.PathBase.Value!
+                                : string.Empty;
+                            var path = req.Path.HasValue ? req.Path.Value! : string.Empty;
+                            var query = req.QueryString.HasValue
+                                ? req.QueryString.Value
+                                : string.Empty;
+                            pathAndQuery = string.Concat(pathBase, path, query);
+                        }
+                        else if (Uri.TryCreate(desired, UriKind.Absolute, out var abs))
+                        {
+                            pathAndQuery = abs.PathAndQuery;
+                        }
+                        else
+                        {
+                            pathAndQuery = desired;
+                        }
+                        if (!pathAndQuery.StartsWith(effPrefix, StringComparison.OrdinalIgnoreCase))
+                        {
+                            var joiner = pathAndQuery.StartsWith('/') ? string.Empty : "/";
+                            pathAndQuery =
+                                effPrefix.TrimEnd('/') + joiner + pathAndQuery.TrimStart('/');
+                        }
+                        // Build the absolute URL using the public base (browser-visible) origin
+                        if (ctx.Properties is AuthenticationProperties propsSet5)
+                        {
+                            propsSet5.RedirectUri = new Uri(
+                                new Uri(publicBaseUrl),
+                                pathAndQuery
+                            ).ToString();
+                        }
+                        logger.LogInformation(
+                            "OIDC post-auth RedirectUri normalized to {RedirectUri}",
+                            ctx.Properties?.RedirectUri
                         );
                     }
                 }
@@ -537,6 +847,82 @@ builder
                 catch { }
                 return Task.CompletedTask;
             }; // End of OnAuthenticationFailed
+
+            // Ensure the final post-login redirect targets the prefixed dashboard path when behind the gateway
+            oidcEvents.OnTicketReceived = ctx =>
+            {
+                try
+                {
+                    var logger = ctx
+                        .HttpContext.RequestServices.GetRequiredService<ILoggerFactory>()
+                        .CreateLogger("OIDC-Diagnostics");
+                    // If our canonical return target was stashed, enforce it and stop.
+                    if (
+                        ctx.Properties?.Items is not null
+                        && ctx.Properties.Items.TryGetValue("tansu.returnUri", out var stashedStr)
+                        && !string.IsNullOrWhiteSpace(stashedStr)
+                    )
+                    {
+                        ctx.ReturnUri = stashedStr;
+                        return Task.CompletedTask;
+                    }
+                    var effPrefix = ctx
+                        .HttpContext.Request.Headers["X-Forwarded-Prefix"]
+                        .ToString();
+                    if (string.IsNullOrEmpty(effPrefix))
+                    {
+                        var req = ctx.HttpContext.Request;
+                        if (
+                            req.PathBase.HasValue
+                            && req.PathBase.Value!.StartsWith(
+                                "/dashboard",
+                                StringComparison.OrdinalIgnoreCase
+                            )
+                        )
+                        {
+                            effPrefix = "/dashboard";
+                        }
+                    }
+                    if (!string.IsNullOrEmpty(effPrefix))
+                    {
+                        var returnUri = ctx.ReturnUri;
+                        string pathAndQuery;
+                        if (string.IsNullOrWhiteSpace(returnUri))
+                        {
+                            var req = ctx.HttpContext.Request;
+                            var pathBase = req.PathBase.HasValue
+                                ? req.PathBase.Value!
+                                : string.Empty;
+                            var path = req.Path.HasValue ? req.Path.Value! : string.Empty;
+                            var query = req.QueryString.HasValue
+                                ? req.QueryString.Value
+                                : string.Empty;
+                            pathAndQuery = string.Concat(pathBase, path, query);
+                        }
+                        else if (Uri.TryCreate(returnUri, UriKind.Absolute, out var abs))
+                        {
+                            pathAndQuery = abs.PathAndQuery;
+                        }
+                        else
+                        {
+                            pathAndQuery = returnUri;
+                        }
+                        if (!pathAndQuery.StartsWith(effPrefix, StringComparison.OrdinalIgnoreCase))
+                        {
+                            var joiner = pathAndQuery.StartsWith('/') ? string.Empty : "/";
+                            pathAndQuery =
+                                effPrefix.TrimEnd('/') + joiner + pathAndQuery.TrimStart('/');
+                        }
+                        ctx.ReturnUri = new Uri(new Uri(publicBaseUrl), pathAndQuery).ToString();
+                        logger.LogInformation(
+                            "OIDC TicketReceived: ReturnUri normalized to {ReturnUri}",
+                            ctx.ReturnUri
+                        );
+                    }
+                }
+                catch { }
+                return Task.CompletedTask;
+            }; // End of OnTicketReceived
             options.Events = oidcEvents; // End of OIDC events assignment
 
             // Removed dynamic resolver: keys are deterministically preloaded.
@@ -626,7 +1012,24 @@ app.Use(
         var prefix = context.Request.Headers["X-Forwarded-Prefix"].ToString();
         if (!string.IsNullOrWhiteSpace(prefix))
         {
-            context.Request.PathBase = prefix;
+            // Behave like UsePathBase: if the path starts with the prefix, move it to PathBase and trim from Path.
+            if (context.Request.Path.StartsWithSegments(prefix, out var rest))
+            {
+                context.Request.PathBase = prefix;
+                context.Request.Path = rest;
+            }
+            else
+            {
+                // Otherwise, at least set PathBase so link generation/base URI are correct under a proxy path.
+                context.Request.PathBase = prefix;
+            }
+        }
+        else if (context.Request.Path.StartsWithSegments("/dashboard", out var rest2))
+        {
+            // Fallback inference: in case the proxy did not propagate X-Forwarded-Prefix, infer from the incoming path.
+            // This keeps NavigationManager.BaseUri correct (".../dashboard/") and allows deep links to /dashboard/* to resolve.
+            context.Request.PathBase = "/dashboard";
+            context.Request.Path = rest2;
         }
         await next();
     }
@@ -679,10 +1082,16 @@ app.Use(
                 {
                     using var http = opts.Backchannel ?? new HttpClient();
                     http.Timeout = TimeSpan.FromSeconds(2);
-                    var jwksJson = await http.GetStringAsync(
-                        opts.Configuration.JwksUri,
-                        context.RequestAborted
-                    );
+                    // Rebase JWKS to gateway host if MetadataAddress is set (container-friendly)
+                    var jwksUrl = opts.Configuration.JwksUri;
+                    try
+                    {
+                        var md = new Uri(opts.MetadataAddress!);
+                        var gatewayBase = new Uri(new Uri(md, "../").ToString().TrimEnd('/') + "/");
+                        jwksUrl = new Uri(gatewayBase, ".well-known/jwks").AbsoluteUri;
+                    }
+                    catch { }
+                    var jwksJson = await http.GetStringAsync(jwksUrl, context.RequestAborted);
                     var jwks = new JsonWebKeySet(jwksJson);
                     foreach (var k in jwks.GetSigningKeys())
                     {
@@ -740,10 +1149,15 @@ app.Use(
                 {
                     using var http = opts.Backchannel ?? new HttpClient();
                     http.Timeout = TimeSpan.FromSeconds(3);
-                    var jwksJson = await http.GetStringAsync(
-                        opts.Configuration.JwksUri,
-                        context.RequestAborted
-                    );
+                    var jwksUrl = opts.Configuration.JwksUri;
+                    try
+                    {
+                        var md = new Uri(opts.MetadataAddress!);
+                        var gatewayBase = new Uri(new Uri(md, "../").ToString().TrimEnd('/') + "/");
+                        jwksUrl = new Uri(gatewayBase, ".well-known/jwks").AbsoluteUri;
+                    }
+                    catch { }
+                    var jwksJson = await http.GetStringAsync(jwksUrl, context.RequestAborted);
                     var jwks = new JsonWebKeySet(jwksJson);
                     foreach (var k in jwks.GetSigningKeys())
                         opts.Configuration.SigningKeys.Add(k);

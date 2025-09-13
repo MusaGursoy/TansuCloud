@@ -77,6 +77,17 @@ builder.Logging.AddOpenTelemetry(o =>
     });
 });
 builder.Services.AddHealthChecks();
+// If Redis is configured, add a health check to surface readiness in compose/dev
+var cacheRedisForHealth = builder.Configuration["Cache:Redis"];
+if (!string.IsNullOrWhiteSpace(cacheRedisForHealth))
+{
+    builder.Services
+        .AddHealthChecks()
+        .AddCheck(
+            "redis",
+            new TansuCloud.Database.Services.RedisPingHealthCheck(cacheRedisForHealth)
+        );
+}
 
 // Add services to the container.
 
@@ -103,7 +114,8 @@ builder.Services.AddSingleton<
 
 // Optional HybridCache backed by Redis when Cache:Redis is set
 var cacheRedis = builder.Configuration["Cache:Redis"];
-if (!string.IsNullOrWhiteSpace(cacheRedis))
+var cacheDisabled = builder.Configuration.GetValue("Cache:Disable", false);
+if (!string.IsNullOrWhiteSpace(cacheRedis) && !cacheDisabled)
 {
     builder.Services.AddStackExchangeRedisCache(o => o.Configuration = cacheRedis);
     builder.Services.AddHybridCache();

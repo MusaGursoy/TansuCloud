@@ -42,33 +42,3 @@ pool_size = 20
 servers = [["tansudbpg", 5432, "primary"]]
 database = "tansu_identity"
 
-[pools.tansu_tenant_e2e_server_ank]
-pool_mode = "transaction"
-query_parser_enabled = true
-primary_reads_enabled = true
-load_balancing_mode = "random"
-
-[pools.tansu_tenant_e2e_server_ank.users.0]
-username = "postgres"
-password = "postgres"
-pool_size = 20
-
-[pools.tansu_tenant_e2e_server_ank.shards.0]
-servers = [["tansudbpg", 5432, "primary"]]
-database = "tansu_tenant_e2e_server_ank"
-
-[pools.tansu_tenant_nightly_server_ank]
-pool_mode = "transaction"
-query_parser_enabled = true
-primary_reads_enabled = true
-load_balancing_mode = "random"
-
-[pools.tansu_tenant_nightly_server_ank.users.0]
-username = "postgres"
-password = "postgres"
-pool_size = 20
-
-[pools.tansu_tenant_nightly_server_ank.shards.0]
-servers = [["tansudbpg", 5432, "primary"]]
-database = "tansu_tenant_nightly_server_ank"
-

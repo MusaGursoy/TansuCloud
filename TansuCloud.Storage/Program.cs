@@ -77,10 +77,22 @@ builder.Services.AddHealthChecks();
 
 // Optional HybridCache backed by Redis when Cache:Redis is provided
 var cacheRedis = builder.Configuration["Cache:Redis"];
-if (!string.IsNullOrWhiteSpace(cacheRedis))
+var cacheDisabled = builder.Configuration.GetValue("Cache:Disable", false);
+if (!string.IsNullOrWhiteSpace(cacheRedis) && !cacheDisabled)
 {
     builder.Services.AddStackExchangeRedisCache(o => o.Configuration = cacheRedis);
     builder.Services.AddHybridCache();
+}
+// If Redis is configured, add a health check to surface readiness in compose/dev
+var cacheRedisForHealth = builder.Configuration["Cache:Redis"];
+if (!string.IsNullOrWhiteSpace(cacheRedisForHealth))
+{
+    builder.Services
+        .AddHealthChecks()
+        .AddCheck(
+            "redis",
+            new TansuCloud.Storage.Services.RedisPingHealthCheck(cacheRedisForHealth)
+        );
 }
 
 // Add services to the container.
@@ -141,6 +153,7 @@ builder.Services.AddSingleton<IPresignService, PresignService>();
 builder.Services.AddScoped<IQuotaService, FilesystemQuotaService>();
 builder.Services.AddSingleton<IAntivirusScanner, NoOpAntivirusScanner>();
 builder.Services.AddHostedService<MultipartCleanupService>();
+builder.Services.AddSingleton<ITenantCacheVersion, TenantCacheVersion>();
 
 // Authentication/Authorization (OpenIddict validation)
 builder.Services.AddAuthentication(OpenIddictValidationAspNetCoreDefaults.AuthenticationScheme);

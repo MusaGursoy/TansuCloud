@@ -50,4 +50,48 @@ public sealed class PresignController(IPresignService presign, ITenantContext te
             $"/storage/api/objects/{Uri.EscapeDataString(req.Bucket)}/{Uri.EscapeDataString(req.Key)}{query}";
         return Ok(new { url, expires = exp });
     }
+
+    public sealed record TransformPresignRequest(
+        string Bucket,
+        string Key,
+        int? Width,
+        int? Height,
+        string? Format,
+        int? Quality,
+        int? ExpirySeconds
+    );
+
+    [HttpPost("transform")]
+    [Authorize(Policy = "storage.write")]
+    public IActionResult CreateTransform([FromBody] TransformPresignRequest req)
+    {
+        // Validate inputs early
+        if (req.Width is < 0 || req.Height is < 0)
+            return Problem(statusCode: StatusCodes.Status400BadRequest, detail: "Width/Height cannot be negative");
+
+        var exp = DateTimeOffset.UtcNow.ToUnixTimeSeconds() + (req.ExpirySeconds is > 0 ? req.ExpirySeconds.Value : 15 * 60);
+        var sig = presign.CreateTransformSignature(
+            tenant.TenantId,
+            req.Bucket,
+            req.Key,
+            req.Width,
+            req.Height,
+            req.Format,
+            req.Quality,
+            exp
+        );
+
+        var query = new QueryString().Add("exp", exp.ToString()).Add("sig", sig);
+        if (req.Width is not null)
+            query = query.Add("w", req.Width.Value.ToString());
+        if (req.Height is not null)
+            query = query.Add("h", req.Height.Value.ToString());
+        if (!string.IsNullOrWhiteSpace(req.Format))
+            query = query.Add("fmt", req.Format!);
+        if (req.Quality is not null)
+            query = query.Add("q", req.Quality.Value.ToString());
+
+        var url = $"/storage/api/transform/{Uri.EscapeDataString(req.Bucket)}/{Uri.EscapeDataString(req.Key)}{query}";
+        return Ok(new { url, expires = exp });
+    }
 } // End of Class PresignController

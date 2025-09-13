@@ -22,7 +22,7 @@ public sealed class MultipartController(
     public async Task<IActionResult> Initiate(string bucket, string key, CancellationToken ct)
     {
         // Normalize key from route (decode % escapes like %2F) to ensure correct filesystem pathing
-        key = Uri.UnescapeDataString(key);
+    key = RouteKeyNormalizer.Normalize(key);
         StorageMetrics.Requests.Add(1, new("tenant", tenant.TenantId), new("op", "MP_INIT"));
         // allow anonymous via presign
         if (!User.Identity?.IsAuthenticated ?? true)
@@ -57,7 +57,7 @@ public sealed class MultipartController(
     )
     {
         // Normalize key from route (decode % escapes like %2F)
-        key = Uri.UnescapeDataString(key);
+    key = RouteKeyNormalizer.Normalize(key);
         StorageMetrics.Requests.Add(1, new("tenant", tenant.TenantId), new("op", "MP_PART"));
         if (string.IsNullOrWhiteSpace(uploadId))
             return Problem(statusCode: 400, detail: "uploadId required");
@@ -158,7 +158,7 @@ public sealed class MultipartController(
     )
     {
         // Normalize key from route (decode % escapes like %2F)
-        key = Uri.UnescapeDataString(key);
+    key = RouteKeyNormalizer.Normalize(key);
         StorageMetrics.Requests.Add(1, new("tenant", tenant.TenantId), new("op", "MP_COMPLETE"));
         if (string.IsNullOrWhiteSpace(uploadId))
             return Problem(statusCode: 400, detail: "uploadId required");
@@ -248,7 +248,7 @@ public sealed class MultipartController(
     )
     {
         // Normalize key from route (decode % escapes like %2F)
-        key = Uri.UnescapeDataString(key);
+    key = RouteKeyNormalizer.Normalize(key);
         StorageMetrics.Requests.Add(1, new("tenant", tenant.TenantId), new("op", "MP_ABORT"));
         if (string.IsNullOrWhiteSpace(uploadId))
             return Problem(statusCode: 400, detail: "uploadId required");

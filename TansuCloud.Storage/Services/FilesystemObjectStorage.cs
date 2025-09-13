@@ -65,7 +65,9 @@ internal sealed class FilesystemObjectStorage(
         // Consider bucket empty if it contains no user object files. Ignore empty directories and
         // internal metadata files ("*.meta.json"). If only internal files remain, delete recursively.
         var allFiles = Directory.EnumerateFiles(path, "*", SearchOption.AllDirectories).ToArray();
-        var userFiles = allFiles.Where(f => !f.EndsWith(".meta.json", StringComparison.OrdinalIgnoreCase)).ToArray();
+        var userFiles = allFiles
+            .Where(f => !f.EndsWith(".meta.json", StringComparison.OrdinalIgnoreCase))
+            .ToArray();
         if (userFiles.Any())
             return Task.FromResult(false);
         // Only empty directories and/or metadata files remain -> safe to delete recursively

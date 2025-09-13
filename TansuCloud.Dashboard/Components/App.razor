@@ -1,18 +1,21 @@
-﻿<!DOCTYPE html>
+﻿@inject Microsoft.AspNetCore.Components.NavigationManager NavManager
+<!DOCTYPE html>
 <html lang="en">
 
 <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <base href="/" />
-    <link rel="stylesheet" href="@Assets["app.css"]" />
-    <link rel="stylesheet" href="@Assets["TansuCloud.Dashboard.styles.css"]" />
+    <base href="/dashboard/" />
+    <link rel="stylesheet" href="app.css" />
+    <link rel="stylesheet" href="TansuCloud.Dashboard.styles.css" />
     <ImportMap />
-    <HeadOutlet @rendermode="InteractiveServer" />
+    <HeadOutlet @rendermode="new InteractiveServerRenderMode(prerender: false)" />
+    
 </head>
 
 <body>
-    <Routes @rendermode="InteractiveServer" />
+    <Routes @rendermode="new InteractiveServerRenderMode(prerender: false)">
+    </Routes>
     <script src="_framework/blazor.web.js"></script>
 </body>
 

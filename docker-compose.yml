@@ -26,6 +26,25 @@ services:
       - ./dev/otel-collector-config.yaml:/etc/otelcol/config.yaml:ro
     expose:
       - "4317"
+      - "8889" # Prometheus scrape endpoint
+    networks:
+      - tansucloud-network
+
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: tansu-prometheus
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+    volumes:
+      - ./dev/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "9090:9090"
+    healthcheck:
+      test: ["CMD", "/bin/busybox", "wget", "-q", "-O", "-", "http://localhost:9090/-/ready"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
     networks:
       - tansucloud-network
 
@@ -94,7 +113,9 @@ services:
       dockerfile: TansuCloud.Identity/Dockerfile
     environment:
       ASPNETCORE_ENVIRONMENT: Development
-      Oidc__Issuer: http://gateway:8080/identity/
+      # Important in dev: advertise browser-visible endpoints from discovery
+      # so redirects use 127.0.0.1 instead of the in-cluster name "gateway".
+      Oidc__Issuer: http://127.0.0.1:8080/identity/
       Oidc__RedirectUri: http://127.0.0.1:8080/dashboard/signin-oidc
       Oidc__PostLogoutRedirectUri: http://127.0.0.1:8080/dashboard/signout-callback-oidc
       Oidc__Dashboard__RedirectUri: http://127.0.0.1:8080/dashboard/signin-oidc
@@ -125,12 +146,14 @@ services:
       PublicBaseUrl: http://127.0.0.1:8080
       OpenTelemetry__Otlp__Endpoint: http://otel-collector:4317
       Cache__Redis: redis:6379
-      Oidc__Authority: http://gateway:8080/identity
+      Oidc__Authority: http://127.0.0.1:8080/identity
+      # Use in-cluster gateway for backchannel discovery; browser-facing Authority stays on 127.0.0.1
       Oidc__MetadataAddress: http://gateway:8080/identity/.well-known/openid-configuration
       Oidc__RequireHttpsMetadata: false
       Oidc__ClientId: tansu-dashboard
       Oidc__ClientSecret: ${DASHBOARD_CLIENT_SECRET:-dev-secret}
       GatewayBaseUrl: http://gateway:8080
+      Prometheus__BaseUrl: http://prometheus:9090
       # Dev-only diagnostic: bypass ID token signature validation to isolate key mismatch issues
       DASHBOARD_BYPASS_IDTOKEN_SIGNATURE: "0"
     healthcheck:

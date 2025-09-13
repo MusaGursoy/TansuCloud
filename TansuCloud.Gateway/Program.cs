@@ -127,10 +127,15 @@ builder.Services.AddCors(options =>
 
 // HybridCache: configure Redis distributed backing if provided
 var redisConn = builder.Configuration["Cache:Redis"];
-if (!string.IsNullOrWhiteSpace(redisConn))
+var disableCache = builder.Configuration.GetValue("Cache:Disable", false);
+if (!string.IsNullOrWhiteSpace(redisConn) && !disableCache)
 {
     builder.Services.AddStackExchangeRedisCache(o => o.Configuration = redisConn);
     builder.Services.AddHybridCache();
+    // Health check for Redis
+    builder
+        .Services.AddHealthChecks()
+        .AddCheck("redis", new TansuCloud.Gateway.Services.RedisPingHealthCheck(redisConn));
 }
 
 // Safety controls: Rate Limiting
@@ -318,6 +323,17 @@ reverseProxyBuilder.LoadFromMemory(
             Match = new RouteMatch { Path = "/signin-oidc" },
             Transforms = new[]
             {
+                // Ensure downstream Dashboard can reconstruct prefixed return URLs during OIDC callback
+                new Dictionary<string, string>
+                {
+                    ["RequestHeader"] = "X-Forwarded-Proto",
+                    ["Set"] = "https"
+                },
+                new Dictionary<string, string>
+                {
+                    ["RequestHeader"] = "X-Forwarded-Prefix",
+                    ["Set"] = "/dashboard"
+                },
                 new Dictionary<string, string> { ["RequestHeaderOriginalHost"] = "true" },
                 new Dictionary<string, string> { ["RequestHeadersCopy"] = "true" },
                 new Dictionary<string, string> { ["ResponseHeadersCopy"] = "true" }
@@ -333,6 +349,17 @@ reverseProxyBuilder.LoadFromMemory(
             Transforms = new[]
             {
                 new Dictionary<string, string> { ["PathRemovePrefix"] = "/dashboard" },
+                // Keep forwarded scheme/prefix consistent for downstream during callback processing
+                new Dictionary<string, string>
+                {
+                    ["RequestHeader"] = "X-Forwarded-Proto",
+                    ["Set"] = "https"
+                },
+                new Dictionary<string, string>
+                {
+                    ["RequestHeader"] = "X-Forwarded-Prefix",
+                    ["Set"] = "/dashboard"
+                },
                 new Dictionary<string, string> { ["RequestHeaderOriginalHost"] = "true" },
                 new Dictionary<string, string> { ["RequestHeadersCopy"] = "true" },
                 new Dictionary<string, string> { ["ResponseHeadersCopy"] = "true" }
@@ -346,6 +373,17 @@ reverseProxyBuilder.LoadFromMemory(
             Match = new RouteMatch { Path = "/signout-callback-oidc" },
             Transforms = new[]
             {
+                // Ensure downstream sees canonical scheme/prefix when building post-logout redirects
+                new Dictionary<string, string>
+                {
+                    ["RequestHeader"] = "X-Forwarded-Proto",
+                    ["Set"] = "https"
+                },
+                new Dictionary<string, string>
+                {
+                    ["RequestHeader"] = "X-Forwarded-Prefix",
+                    ["Set"] = "/dashboard"
+                },
                 new Dictionary<string, string> { ["RequestHeaderOriginalHost"] = "true" },
                 new Dictionary<string, string> { ["RequestHeadersCopy"] = "true" },
                 new Dictionary<string, string> { ["ResponseHeadersCopy"] = "true" }
@@ -360,6 +398,16 @@ reverseProxyBuilder.LoadFromMemory(
             Transforms = new[]
             {
                 new Dictionary<string, string> { ["PathRemovePrefix"] = "/dashboard" },
+                new Dictionary<string, string>
+                {
+                    ["RequestHeader"] = "X-Forwarded-Proto",
+                    ["Set"] = "https"
+                },
+                new Dictionary<string, string>
+                {
+                    ["RequestHeader"] = "X-Forwarded-Prefix",
+                    ["Set"] = "/dashboard"
+                },
                 new Dictionary<string, string> { ["RequestHeaderOriginalHost"] = "true" },
                 new Dictionary<string, string> { ["RequestHeadersCopy"] = "true" },
                 new Dictionary<string, string> { ["ResponseHeadersCopy"] = "true" }
@@ -448,7 +496,14 @@ reverseProxyBuilder.LoadFromMemory(
             {
                 new Dictionary<string, string> { ["RequestHeaderOriginalHost"] = "true" },
                 new Dictionary<string, string> { ["RequestHeadersCopy"] = "true" },
-                new Dictionary<string, string> { ["ResponseHeadersCopy"] = "true" }
+                new Dictionary<string, string> { ["ResponseHeadersCopy"] = "true" },
+                // Ensure the downstream Dashboard app gets the canonical base path so the circuit
+                // uses /dashboard consistently and avoids router NotFound flicker on refresh
+                new Dictionary<string, string>
+                {
+                    ["RequestHeader"] = "X-Forwarded-Prefix",
+                    ["Set"] = "/dashboard"
+                }
             }
         },
         new RouteConfig
@@ -461,7 +516,13 @@ reverseProxyBuilder.LoadFromMemory(
                 new Dictionary<string, string> { ["PathRemovePrefix"] = "/dashboard" },
                 new Dictionary<string, string> { ["RequestHeaderOriginalHost"] = "true" },
                 new Dictionary<string, string> { ["RequestHeadersCopy"] = "true" },
-                new Dictionary<string, string> { ["ResponseHeadersCopy"] = "true" }
+                new Dictionary<string, string> { ["ResponseHeadersCopy"] = "true" },
+                // Also stamp the prefix when addressed under /dashboard
+                new Dictionary<string, string>
+                {
+                    ["RequestHeader"] = "X-Forwarded-Prefix",
+                    ["Set"] = "/dashboard"
+                }
             }
         },
         new RouteConfig
@@ -513,6 +574,35 @@ reverseProxyBuilder.LoadFromMemory(
             Match = new RouteMatch { Path = "/TansuCloud.Dashboard.{hash}.styles.css" },
             Transforms = new[]
             {
+                new Dictionary<string, string> { ["RequestHeaderOriginalHost"] = "true" },
+                new Dictionary<string, string> { ["RequestHeadersCopy"] = "true" },
+                new Dictionary<string, string> { ["ResponseHeadersCopy"] = "true" }
+            }
+        },
+        // Forward non-hashed component styles generated by Blazor Server
+        new RouteConfig
+        {
+            RouteId = "dashboard-styles-css",
+            ClusterId = "dashboard",
+            Order = -10,
+            Match = new RouteMatch { Path = "/TansuCloud.Dashboard.styles.css" },
+            Transforms = new[]
+            {
+                new Dictionary<string, string> { ["RequestHeaderOriginalHost"] = "true" },
+                new Dictionary<string, string> { ["RequestHeadersCopy"] = "true" },
+                new Dictionary<string, string> { ["ResponseHeadersCopy"] = "true" }
+            }
+        },
+        // Also support the stylesheet when addressed under /dashboard
+        new RouteConfig
+        {
+            RouteId = "dashboard-styles-css-under-dashboard",
+            ClusterId = "dashboard",
+            Order = -10,
+            Match = new RouteMatch { Path = "/dashboard/TansuCloud.Dashboard.styles.css" },
+            Transforms = new[]
+            {
+                new Dictionary<string, string> { ["PathRemovePrefix"] = "/dashboard" },
                 new Dictionary<string, string> { ["RequestHeaderOriginalHost"] = "true" },
                 new Dictionary<string, string> { ["RequestHeadersCopy"] = "true" },
                 new Dictionary<string, string> { ["ResponseHeadersCopy"] = "true" }
@@ -588,6 +678,9 @@ reverseProxyBuilder.LoadFromMemory(
                 new Dictionary<string, string> { ["ResponseHeadersCopy"] = "true" }
             }
         },
+        // NOTE: The /admin/* alias is handled via an explicit redirect endpoint (below),
+        // not via proxy transforms. Keeping it out of YARP ensures the browser address bar
+        // reflects the canonical /dashboard/* path and avoids prefix-related flakiness.
         new RouteConfig
         {
             RouteId = "identity-route",
@@ -831,7 +924,11 @@ if (app.Environment.IsDevelopment() && !disableHttpsRedirect)
 
 // Output cache middleware (before proxy)
 // Note: Output caching can interfere with streaming/proxy scenarios; disable in Development
-if (!app.Environment.IsDevelopment())
+var disableOutputCache = builder.Configuration.GetValue(
+    "Gateway:DisableOutputCache",
+    app.Environment.IsDevelopment()
+);
+if (!disableOutputCache)
 {
     app.UseOutputCache();
 }
@@ -904,8 +1001,14 @@ app.Use(
             // Only allow for object routes, not arbitrary storage APIs
             if (
                 (
-                    path.StartsWithSegments("/storage/api/objects", StringComparison.OrdinalIgnoreCase)
-                    || path.StartsWithSegments("/storage/api/transform", StringComparison.OrdinalIgnoreCase)
+                    path.StartsWithSegments(
+                        "/storage/api/objects",
+                        StringComparison.OrdinalIgnoreCase
+                    )
+                    || path.StartsWithSegments(
+                        "/storage/api/transform",
+                        StringComparison.OrdinalIgnoreCase
+                    )
                 )
                 && q.ContainsKey("sig")
                 && q.ContainsKey("exp")
@@ -923,7 +1026,10 @@ app.Use(
                 // Diagnostic: log why we are rejecting, include path/query and presign detection
                 try
                 {
-                    var qdump = string.Join('&', context.Request.Query.Select(kv => $"{kv.Key}={kv.Value}").ToArray());
+                    var qdump = string.Join(
+                        '&',
+                        context.Request.Query.Select(kv => $"{kv.Key}={kv.Value}").ToArray()
+                    );
                     app.Logger.LogWarning(
                         "AuthGuard: 401 unauthenticated request to {Path} (presigned={IsPresigned}, provisioningBypass={Bypass}). Query={Query}",
                         context.Request.Path,
@@ -940,7 +1046,7 @@ app.Use(
         }
 
         // If Authorization header present, instruct downstream to avoid caching the response
-    if (context.Request.Headers.ContainsKey("Authorization"))
+        if (context.Request.Headers.ContainsKey("Authorization"))
         {
             context.Response.Headers["Cache-Control"] = "no-store";
         }
@@ -1060,7 +1166,54 @@ if (app.Environment.IsDevelopment())
         .AllowAnonymous();
 }
 
-// Map the reverse proxy endpoints
+// Map the reverse proxy endpoints (no /admin redirect; preserve original requested paths)
+// Defensive canonicalization: if a request accidentally targets root-level /admin/*,
+// issue a temporary redirect to the canonical /dashboard/admin/* path.
+// This preserves the repository rule of no root-level admin alias while avoiding a 404 UX.
+app.Use(
+    async (context, next) =>
+    {
+        if (context.Request.Path.StartsWithSegments("/admin", out var rest))
+        {
+            // Capture diagnostics to find the source of incorrect root-level /admin links
+            try
+            {
+                var referer = context.Request.Headers["Referer"].ToString();
+                var origin = context.Request.Headers["Origin"].ToString();
+                var ua = context.Request.Headers["User-Agent"].ToString();
+                var traceparent = context.Request.Headers["traceparent"].ToString();
+                var tracestate = context.Request.Headers["tracestate"].ToString();
+                var tenant = context.Request.Headers["X-Tansu-Tenant"].ToString();
+                var host = context.Request.Headers["Host"].ToString();
+                var xff = context.Request.Headers["X-Forwarded-For"].ToString();
+                var remote = context.Connection.RemoteIpAddress?.ToString();
+                var queryStr = context.Request.QueryString.HasValue ? context.Request.QueryString.Value : string.Empty;
+                app.Logger.LogWarning(
+                    "AdminRootRedirect: Redirecting root '/admin' request to canonical '/dashboard' path. Method={Method} Path={Path} Query={Query} Host={Host} Referer={Referer} Origin={Origin} UA={UA} Traceparent={Traceparent} Tracestate={Tracestate} Tenant={Tenant} XFF={XFF} Remote={Remote}",
+                    context.Request.Method,
+                    context.Request.Path.Value,
+                    queryStr,
+                    host,
+                    referer,
+                    origin,
+                    ua,
+                    traceparent,
+                    tracestate,
+                    tenant,
+                    xff,
+                    remote
+                );
+            }
+            catch { }
+
+            var target = "/dashboard" + context.Request.Path.Value;
+            var qs = context.Request.QueryString.HasValue ? context.Request.QueryString.Value : string.Empty;
+            context.Response.Redirect(target + qs, permanent: false);
+            return;
+        }
+        await next();
+    }
+);
 app.MapReverseProxy();
 
 app.Run();

@@ -54,7 +54,15 @@ internal sealed class PresignService(IOptions<StorageOptions> options) : IPresig
         string? contentType
     )
     {
-        var canonical = BuildCanonical(tenantId, method, bucket, key, expiresUnix, maxBytes, contentType);
+        var canonical = BuildCanonical(
+            tenantId,
+            method,
+            bucket,
+            key,
+            expiresUnix,
+            maxBytes,
+            contentType
+        );
         return ComputeHmacHex(_key, canonical);
     }
 
@@ -71,7 +79,15 @@ internal sealed class PresignService(IOptions<StorageOptions> options) : IPresig
     {
         if (_key.Length == 0)
             return false; // not configured
-        var canonical = BuildCanonical(tenantId, method, bucket, key, expiresUnix, maxBytes, contentType);
+        var canonical = BuildCanonical(
+            tenantId,
+            method,
+            bucket,
+            key,
+            expiresUnix,
+            maxBytes,
+            contentType
+        );
         var actual = ComputeHmacHex(_key, canonical);
         return CryptographicOperations.FixedTimeEquals(
             Encoding.ASCII.GetBytes(actual),
@@ -90,7 +106,16 @@ internal sealed class PresignService(IOptions<StorageOptions> options) : IPresig
         long expiresUnix
     )
     {
-        var canonical = BuildTransformCanonical(tenantId, bucket, key, width, height, format, quality, expiresUnix);
+        var canonical = BuildTransformCanonical(
+            tenantId,
+            bucket,
+            key,
+            width,
+            height,
+            format,
+            quality,
+            expiresUnix
+        );
         return ComputeHmacHex(_key, canonical);
     }
 

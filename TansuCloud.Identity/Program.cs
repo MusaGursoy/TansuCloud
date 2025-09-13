@@ -124,10 +124,22 @@ builder.Services.Configure<IdentityPolicyOptions>(
 
 // HybridCache + Redis (optional)
 var redisConn = builder.Configuration["Cache:Redis"];
-if (!string.IsNullOrWhiteSpace(redisConn))
+var cacheDisabled = builder.Configuration.GetValue("Cache:Disable", false);
+if (!string.IsNullOrWhiteSpace(redisConn) && !cacheDisabled)
 {
     builder.Services.AddStackExchangeRedisCache(o => o.Configuration = redisConn);
     builder.Services.AddHybridCache();
+}
+// If Redis is configured, add a health check to surface readiness in compose/dev
+var cacheRedisForHealth = builder.Configuration["Cache:Redis"];
+if (!string.IsNullOrWhiteSpace(cacheRedisForHealth))
+{
+    builder.Services
+        .AddHealthChecks()
+        .AddCheck(
+            "redis",
+            new TansuCloud.Identity.Infrastructure.RedisPingHealthCheck(cacheRedisForHealth)
+        );
 }
 builder.Services.AddSingleton<IHttpContextAccessor, HttpContextAccessor>();
 builder.Services.AddScoped<ISecurityAuditLogger, SecurityAuditLogger>();

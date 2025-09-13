@@ -192,6 +192,20 @@
 			"label": "temp: build-sln",
 			"type": "shell",
 			"command": "dotnet build .\\TansuCloud.sln -c Debug"
+		},
+		{
+			"label": "temp: build-sln (metrics scaffolding)",
+			"type": "shell",
+			"command": "dotnet build .\\TansuCloud.sln -c Debug",
+			"isBackground": false,
+			"group": "build"
+		},
+		{
+			"label": "temp: build-sln (wire metrics nav + cache)",
+			"type": "shell",
+			"command": "dotnet build .\\TansuCloud.sln -c Debug",
+			"isBackground": false,
+			"group": "build"
 		}
 	]
 }

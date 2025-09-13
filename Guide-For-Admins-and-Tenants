@@ -214,6 +214,18 @@ Recommended settings
 - Set the Dashboard confidential client secret via `DASHBOARD_CLIENT_SECRET` in `.env`.
 - Ensure reverse proxy forwarding headers are correct at the gateway; Identity relies on them for issuer/redirects.
 
+Scopes (summary)
+
+- db.read — read access to Database APIs.
+- db.write — write access to Database APIs.
+- storage.read — read access to Storage APIs.
+- storage.write — write access to Storage APIs.
+- admin.full — development-only convenience scope implying all of the above.
+
+Gateway login alias
+
+- For convenience, the gateway exposes a login alias at `/login` that redirects to the Identity login UI under `/identity`. This helps operators and testers quickly reach the sign-in form.
+
 ## 7. Configuration & Secrets
 
 - Configuration sources (appsettings, environment, user secrets)
@@ -225,6 +237,26 @@ Recommended settings
 - Health endpoints and readiness gates
 - OpenTelemetry signals (traces, metrics, logs)
 - Collector endpoint and backends
+
+### 8.1 Caching (HybridCache) overview
+
+- Services use Microsoft.Extensions.Caching.Hybrid with Redis as the distributed backing store when configured.
+- Development toggle `Cache:Disable=1` (per service) bypasses HybridCache entirely for troubleshooting.
+- Redis connectivity is covered by custom health checks ("redis" tag) that ping the configured endpoint; readiness will report degraded when Redis is unreachable.
+- Cache keys are tenant-scoped and versioned: `t:{tenant}:v{version}:{service}:{resource}:...`.
+	- Database invalidates via outbox events (see Task 12).
+	- Storage bumps a per-tenant version on PUT/DELETE to invalidate list/head entries.
+- Metrics: the Storage service exposes counters via the `tansu.storage` meter:
+	- `tansu_storage_cache_attempts_total`
+	- `tansu_storage_cache_hits_total`
+	- `tansu_storage_cache_misses_total`
+	Each counter includes an `op` tag (list/head). Exporters can aggregate/graph these for hit ratio.
+
+Troubleshooting tips
+
+- To temporarily disable caching in Development, set `Cache:Disable=1` on the affected service (e.g., Storage) and restart it.
+- Verify Redis availability: check `/health/ready` and service logs for the Redis ping health check. In Compose, ensure the `redis` service is up.
+- If responses seem stale after writes, confirm that the tenant cache version increments (Storage) or that outbox events flow (Database).
 
 ## 9. Operations
 
@@ -238,11 +270,43 @@ Recommended settings
 - TLS everywhere and HSTS (optional)
 - Rate limiting and body size limits at the gateway
 
+### 10.1 Gateway caching and request limits
+
+Output caching (gateway)
+
+- Base policy varies by:
+  - Host and path
+  - Headers: `X-Tansu-Tenant`, `Accept`, `Accept-Encoding`
+  - Selected query parameters depending on route
+- Authorization-aware:
+  - When an `Authorization` header is present (authenticated, per-route protected content), the gateway bypasses output caching (no-store) to avoid serving cached private responses.
+
+Global rate limits
+
+- Partitioned by route prefix and tenant to reduce cross-tenant interference.
+
+Request body size limits (defaults)
+
+- Storage service: 100 MB
+- Database service: 10 MB
+- Identity service: 2 MB
+- Dashboard service: 10 MB
+
+These defaults are enforced at the gateway and may be tuned per environment. Keep them aligned with backend expectations to avoid 413 Payload Too Large errors.
+
 ## 11. Multi-Tenancy
 
 - Tenant resolution via host/path
 - Header propagation (X-Tansu-Tenant)
 - Tenant-aware caching and routing
+
+Resolution rules
+
+- Subdomain and path are supported:
+  - Subdomain form: `<tenant>.yourdomain` (e.g., `acme.apps.example.com`).
+  - Path form: `/t/{tenant}` (e.g., `https://apps.example.com/t/acme/...`).
+- Precedence: when both are present, the path form takes precedence over subdomain.
+- After resolution, the gateway sets the `X-Tansu-Tenant` header for downstream services. Clients do not need to send this header explicitly unless using presigned anonymous flows; in those cases, include `X-Tansu-Tenant` as documented in Storage API.
 
 ## 12. Troubleshooting
 
@@ -257,26 +321,26 @@ This platform ships with lightweight health checks and end-to-end (E2E) tests th
 ### 13.1 Local quick checks
 
 - Health endpoints (all services):
-	- Live: `GET /health/live`
-	- Ready: `GET /health/ready`
-	- Via gateway for each service: `/`, `/identity/`, `/dashboard/`, `/db/`, `/storage/` then append `/health/live` or `/health/ready`.
+  - Live: `GET /health/live`
+  - Ready: `GET /health/ready`
+  - Via gateway for each service: `/`, `/identity/`, `/dashboard/`, `/db/`, `/storage/` then append `/health/live` or `/health/ready`.
 - Bring services up (developer workflow):
-	- VS Code → Run Task… → "dev: up" to build and start services.
-	- VS Code → Run Task… → "dev: down" to stop them.
+  - VS Code → Run Task… → "dev: up" to build and start services.
+  - VS Code → Run Task… → "dev: down" to stop them.
 - Dev database (PostgreSQL) recommended for DB features:
-	- Use the persistent Citus/Postgres container described earlier, or the helper script at `dev/tools/start-dev-db.ps1`.
+  - Use the persistent Citus/Postgres container described earlier, or the helper script at `dev/tools/start-dev-db.ps1`.
 
 ### 13.2 Run E2E tests locally
 
 - The E2E test suite lives under `tests/TansuCloud.E2E.Tests` and targets the gateway at `http://localhost:8080` (default dev bind). If you enabled HTTPS on the gateway, adjust the base URL accordingly.
 - What is covered today:
-	- Health endpoints across services.
-	- Identity UI login alias via gateway.
-	- Token-based, idempotent tenant provisioning to Database via gateway.
+  - Health endpoints across services.
+  - Identity UI login alias via gateway.
+  - Token-based, idempotent tenant provisioning to Database via gateway.
 - How to run:
-	- Ensure services are up (see 13.1) and that a local PostgreSQL is reachable at `localhost:5432` (the default dev setup).
-	- In VS Code, Run Task… → "Run all E2E tests"; or run tests from your IDE/test explorer.
-	- Tip: you can run focused suites via provided VS Code tasks (e.g., "Run health E2E tests").
+  - Ensure services are up (see 13.1) and that a local PostgreSQL is reachable at `localhost:5432` (the default dev setup).
+  - In VS Code, Run Task… → "Run all E2E tests"; or run tests from your IDE/test explorer.
+  - Tip: you can run focused suites via provided VS Code tasks (e.g., "Run health E2E tests").
 - Notes:
 	- Tests accept development HTTPS certificates; no extra trust steps needed for local runs.
 	- The provisioning test obtains an access token using the dashboard client (scopes: `db.write admin.full`) and calls the Database provisioning API twice, asserting idempotency.
@@ -338,14 +402,33 @@ Conditional requests
 Presigned URLs
 
 - `POST /presign` — generate a temporary signed URL for anonymous access.
-	- Body (example):
-		- `{"Method":"PUT","Bucket":"bkt","Key":"path/file.txt","ExpirySeconds":300,"MaxBytes":2000000,"ContentType":"text/plain"}`
-	- Response: `{ "url": "/storage/api/objects/bkt/path/file.txt?exp=...&sig=...&ct=...&max=...", "expires": 1700000000 }`
-	- Enforcement at upload time:
-		- `exp` strictly enforced: expired presigned URLs return 403 Forbidden (no clock skew allowance).
-		- `max` limits the request `Content-Length`.
-		- `ct` enforces Content-Type by media type only (parameters like `charset` are ignored). For example, presigned as `text/plain` accepts uploads with `text/plain; charset=utf-8`.
-	- Anonymous client must still include tenant header: `X-Tansu-Tenant`.
+  - Body (example):
+    - `{"Method":"PUT","Bucket":"bkt","Key":"path/file.txt","ExpirySeconds":300,"MaxBytes":2000000,"ContentType":"text/plain"}`
+  - Response: `{ "url": "/storage/api/objects/bkt/path/file.txt?exp=...&sig=...&ct=...&max=...", "expires": 1700000000 }`
+  - Enforcement at upload time:
+    - `exp` strictly enforced: expired presigned URLs return 403 Forbidden (no clock skew allowance).
+    - `max` limits the request `Content-Length`.
+    - `ct` enforces Content-Type by media type only (parameters like `charset` are ignored). For example, presigned as `text/plain` accepts uploads with `text/plain; charset=utf-8`.
+  - Anonymous client must still include tenant header: `X-Tansu-Tenant`.
+
+Transforms (optional)
+
+- Presign transform URL:
+  - `POST /presign/transform` — generate a temporary signed URL for an image transform.
+  - Body (example):
+    - `{ "Bucket":"bkt","Key":"img/cat.png","Width":800,"Height":0,"Format":"webp","Quality":80,"ExpirySeconds":300 }`
+  - Response: `{ "url": "/storage/api/transform/bkt/img/cat.png?w=800&h=0&fmt=webp&q=80&exp=...&sig=...", "expires": 1700000000 }`
+- Perform transform:
+  - `GET /transform/{bucket}/{key}?w=&h=&fmt=&q=&exp=&sig=`
+  - Allowed formats: `webp`, `jpeg`, `png`.
+  - Limits and timeouts are enforced (max width/height/total pixels; execution timeout). Requests exceeding limits return 400; expired or invalid signatures return 403.
+  - Caching: per-tenant transform cache is keyed by `tenant|bucket|key|sourceETag|fmt|w|h|q`; cache is invalidated automatically when the source object’s ETag changes.
+  - ETag: responses reuse the source object’s ETag; `Vary: Accept-Encoding` is set. Content-Type reflects the encoded format.
+
+Response compression
+
+- When clients send `Accept-Encoding: br`, compressible GET responses are served with `Content-Encoding: br` (Brotli). The cache varies by encoding via `Vary: Accept-Encoding`.
+- Already-compressed media (e.g., jpg, png, zip, mp4) are not recompressed.
 
 Multipart uploads
 
@@ -361,6 +444,8 @@ Configuration keys (storage service)
 - `Storage__RootPath`: Filesystem path for object data (default `/data` inside the container).
 - `Storage__PresignSecret`: HMAC secret used to sign presigned URLs.
 - `Storage__MultipartMaxPartSizeBytes`: Per-part size cap in bytes for multipart uploads. Use `0` to disable the cap. In development compose, it's set to `1048576` (1 MiB) to exercise E2E coverage.
+- Compression options (Brotli): configure under `Storage:Compression` (env prefix `Storage__Compression__*`). Common keys include enabling for HTTP/HTTPS, Brotli level, and MIME allowlist.
+- Transform options: configure under `Storage:Transforms` (env prefix `Storage__Transforms__*`), including allowed formats, max width/height/total pixels, default quality, timeout, and cache TTL.
 
 Usage and quotas
 
@@ -369,17 +454,30 @@ Usage and quotas
 
 Admin Dashboard
 
-  - The Dashboard includes an admin page at `/admin/storage` that surfaces:
-    - Tenant usage header
-    - Bucket list/create/delete
-    - Object list by prefix (Key, ETag, Length, Content-Type, Last-Modified) and per-object delete
-    - Presigned anonymous upload flow with content-type and max-bytes controls
-    - HEAD metadata viewer for ETag/Content-Type/Length
+- The Dashboard includes an admin page at `/admin/storage` that surfaces:
+  - Tenant usage header
+  - Bucket list/create/delete
+  - Object list by prefix (Key, ETag, Length, Content-Type, Last-Modified) and per-object delete
+  - Presigned anonymous upload flow with content-type and max-bytes controls
+  - HEAD metadata viewer for ETag/Content-Type/Length
 
 Notes
 
 - Always include `X-Tansu-Tenant` on requests through the gateway, including anonymous presigned calls.
 - ETags are weak and stable per object content; they enable efficient conditional requests and caching through the gateway.
+- Keys in routes may be URL-encoded by clients; the Storage service normalizes keys by unescaping percent-encoding before presign validation. Presign canonicalization uses the unescaped key to avoid signature mismatches for keys with encoded slashes or spaces.
+
+### 13.7 Tenant provisioning API (quick reference)
+
+Base path via gateway: `/db/api`. This API provisions a tenant database, applies migrations, and seeds initial roles/config.
+
+- `POST /provisioning/tenants` — idempotent provisioning call.
+  - Body example:
+    - `{ "tenantId": "acme", "displayName": "Acme, Inc." }`
+  - Auth (production): requires a privileged token. Recommended scopes: `admin.full` or a dedicated provisioning role with `db.write` authority per your policies.
+  - Dev bypass (local/E2E only): you may set header `X-Provision-Key: letmein` to bypass auth for quick testing.
+  - Idempotency: subsequent calls with the same `tenantId` succeed without duplicating work.
+  - Response: HTTP 200/201 with a minimal status payload; failures return RFC7807 ProblemDetails with diagnostics.
 
 ### 13.5 Database API v1 quick reference
 
