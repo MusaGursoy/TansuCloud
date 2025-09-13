@@ -5,7 +5,10 @@ using System.Threading.Tasks;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.AspNetCore.Authentication.OpenIdConnect;
+using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Http.Connections;
 using Microsoft.AspNetCore.HttpOverrides;
+using Microsoft.AspNetCore.Routing;
 using Microsoft.IdentityModel.Protocols; // For ConfigurationManager
 using Microsoft.IdentityModel.Protocols.OpenIdConnect; // For OpenIdConnectConfigurationRetriever
 using Microsoft.IdentityModel.Tokens;
@@ -1128,7 +1131,12 @@ app.Use(
 app.UseStaticFiles();
 
 // Ensure WebSockets keep-alive pings are sent regularly for the Blazor circuit
-app.UseWebSockets(new WebSocketOptions { KeepAliveInterval = TimeSpan.FromSeconds(15) });
+app.UseWebSockets(
+    new Microsoft.AspNetCore.Builder.WebSocketOptions
+    {
+        KeepAliveInterval = TimeSpan.FromSeconds(15)
+    }
+);
 
 // Pre-auth key hydration middleware: if OIDC config lacks signing keys just before a challenge, fetch JWKS now.
 app.Use(
@@ -1295,7 +1303,45 @@ app.UseAntiforgery();
 // Static assets must be allowed anonymously; the app has a global fallback authorization policy
 // and we don't want to gate framework files like blazor.server.js or CSS under auth.
 app.MapStaticAssets().AllowAnonymous();
-app.MapRazorComponents<App>().RequireAuthorization().AddInteractiveServerRenderMode();
+
+// Map Razor components with global authorization but explicitly allow Blazor infrastructure endpoints
+// to avoid OIDC challenges on framework/negotiate requests when not yet authenticated (per .NET 8/9 guidance).
+app.MapRazorComponents<App>()
+    .RequireAuthorization()
+    .AddInteractiveServerRenderMode()
+    .Add(e =>
+    {
+        if (e is RouteEndpointBuilder reb && reb.RoutePattern.RawText is string raw)
+        {
+            // Allow anonymous for the Blazor Server script endpoint served via endpoint routing in .NET 8+
+            if (
+                string.Equals(
+                    raw,
+                    "/_framework/blazor.server.js",
+                    StringComparison.OrdinalIgnoreCase
+                )
+            )
+            {
+                e.Metadata.Add(new AllowAnonymousAttribute());
+            }
+
+            // Allow anonymous for ALL Blazor hub endpoints to prevent challenge loops during reconnects
+            // Covers negotiate, WebSocket, and long-poll under "/_blazor"
+            if (raw.Contains("/_blazor", StringComparison.OrdinalIgnoreCase))
+            {
+                e.Metadata.Add(new AllowAnonymousAttribute());
+            }
+        }
+
+        // Optional stability: close circuit when authentication expires (helps recover cleanly)
+        var dispatcherOptions = e
+            .Metadata.OfType<HttpConnectionDispatcherOptions>()
+            .FirstOrDefault();
+        if (dispatcherOptions is not null)
+        {
+            dispatcherOptions.CloseOnAuthenticationExpiration = true;
+        }
+    });
 
 // Health endpoints
 app.MapHealthChecks("/health/live").AllowAnonymous();

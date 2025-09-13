@@ -54,6 +54,8 @@ builder
         metrics.AddRuntimeInstrumentation();
         metrics.AddAspNetCoreInstrumentation();
         metrics.AddHttpClientInstrumentation();
+        // Export custom Outbox meter so Prometheus exposes outbox_* counters
+        metrics.AddMeter("TansuCloud.Database.Outbox");
         metrics.AddOtlpExporter(otlp =>
         {
             var endpoint = builder.Configuration["OpenTelemetry:Otlp:Endpoint"];

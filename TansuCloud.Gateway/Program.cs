@@ -1,6 +1,7 @@
 // Tansu.Cloud Public Repository:    https://github.com/MusaGursoy/TansuCloud
 
 using System.Collections.Generic;
+using System.Diagnostics.Metrics;
 using System.Threading.RateLimiting;
 using Microsoft.AspNetCore.OutputCaching;
 using Microsoft.Extensions.Caching.Hybrid;
@@ -32,6 +33,19 @@ if (!string.IsNullOrWhiteSpace(gatewayCertPwd))
 var serviceName = "tansu.gateway";
 var serviceVersion = typeof(Program).Assembly.GetName().Version?.ToString() ?? "0.0.0";
 var environmentName = builder.Environment.EnvironmentName;
+
+// Minimal custom metrics to observe gateway proxy traffic
+var proxyMeter = new Meter("TansuCloud.Gateway.Proxy", serviceVersion);
+var proxyRequests = proxyMeter.CreateCounter<long>(
+    name: "tansu_gateway_proxy_requests_total",
+    unit: "requests",
+    description: "Total proxied requests observed at the gateway"
+);
+var proxyDurationMs = proxyMeter.CreateHistogram<double>(
+    name: "tansu_gateway_proxy_request_duration_ms",
+    unit: "ms",
+    description: "Gateway proxied request duration in milliseconds"
+);
 
 builder
     .Services.AddOpenTelemetry()
@@ -71,6 +85,8 @@ builder
         metrics.AddRuntimeInstrumentation();
         metrics.AddAspNetCoreInstrumentation();
         metrics.AddHttpClientInstrumentation();
+        // Export custom gateway proxy meter so Prometheus sees our series
+        metrics.AddMeter("TansuCloud.Gateway.Proxy");
         metrics.AddOtlpExporter(otlp =>
         {
             var endpoint = builder.Configuration["OpenTelemetry:Otlp:Endpoint"];
@@ -1187,7 +1203,9 @@ app.Use(
                 var host = context.Request.Headers["Host"].ToString();
                 var xff = context.Request.Headers["X-Forwarded-For"].ToString();
                 var remote = context.Connection.RemoteIpAddress?.ToString();
-                var queryStr = context.Request.QueryString.HasValue ? context.Request.QueryString.Value : string.Empty;
+                var queryStr = context.Request.QueryString.HasValue
+                    ? context.Request.QueryString.Value
+                    : string.Empty;
                 app.Logger.LogWarning(
                     "AdminRootRedirect: Redirecting root '/admin' request to canonical '/dashboard' path. Method={Method} Path={Path} Query={Query} Host={Host} Referer={Referer} Origin={Origin} UA={UA} Traceparent={Traceparent} Tracestate={Tracestate} Tenant={Tenant} XFF={XFF} Remote={Remote}",
                     context.Request.Method,
@@ -1207,13 +1225,72 @@ app.Use(
             catch { }
 
             var target = "/dashboard" + context.Request.Path.Value;
-            var qs = context.Request.QueryString.HasValue ? context.Request.QueryString.Value : string.Empty;
+            var qs = context.Request.QueryString.HasValue
+                ? context.Request.QueryString.Value
+                : string.Empty;
             context.Response.Redirect(target + qs, permanent: false);
             return;
         }
         await next();
     }
 );
+
+// Record proxy metrics around proxied requests to capture status code and duration.
+// Place this BEFORE MapReverseProxy so it wraps the proxy execution for proxied routes.
+app.Use(
+    async (context, next) =>
+    {
+        var path = context.Request.Path;
+        // Only observe requests that are likely destined for proxied routes
+        // based on our configured top-level prefixes to avoid double-counting local endpoints.
+        var firstSegment = path.HasValue
+            ? path.Value!.TrimStart('/').Split('/', 2)[0].ToLowerInvariant()
+            : string.Empty;
+        var shouldObserve =
+            firstSegment
+                is "dashboard"
+                    or "identity"
+                    or "db"
+                    or "storage"
+                    or "_framework"
+                    or "_content"
+                    or "_blazor"
+                    or "signin-oidc"
+                    or "signout-callback-oidc"
+                    or "identity"
+                    or "lib"
+                    or "css"
+                    or "js";
+        if (!shouldObserve)
+        {
+            await next();
+            return;
+        }
+
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        try
+        {
+            await next();
+        }
+        finally
+        {
+            sw.Stop();
+            var statusClass = (context.Response.StatusCode / 100) + "xx";
+            var route = string.IsNullOrEmpty(firstSegment) ? "root" : firstSegment;
+            proxyRequests.Add(
+                1,
+                new KeyValuePair<string, object?>("route", route),
+                new KeyValuePair<string, object?>("status", statusClass)
+            );
+            proxyDurationMs.Record(
+                sw.Elapsed.TotalMilliseconds,
+                new KeyValuePair<string, object?>("route", route),
+                new KeyValuePair<string, object?>("status", statusClass)
+            );
+        }
+    }
+);
+
 app.MapReverseProxy();
 
 app.Run();

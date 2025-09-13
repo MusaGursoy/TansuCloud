@@ -376,6 +376,71 @@ Rationale:
 
 If you routinely run with Redis, consider adding a VS Code test task that sets `REDIS_URL` inline so the attribute no longer skips the test.
 
+### 8.2 Metrics dashboard (Prometheus)
+
+The Dashboard exposes an admin-only Metrics page under `/dashboard/admin/metrics`. It renders native charts by proxying queries to Prometheus from the backend service (Prometheus is never accessed directly by the browser).
+
+Key points
+
+- Internal-only: The Dashboard backend calls Prometheus at an internal URL. In Docker Compose, the default is the Prometheus service at `http://prometheus:9090`. If you wire the OpenTelemetry Collector’s Prometheus exporter instead, use `http://otel-collector:8889`. The browser never receives PromQL or Prometheus URLs.
+- Allowlist: Only predefined charts/queries are allowed. Arbitrary PromQL from the UI is rejected.
+- Tenant scoping: When a tenant is selected or implied via gateway header `X-Tansu-Tenant`, the backend injects label filters (e.g., `tenant="{id}"`) and ignores cross-tenant overrides for non-admin users. Admins may override tenant for cross-tenant views when the header is not set.
+- Rate limiting and caching: The backend clamps time ranges and steps and applies a small in-memory cache (~10s) to reduce load.
+
+Available charts (initial set)
+
+- Overview
+	- Requests per second by service
+	- Error rate (4xx/5xx) by service
+	- Latency p95 by service
+- Storage
+	- Ingress bytes/sec by tenant
+	- Egress bytes/sec by tenant
+	- Responses by status (2xx/4xx/5xx)
+	- Latency p95 by operation
+	- Cache hit ratio (by service/operation)
+- Database
+	- Outbox dispatched/retried/deadlettered rate (aggregated)
+- Gateway
+  - Proxy requests per second by route
+  - Status distribution (2xx/4xx/5xx)
+  - Latency p95 by route
+
+Metric sources and names
+
+- Storage service
+  - Requests: tansu_storage_requests_total (labels include service, op, tenant).
+  - Responses: tansu_storage_responses_total (labels include status, op, tenant).
+  - Latency histogram: tansu_storage_request_duration_ms_milliseconds_bucket
+    - Note: the OpenTelemetry Prometheus exporter appends the unit to histogram names (…_milliseconds_bucket/_count/_sum). Charts compute p95 via histogram_quantile over buckets.
+  - Cache hit ratio: tansu_storage_cache_attempts_total and tansu_storage_cache_hits_total.
+  - Tenant scoping: yes (tenant label is injected when selected/implied).
+- Database service (Outbox)
+  - Counters: outbox_dispatched_total, outbox_retried_total, outbox_deadlettered_total.
+  - Origin: Meter "TansuCloud.Database.Outbox"; series are aggregated across labels.
+  - Tenant scoping: no (metrics are global; no tenant label).
+- Gateway service (reverse proxy)
+  - Requests: tansu_gateway_proxy_requests_total (labels include route, status).
+  - Latency histogram: tansu_gateway_proxy_request_duration_ms_milliseconds_bucket (labels include route, status, le).
+  - Tenant scoping: no (gateway charts ignore tenant filter).
+- Prometheus endpoint used by the Dashboard backend (Compose default): `http://prometheus:9090` (or `http://otel-collector:8889` if using the collector exporter)
+
+Troubleshooting
+
+- Empty charts: Ensure Prometheus (or the OTEL Collector exporter) is reachable from the Dashboard container. In Compose, exec into the Dashboard and curl `http://prometheus:9090/-/ready`. Also make sure there is traffic during the selected time window (e.g., call `/storage/health/ready` repeatedly through the gateway).
+- Permission denied or missing data: Confirm you’re signed in as an admin for cross-tenant views. Non-admins are restricted to the tenant implied by the gateway.
+- NaN/Infinity: The UI guards most divisions by zero; widen the time range or generate load so rates/histograms have samples.
+
+Configuration
+
+- Prometheus base URL, timeouts, default ranges, and caps are configured in the Dashboard via `PrometheusOptions` (appsettings/environment). In Docker Compose, the default is `http://prometheus:9090`; alternatively, use the OTEL collector exporter at `http://otel-collector:8889`.
+
+Quick dev smoke
+
+1) Bring up Compose infra and apps (VS Code tasks: "compose: up infra (pg + redis + pgcat)" then "compose: up apps").
+2) Generate some traffic via the gateway, e.g., hit `/storage/health/ready` and `/db/health/ready` a few dozen times.
+3) Visit `/dashboard/admin/metrics`, sign in (dev creds in this guide), and select Storage HTTP RPS or Gateway RPS by route; you should see non-zero series and sparklines.
+
 ### 13.6 Storage API v1 quick reference
 
 Base path via gateway: `/storage/api`. All requests must include the tenant header `X-Tansu-Tenant: <tenant-id>`. Auth scopes: `storage.read` for reads, `storage.write` for writes. In Development, `admin.full` implies both.

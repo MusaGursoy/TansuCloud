@@ -12,6 +12,18 @@
             <option value="storage.http.rps">Storage HTTP RPS</option>
             <option value="storage.http.errors">Storage HTTP 5xx rate</option>
             <option value="storage.http.latency.p95">Storage latency p95</option>
+            <option value="overview.rps.byservice">Overview RPS by service</option>
+            <option value="overview.errors.byservice">Overview errors by service</option>
+            <option value="overview.latency.p95.byservice">Overview latency p95 by service</option>
+            <option value="storage.bytes.ingress.rate">Storage ingress bytes/s by tenant</option>
+            <option value="storage.bytes.egress.rate">Storage egress bytes/s by tenant</option>
+            <option value="storage.http.status">Storage responses by status</option>
+            <option value="db.outbox.dispatched.rate">DB outbox dispatched/s</option>
+            <option value="db.outbox.retried.rate">DB outbox retried/s</option>
+            <option value="db.outbox.deadlettered.rate">DB outbox deadlettered/s</option>
+            <option value="gateway.http.rps.byroute">Gateway RPS by route</option>
+            <option value="gateway.http.status">Gateway responses by status</option>
+            <option value="gateway.http.latency.p95.byroute">Gateway latency p95 by route</option>
         </select>
     </label>
     <label>Service:
@@ -80,6 +92,85 @@
                         <th>Sparkline</th>
                     </tr>
                 }
+                else if (chartId == "overview.rps.byservice")
+                {
+                    <tr>
+                        <th>Service</th>
+                        <th>RPS</th>
+                        <th>Sparkline</th>
+                    </tr>
+                }
+                else if (chartId == "overview.errors.byservice")
+                {
+                    <tr>
+                        <th>Service</th>
+                        <th>Errors/s</th>
+                        <th>Sparkline</th>
+                    </tr>
+                }
+                else if (chartId == "overview.latency.p95.byservice")
+                {
+                    <tr>
+                        <th>Service</th>
+                        <th>p95 (ms)</th>
+                        <th>Sparkline</th>
+                    </tr>
+                }
+                else if (chartId == "storage.bytes.ingress.rate")
+                {
+                    <tr>
+                        <th>Tenant</th>
+                        <th>Bytes/s</th>
+                        <th>Sparkline</th>
+                    </tr>
+                }
+                else if (chartId == "storage.bytes.egress.rate")
+                {
+                    <tr>
+                        <th>Tenant</th>
+                        <th>Bytes/s</th>
+                        <th>Sparkline</th>
+                    </tr>
+                }
+                else if (chartId == "storage.http.status")
+                {
+                    <tr>
+                        <th>Status</th>
+                        <th>RPS</th>
+                        <th>Sparkline</th>
+                    </tr>
+                }
+                else if (chartId == "db.outbox.dispatched.rate" || chartId == "db.outbox.retried.rate" || chartId == "db.outbox.deadlettered.rate")
+                {
+                    <tr>
+                        <th>Rate</th>
+                        <th>Sparkline</th>
+                    </tr>
+                }
+                else if (chartId == "gateway.http.rps.byroute")
+                {
+                    <tr>
+                        <th>Route</th>
+                        <th>RPS</th>
+                        <th>Sparkline</th>
+                    </tr>
+                }
+                else if (chartId == "gateway.http.status")
+                {
+                    <tr>
+                        <th>Status</th>
+                        <th>RPS</th>
+                        <th>Sparkline</th>
+                    </tr>
+                }
+                else if (chartId == "gateway.http.latency.p95.byroute")
+                {
+                    <tr>
+                        <th>Route</th>
+                        <th>p95 (ms)</th>
+                        <th>Sparkline</th>
+                    </tr>
+                }
             </thead>
             <tbody>
                 @foreach (var s in series)
@@ -114,6 +205,85 @@
                     {
                         <tr>
                             <td>@(s.metric.TryGetValue("op", out var op) ? op : "-")</td>
+                            <td>@FormatMillis(s)</td>
+                            <td>@(RenderSparklineSvg(s, 200, 40))</td>
+                        </tr>
+                    }
+                    else if (chartId == "overview.rps.byservice")
+                    {
+                        <tr>
+                            <td>@(s.metric.TryGetValue("service", out var sv) ? sv : "-")</td>
+                            <td>@FormatNumber(s)</td>
+                            <td>@(RenderSparklineSvg(s, 200, 40))</td>
+                        </tr>
+                    }
+                    else if (chartId == "overview.errors.byservice")
+                    {
+                        <tr>
+                            <td>@(s.metric.TryGetValue("service", out var sv) ? sv : "-")</td>
+                            <td>@FormatNumber(s)</td>
+                            <td>@(RenderSparklineSvg(s, 200, 40))</td>
+                        </tr>
+                    }
+                    else if (chartId == "overview.latency.p95.byservice")
+                    {
+                        <tr>
+                            <td>@(s.metric.TryGetValue("service", out var sv) ? sv : "-")</td>
+                            <td>@FormatMillis(s)</td>
+                            <td>@(RenderSparklineSvg(s, 200, 40))</td>
+                        </tr>
+                    }
+                    else if (chartId == "storage.bytes.ingress.rate")
+                    {
+                        <tr>
+                            <td>@(s.metric.TryGetValue("tenant", out var t) ? t : "-")</td>
+                            <td>@FormatNumber(s)</td>
+                            <td>@(RenderSparklineSvg(s, 200, 40))</td>
+                        </tr>
+                    }
+                    else if (chartId == "storage.bytes.egress.rate")
+                    {
+                        <tr>
+                            <td>@(s.metric.TryGetValue("tenant", out var t) ? t : "-")</td>
+                            <td>@FormatNumber(s)</td>
+                            <td>@(RenderSparklineSvg(s, 200, 40))</td>
+                        </tr>
+                    }
+                    else if (chartId == "storage.http.status")
+                    {
+                        <tr>
+                            <td>@(s.metric.TryGetValue("status", out var st) ? st : "-")</td>
+                            <td>@FormatNumber(s)</td>
+                            <td>@(RenderSparklineSvg(s, 200, 40))</td>
+                        </tr>
+                    }
+                    else if (chartId == "db.outbox.dispatched.rate" || chartId == "db.outbox.retried.rate" || chartId == "db.outbox.deadlettered.rate")
+                    {
+                        <tr>
+                            <td>@FormatNumber(s)</td>
+                            <td>@(RenderSparklineSvg(s, 200, 40))</td>
+                        </tr>
+                    }
+                    else if (chartId == "gateway.http.rps.byroute")
+                    {
+                        <tr>
+                            <td>@(s.metric.TryGetValue("route", out var route) ? route : "-")</td>
+                            <td>@FormatNumber(s)</td>
+                            <td>@(RenderSparklineSvg(s, 200, 40))</td>
+                        </tr>
+                    }
+                    else if (chartId == "gateway.http.status")
+                    {
+                        <tr>
+                            <td>@(s.metric.TryGetValue("status", out var st) ? st : "-")</td>
+                            <td>@FormatNumber(s)</td>
+                            <td>@(RenderSparklineSvg(s, 200, 40))</td>
+                        </tr>
+                    }
+                    else if (chartId == "gateway.http.latency.p95.byroute")
+                    {
+                        <tr>
+                            <td>@(s.metric.TryGetValue("route", out var route) ? route : "-")</td>
                             <td>@FormatMillis(s)</td>
                             <td>@(RenderSparklineSvg(s, 200, 40))</td>
                         </tr>
@@ -162,9 +332,7 @@
 
     private static string FormatPercent(PromSeries s)
     {
-        if (s.values.Count == 0) return "-";
-        var last = s.values[^1];
-        if (last.Length >= 2 && last[1] is string str && double.TryParse(str, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var v))
+        if (TryGetLatestFiniteValue(s, out var v))
         {
             return v.ToString("P1");
         }
@@ -173,9 +341,7 @@
 
     private static string FormatNumber(PromSeries s)
     {
-        if (s.values.Count == 0) return "-";
-        var last = s.values[^1];
-        if (last.Length >= 2 && last[1] is string str && double.TryParse(str, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var v))
+        if (TryGetLatestFiniteValue(s, out var v))
         {
             return v.ToString("0.###");
         }
@@ -184,9 +350,7 @@
 
     private static string FormatMillis(PromSeries s)
     {
-        if (s.values.Count == 0) return "-";
-        var last = s.values[^1];
-        if (last.Length >= 2 && last[1] is string str && double.TryParse(str, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var v))
+        if (TryGetLatestFiniteValue(s, out var v))
         {
             return v.ToString("0.##");
         }
@@ -199,6 +363,18 @@
         "storage.http.rps" => "Storage HTTP requests per second",
         "storage.http.errors" => "Storage HTTP 5xx errors per second",
         "storage.http.latency.p95" => "Storage HTTP latency p95 (ms)",
+        "overview.rps.byservice" => "Overview: requests per second by service",
+        "overview.errors.byservice" => "Overview: error rate by service",
+        "overview.latency.p95.byservice" => "Overview: latency p95 by service (ms)",
+        "storage.bytes.ingress.rate" => "Storage ingress bytes/s by tenant",
+        "storage.bytes.egress.rate" => "Storage egress bytes/s by tenant",
+        "storage.http.status" => "Storage responses per second by status",
+        "db.outbox.dispatched.rate" => "Database: outbox dispatched per second",
+        "db.outbox.retried.rate" => "Database: outbox retried per second",
+        "db.outbox.deadlettered.rate" => "Database: outbox deadlettered per second",
+        "gateway.http.rps.byroute" => "Gateway: requests per second by route",
+        "gateway.http.status" => "Gateway: responses per second by status",
+        "gateway.http.latency.p95.byroute" => "Gateway: latency p95 by route (ms)",
         _ => id
     };
 
@@ -208,8 +384,29 @@
         var points = new List<double>();
         foreach (var v in s.values)
         {
-            if (v.Length >= 2 && v[1] is string str && double.TryParse(str, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var dv))
-                points.Add(dv);
+            if (v.Length >= 2)
+            {
+                var raw = v[1];
+                if (raw is string str && double.TryParse(str, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var dv1))
+                    points.Add(dv1);
+                else if (raw is System.Text.Json.JsonElement je)
+                {
+                    if (je.ValueKind == System.Text.Json.JsonValueKind.String)
+                    {
+                        var sv = je.GetString();
+                        if (sv != null && double.TryParse(sv, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var dv2))
+                            points.Add(dv2);
+                    }
+                    else if (je.ValueKind == System.Text.Json.JsonValueKind.Number && je.TryGetDouble(out var dv3))
+                    {
+                        points.Add(dv3);
+                    }
+                }
+                else if (raw is double dv4)
+                {
+                    points.Add(dv4);
+                }
+            }
         }
         if (points.Count == 0)
             return new MarkupString("<svg width=\"200\" height=\"40\"></svg>");
@@ -231,5 +428,49 @@
         var poly = string.Join(" ", pts);
         var svg = $"<svg width=\"{width}\" height=\"{height}\"><polyline fill=\"none\" stroke=\"#0d6efd\" stroke-width=\"2\" points=\"{poly}\" /></svg>";
         return new MarkupString(svg);
+    }
+
+    private static bool TryGetLatestFiniteValue(PromSeries s, out double value)
+    {
+        value = 0;
+        if (s.values.Count == 0) return false;
+        for (int i = s.values.Count - 1; i >= 0; i--)
+        {
+            var arr = s.values[i];
+            if (arr.Length >= 2)
+            {
+                double? candidate = null;
+                var raw = arr[1];
+                if (raw is string str)
+                {
+                    if (double.TryParse(str, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var v1))
+                        candidate = v1;
+                }
+                else if (raw is System.Text.Json.JsonElement je)
+                {
+                    if (je.ValueKind == System.Text.Json.JsonValueKind.String)
+                    {
+                        var sVal = je.GetString();
+                        if (sVal != null && double.TryParse(sVal, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var v2))
+                            candidate = v2;
+                    }
+                    else if (je.ValueKind == System.Text.Json.JsonValueKind.Number && je.TryGetDouble(out var v3))
+                    {
+                        candidate = v3;
+                    }
+                }
+                else if (raw is double v4)
+                {
+                    candidate = v4;
+                }
+
+                if (candidate is double v && !double.IsNaN(v) && !double.IsInfinity(v))
+                {
+                    value = v;
+                    return true;
+                }
+            }
+        }
+        return false;
     }
 }
