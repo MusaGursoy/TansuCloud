@@ -30,4 +30,8 @@
   </PackageReference>
   </ItemGroup>
 
+  <ItemGroup>
+    <ProjectReference Include="..\TansuCloud.Observability.Shared\TansuCloud.Observability.Shared.csproj" />
+  </ItemGroup>
+
 </Project>

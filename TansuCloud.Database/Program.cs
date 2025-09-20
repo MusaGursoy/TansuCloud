@@ -4,6 +4,7 @@ using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.Extensions.Caching.Hybrid;
 using Microsoft.Extensions.Caching.StackExchangeRedis;
+using Microsoft.Extensions.Diagnostics.HealthChecks;
 using Microsoft.Extensions.Options;
 using Microsoft.IdentityModel.Protocols;
 using Microsoft.IdentityModel.Protocols.OpenIdConnect;
@@ -14,11 +15,13 @@ using OpenTelemetry.Metrics;
 using OpenTelemetry.Resources;
 using OpenTelemetry.Trace;
 using StackExchange.Redis;
+using TansuCloud.Observability;
 using TansuCloud.Database.Caching;
 using TansuCloud.Database.Hosting;
 using TansuCloud.Database.Outbox;
 using TansuCloud.Database.Provisioning;
 using TansuCloud.Database.Security;
+using TansuCloud.Observability;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -65,6 +68,8 @@ builder
             }
         });
     });
+// Observability core (Task 38)
+builder.Services.AddTansuObservabilityCore();
 builder.Logging.AddOpenTelemetry(o =>
 {
     o.IncludeFormattedMessage = true;
@@ -79,12 +84,23 @@ builder.Logging.AddOpenTelemetry(o =>
     });
 });
 builder.Services.AddHealthChecks();
+// Phase 0: health transition publisher for Info logs on state changes
+builder.Services.AddSingleton<IHealthCheckPublisher, HealthTransitionPublisher>();
+builder.Services.Configure<HealthCheckPublisherOptions>(o =>
+{
+    o.Delay = TimeSpan.FromSeconds(2);
+    o.Period = TimeSpan.FromSeconds(15);
+});
+
+// Observability shared primitives (Task 38)
+builder.Services.AddTansuObservabilityCore();
+
 // If Redis is configured, add a health check to surface readiness in compose/dev
 var cacheRedisForHealth = builder.Configuration["Cache:Redis"];
 if (!string.IsNullOrWhiteSpace(cacheRedisForHealth))
 {
-    builder.Services
-        .AddHealthChecks()
+    builder
+        .Services.AddHealthChecks()
         .AddCheck(
             "redis",
             new TansuCloud.Database.Services.RedisPingHealthCheck(cacheRedisForHealth)
@@ -205,18 +221,41 @@ builder
         // Include detailed error descriptions in WWW-Authenticate for easier diagnostics (Dev only)
         options.IncludeErrorDetails = true;
         // Accept both issuer forms (with and without trailing slash)
-    var configured = builder.Configuration["Oidc:Issuer"] ?? "http://127.0.0.1:8080/identity/";
+        var configured = builder.Configuration["Oidc:Issuer"] ?? "http://127.0.0.1:8080/identity/";
         var issuerNoSlash = configured.TrimEnd('/');
         var issuerWithSlash = issuerNoSlash + "/";
 
         options.Authority = issuerNoSlash; // logical issuer (matches token 'iss')
-        // Resolve metadata from the canonical issuer base ("/identity/.well-known/openid-configuration")
-        // to keep discovery/jwks fully aligned with the advertised issuer.
-        var issuerUri = new Uri(issuerWithSlash);
-        options.MetadataAddress = new Uri(
-            issuerUri,
-            ".well-known/openid-configuration"
-        ).AbsoluteUri;
+        // Backchannel discovery/JWKS: prefer explicit configuration, otherwise derive from configured issuer.
+        // When running in a container, default to gateway for discovery to avoid localhost loopback issues.
+        var metadataAddress = builder.Configuration["Oidc:MetadataAddress"];
+        string source;
+        if (string.IsNullOrWhiteSpace(metadataAddress))
+        {
+            var issuerUri = new Uri(issuerWithSlash);
+            var inContainer = string.Equals(
+                Environment.GetEnvironmentVariable("DOTNET_RUNNING_IN_CONTAINER"),
+                "true",
+                StringComparison.OrdinalIgnoreCase
+            );
+            if (inContainer)
+            {
+                metadataAddress = "http://gateway:8080/identity/.well-known/openid-configuration";
+                source = "container-gateway";
+            }
+            else
+            {
+                metadataAddress = new Uri(issuerUri, ".well-known/openid-configuration").AbsoluteUri;
+                source = "issuer-derived";
+            }
+        }
+        else
+        {
+            source = "explicit-config";
+        }
+        options.MetadataAddress = metadataAddress;
+
+        // Defer logging until app is built to avoid BuildServiceProvider duplication
 
         // In Development, configure a dynamic metadata manager with aggressive refresh to reduce startup races.
         if (builder.Environment.IsDevelopment())
@@ -243,10 +282,34 @@ builder
         options.RequireHttpsMetadata = false; // Development only
         options.MapInboundClaims = false; // keep JWT claim types as-is (e.g., "aud", "scope")
         options.IncludeErrorDetails = true;
+        // Prepare issuer validation with optional localhost/127.0.0.1 alternates in Development
+        string[] validIssuers;
+        if (builder.Environment.IsDevelopment())
+        {
+            string altHostNoSlash = issuerNoSlash;
+            if (issuerNoSlash.Contains("127.0.0.1"))
+                altHostNoSlash = issuerNoSlash.Replace("127.0.0.1", "localhost");
+            else if (issuerNoSlash.Contains("localhost"))
+                altHostNoSlash = issuerNoSlash.Replace("localhost", "127.0.0.1");
+
+            var altHostWithSlash = altHostNoSlash.TrimEnd('/') + "/";
+            validIssuers = new[]
+            {
+                issuerNoSlash,
+                issuerWithSlash,
+                altHostNoSlash,
+                altHostWithSlash
+            };
+        }
+        else
+        {
+            validIssuers = new[] { issuerNoSlash, issuerWithSlash };
+        }
+
         options.TokenValidationParameters = new TokenValidationParameters
         {
             ValidateIssuer = true,
-            ValidIssuers = new[] { issuerNoSlash, issuerWithSlash },
+            ValidIssuers = validIssuers,
             // In Development, relax audience validation at the JWT layer and rely on our explicit controller checks.
             // This helps avoid edge cases where 'aud' is emitted as a JSON array/string by different token handlers.
             ValidateAudience = !builder.Environment.IsDevelopment(),
@@ -796,6 +859,37 @@ builder.Services.AddAuthorization(options =>
 // No OpenIddict validation here; JwtBearer handles access token validation against the issuer's JWKS
 
 var app = builder.Build();
+// Startup diagnostic: log OIDC metadata source choice (Task 38)
+try
+{
+    var log = app.Services.GetRequiredService<ILoggerFactory>().CreateLogger("OIDC-Config");
+    var configured = builder.Configuration["Oidc:Issuer"] ?? "http://127.0.0.1:8080/identity/";
+    var issuerNoSlash = configured.TrimEnd('/');
+    var issuerWithSlash = issuerNoSlash + "/";
+    var configuredMd = builder.Configuration["Oidc:MetadataAddress"];
+    string effectiveMd;
+    string src;
+    if (!string.IsNullOrWhiteSpace(configuredMd))
+    {
+        effectiveMd = configuredMd!;
+        src = "explicit-config";
+    }
+    else if (string.Equals(Environment.GetEnvironmentVariable("DOTNET_RUNNING_IN_CONTAINER"), "true", StringComparison.OrdinalIgnoreCase))
+    {
+        effectiveMd = "http://gateway:8080/identity/.well-known/openid-configuration";
+        src = "container-gateway";
+    }
+    else
+    {
+        effectiveMd = new Uri(new Uri(issuerWithSlash), ".well-known/openid-configuration").AbsoluteUri;
+        src = "issuer-derived";
+    }
+    log.LogOidcMetadataChoice(src, issuerNoSlash, effectiveMd);
+}
+catch { }
+
+// Task 38 enrichment middleware
+app.UseMiddleware<RequestEnrichmentMiddleware>();
 
 // Configure the HTTP request pipeline.
 if (app.Environment.IsDevelopment())
@@ -804,35 +898,49 @@ if (app.Environment.IsDevelopment())
 }
 
 // Global exception handler to surface ProblemDetails on unhandled errors (helps E2E diagnose 500s)
-app.Use(async (ctx, next) =>
-{
-    try
+app.Use(
+    async (ctx, next) =>
     {
-        await next();
-    }
-    catch (Exception ex)
-    {
-        var logger = ctx.RequestServices.GetRequiredService<ILoggerFactory>().CreateLogger("GlobalException");
-        logger.LogError(ex, "Unhandled exception processing {Method} {Path}", ctx.Request?.Method, ctx.Request?.Path.Value);
-        ctx.Response.StatusCode = StatusCodes.Status500InternalServerError;
-        ctx.Response.ContentType = "application/problem+json";
-        var problem = new
-        {
-            type = "https://tools.ietf.org/html/rfc7231#section-6.6.1",
-            title = "An unexpected error occurred.",
-            status = 500,
-            traceId = ctx.TraceIdentifier
-        };
         try
         {
-            await ctx.Response.WriteAsJsonAsync(problem);
+            await next();
         }
-        catch { /* ignore */ }
+        catch (Exception ex)
+        {
+            var logger = ctx
+                .RequestServices.GetRequiredService<ILoggerFactory>()
+                .CreateLogger("GlobalException");
+            logger.LogError(
+                ex,
+                "Unhandled exception processing {Method} {Path}",
+                ctx.Request?.Method,
+                ctx.Request?.Path.Value
+            );
+            ctx.Response.StatusCode = StatusCodes.Status500InternalServerError;
+            ctx.Response.ContentType = "application/problem+json";
+            var problem = new
+            {
+                type = "https://tools.ietf.org/html/rfc7231#section-6.6.1",
+                title = "An unexpected error occurred.",
+                status = 500,
+                traceId = ctx.TraceIdentifier
+            };
+            try
+            {
+                await ctx.Response.WriteAsJsonAsync(problem);
+            }
+            catch
+            { /* ignore */
+            }
+        }
     }
-});
+);
 
 app.UseAuthentication();
 app.UseAuthorization();
+
+// Attach enrichment early
+app.UseMiddleware<RequestEnrichmentMiddleware>();
 
 app.MapControllers();
 
@@ -840,4 +948,30 @@ app.MapControllers();
 app.MapHealthChecks("/health/live").AllowAnonymous();
 app.MapHealthChecks("/health/ready").AllowAnonymous();
 
+// Dev-only: dynamic logging override shim to aid troubleshooting
+if (app.Environment.IsDevelopment())
+{
+    app.MapPost(
+        "/dev/logging/overrides",
+        (IDynamicLogLevelOverride ovr, [AsParameters] LogOverrideRequest req) =>
+        {
+            if (string.IsNullOrWhiteSpace(req.Category))
+                return Results.Problem("Category is required", statusCode: 400);
+            if (req.TtlSeconds <= 0)
+                return Results.Problem("TtlSeconds must be > 0", statusCode: 400);
+            ovr.Set(req.Category!, req.Level, TimeSpan.FromSeconds(req.TtlSeconds));
+            return Results.Ok(new { ok = true });
+        }
+    ).AllowAnonymous();
+    app.MapGet(
+        "/dev/logging/overrides",
+        (IDynamicLogLevelOverride ovr) =>
+            Results.Json(
+                ovr.Snapshot().ToDictionary(k => k.Key, v => new { v.Value.Level, v.Value.Expires })
+            )
+    ).AllowAnonymous();
+}
+
 app.Run();
+
+public sealed record LogOverrideRequest(string Category, LogLevel Level, int TtlSeconds);

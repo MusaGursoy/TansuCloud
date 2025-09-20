@@ -10,11 +10,17 @@
   <ItemGroup>
     <PackageReference Include="Microsoft.VisualStudio.Azure.Containers.Tools.Targets" Version="1.22.1" />
   <PackageReference Include="Microsoft.AspNetCore.Authentication.OpenIdConnect" Version="9.0.9" />
+  <PackageReference Include="Microsoft.AspNetCore.DataProtection.StackExchangeRedis" Version="9.0.9" />
+  <PackageReference Include="StackExchange.Redis" Version="2.9.17" />
   <PackageReference Include="OpenTelemetry.Extensions.Hosting" Version="1.12.0" />
   <PackageReference Include="OpenTelemetry.Exporter.OpenTelemetryProtocol" Version="1.12.0" />
   <PackageReference Include="OpenTelemetry.Instrumentation.AspNetCore" Version="1.12.0" />
   <PackageReference Include="OpenTelemetry.Instrumentation.Http" Version="1.12.0" />
   <PackageReference Include="OpenTelemetry.Instrumentation.Runtime" Version="1.12.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\TansuCloud.Observability.Shared\TansuCloud.Observability.Shared.csproj" />
   </ItemGroup>
 
 </Project>

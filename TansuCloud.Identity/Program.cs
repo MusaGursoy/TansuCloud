@@ -15,12 +15,14 @@ using OpenTelemetry.Logs;
 using OpenTelemetry.Metrics;
 using OpenTelemetry.Resources;
 using OpenTelemetry.Trace;
+using Microsoft.Extensions.Diagnostics.HealthChecks;
 using TansuCloud.Identity.Data;
 using TansuCloud.Identity.Infrastructure;
 using TansuCloud.Identity.Infrastructure.External;
 using TansuCloud.Identity.Infrastructure.Keys;
 using TansuCloud.Identity.Infrastructure.Options;
 using TansuCloud.Identity.Infrastructure.Security;
+using TansuCloud.Observability;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -69,6 +71,8 @@ builder
             }
         });
     });
+// Observability core (Task 38)
+builder.Services.AddTansuObservabilityCore();
 builder.Logging.AddOpenTelemetry(o =>
 {
     o.IncludeFormattedMessage = true;
@@ -83,6 +87,13 @@ builder.Logging.AddOpenTelemetry(o =>
     });
 });
 builder.Services.AddHealthChecks();
+// Phase 0: health transition publisher for Info logs on status change
+builder.Services.AddSingleton<IHealthCheckPublisher, HealthTransitionPublisher>();
+builder.Services.Configure<HealthCheckPublisherOptions>(o =>
+{
+    o.Delay = TimeSpan.FromSeconds(2);
+    o.Period = TimeSpan.FromSeconds(15);
+});
 
 // Database: Prefer PostgreSQL; allow Sqlite fallback for tests
 var useSqlite = builder.Configuration.GetValue(
@@ -328,6 +339,8 @@ builder
 // HttpContextAccessor already registered above
 
 builder.Services.AddRazorPages();
+// Observability core (Task 38)
+builder.Services.AddTansuObservabilityCore();
 builder.Services.AddControllers();
 
 // Dynamic external providers from DB (baseline: load once at startup)
@@ -341,6 +354,9 @@ builder.Services.AddHttpClient(
 );
 
 var app = builder.Build();
+
+// Task 38 enrichment middleware
+app.UseMiddleware<RequestEnrichmentMiddleware>();
 
 // Apply migrations & seed dev data
 using (var scope = app.Services.CreateScope())
@@ -381,6 +397,8 @@ app.UseForwardedHeaders(
 // with endpoint matching for OpenIddict (e.g., /connect/token).
 
 app.UseRouting();
+// Enrichment middleware
+app.UseMiddleware<RequestEnrichmentMiddleware>();
 app.UseStaticFiles();
 app.UseAuthentication();
 app.UseAuthorization();
@@ -393,7 +411,33 @@ app.MapRazorPages();
 app.MapHealthChecks("/health/live").AllowAnonymous();
 app.MapHealthChecks("/health/ready").AllowAnonymous();
 
+// Dev-only: dynamic logging override shim to aid troubleshooting
+if (app.Environment.IsDevelopment())
+{
+    app.MapPost(
+        "/dev/logging/overrides",
+        (IDynamicLogLevelOverride ovr, [AsParameters] LogOverrideRequest req) =>
+        {
+            if (string.IsNullOrWhiteSpace(req.Category))
+                return Results.Problem("Category is required", statusCode: 400);
+            if (req.TtlSeconds <= 0)
+                return Results.Problem("TtlSeconds must be > 0", statusCode: 400);
+            ovr.Set(req.Category!, req.Level, TimeSpan.FromSeconds(req.TtlSeconds));
+            return Results.Ok(new { ok = true });
+        }
+    ).AllowAnonymous();
+    app.MapGet(
+        "/dev/logging/overrides",
+        (IDynamicLogLevelOverride ovr) =>
+            Results.Json(
+                ovr.Snapshot().ToDictionary(k => k.Key, v => new { v.Value.Level, v.Value.Expires })
+            )
+    ).AllowAnonymous();
+}
+
 // Placeholder for a future JWKS rotation background job
 // app.Services.GetRequiredService<IHostedService>();
 
 app.Run();
+
+public sealed record LogOverrideRequest(string Category, LogLevel Level, int TtlSeconds);

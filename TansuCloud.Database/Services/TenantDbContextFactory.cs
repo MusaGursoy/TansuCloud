@@ -6,6 +6,7 @@ using Microsoft.Extensions.Options;
 using Npgsql;
 using TansuCloud.Database.EF;
 using TansuCloud.Database.Provisioning;
+using TansuCloud.Observability;
 
 namespace TansuCloud.Database.Services;
 
@@ -48,7 +49,7 @@ internal sealed class TenantDbContextFactory(
             {
                 httpContext.Response.Headers["X-Tansu-Db"] = dbName;
             }
-            _logger.LogDebug("Tenant '{Tenant}' -> Database '{Database}'", tenant, dbName);
+            _logger.LogTenantNormalized(tenant, NormalizeTenant(tenant), dbName);
         }
         catch { }
 
@@ -69,7 +70,7 @@ internal sealed class TenantDbContextFactory(
         var dbName = NormalizeDbName(tenantId, _opts.DatabaseNamePrefix);
         b.Database = dbName;
 
-        _logger.LogDebug("[Background] Tenant '{Tenant}' -> Database '{Database}'", tenantId, dbName);
+    _logger.LogTenantNormalized(tenantId, NormalizeTenant(tenantId), dbName);
 
         var dbOptsBuilder = new DbContextOptionsBuilder<TansuDbContext>()
             .UseNpgsql(b.ConnectionString);
@@ -87,6 +88,13 @@ internal sealed class TenantDbContextFactory(
         var name = string.IsNullOrWhiteSpace(prefix) ? "tansu_tenant_" : prefix!;
         return $"{name}{cleaned}";
     } // End of Method NormalizeDbName
+
+    private static string NormalizeTenant(string tenantId)
+    {
+        return new string(
+            tenantId.ToLowerInvariant().Select(ch => char.IsLetterOrDigit(ch) ? ch : '_').ToArray()
+        );
+    } // End of Method NormalizeTenant
 
     private static void TryUseCompiledModel(DbContextOptionsBuilder<TansuDbContext> builder)
     {

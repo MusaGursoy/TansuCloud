@@ -32,4 +32,8 @@
   <PackageReference Include="Microsoft.Extensions.Caching.Hybrid" Version="9.9.0" />
   </ItemGroup>
 
+  <ItemGroup>
+    <ProjectReference Include="..\TansuCloud.Observability.Shared\TansuCloud.Observability.Shared.csproj" />
+  </ItemGroup>
+
 </Project>

@@ -11,6 +11,7 @@ using SixLabors.ImageSharp.Formats.Jpeg;
 using SixLabors.ImageSharp.Formats.Png;
 using SixLabors.ImageSharp.Formats.Webp;
 using SixLabors.ImageSharp.Processing;
+using TansuCloud.Observability;
 using TansuCloud.Storage.Services;
 
 namespace TansuCloud.Storage.Controllers;
@@ -110,9 +111,21 @@ public sealed class TransformController(
         var cacheKey =
             $"tx:{tenant.TenantId}|{bucket}|{key}|{head.ETag}|{format}|{width}x{height}|q{qual}";
 
+        // Optional sampling for cache hits to reduce log noise; default sample 10% if not configured
+        var samplePctStr = HttpContext
+            .RequestServices.GetService<IConfiguration>()
+            ?["Storage:Transforms:CacheHitLogSamplePercent"];
+        var samplePct = 0;
+        _ = int.TryParse(samplePctStr, out samplePct);
+        samplePct = samplePct <= 0 ? 0 : Math.Min(100, samplePct);
+
         if (memoryCache.TryGetValue<byte[]>(cacheKey, out var cached))
         {
-            logger.LogDebug("Transform cache hit for {CacheKey}", cacheKey);
+            // Sample cache hit logs
+            if (samplePct == 0 || Random.Shared.Next(0, 100) < samplePct)
+            {
+                logger.LogCacheHit(cacheKey);
+            }
             Response.Headers.ETag = head.ETag; // tie to source ETag
             SetVaryEncoding();
             CacheHitCounter.Add(1);
@@ -196,6 +209,7 @@ public sealed class TransformController(
             SetVaryEncoding();
             sw.Stop();
             DurationMs.Record(sw.Elapsed.TotalMilliseconds);
+            logger.LogCacheMiss(cacheKey);
             return File(bytes, GetContentType(format));
         }
         catch (OperationCanceledException)

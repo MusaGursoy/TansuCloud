@@ -1,0 +1,286 @@
+@attribute [Microsoft.AspNetCore.Authorization.Authorize(Policy = "AdminOnly")]
+@page "/admin/rate-limits"
+@inject IHttpClientFactory ClientFactory
+@using System.Net.Http.Json
+
+<h3>Gateway Rate Limits (Dev)</h3>
+<p class="text-muted">Edit live gateway rate-limit settings. In dev, this calls the gateway dev admin API.</p>
+
+@if (error is not null)
+{
+    <div class="alert alert-danger">@error</div>
+}
+@if (!string.IsNullOrWhiteSpace(success))
+{
+    <div class="alert alert-success">@success</div>
+}
+
+<div class="mb-3 d-flex align-items-center gap-2">
+    <button class="btn btn-secondary" data-testid="btn-load" @onclick="LoadAsync">Load current</button>
+    <button class="btn btn-primary" data-testid="btn-save" @onclick="SaveClicked" disabled="@(!CanSave)">Save</button>
+    <a class="btn btn-outline-primary ms-auto" href="/dashboard/admin/rate-limits/summary" title="Open rate-limit summary" data-testid="link-rate-limits-summary">
+        <span class="me-1" aria-hidden="true">📊</span> Summary
+    </a>
+</div>
+
+<div class="alert alert-info d-flex align-items-center" role="note">
+    <span class="me-2" aria-hidden="true">ℹ️</span>
+    View live counters and recent rejections in the
+    <a class="alert-link ms-1" href="/dashboard/admin/rate-limits/summary" data-testid="link-rate-limits-summary-inline">Rate-limit summary</a>.
+    This opens in the canonical path under <code>/dashboard/admin/rate-limits/summary</code>.
+ </div>
+
+@if (dto is null)
+{
+    <em>Click Load to fetch current settings…</em>
+}
+else
+{
+    <div class="card" style="max-width: 920px">
+        <div class="card-body">
+            @if (validationErrors.Count > 0)
+            {
+                <div class="alert alert-warning">
+                    <strong>Fix the following before saving:</strong>
+                    <ul>
+                        @foreach (var e in validationErrors)
+                        {
+                            <li>@e</li>
+                        }
+                    </ul>
+                </div>
+            }
+            <div class="row g-3">
+                <div class="col-md-3">
+                    <label class="form-label">Window (seconds)</label>
+                    <input data-testid="input-window-seconds" type="number" class="form-control @(IsInvalid("window") ? "is-invalid" : null)" @bind-value="dto.WindowSeconds" @bind-value:event="oninput" @bind-value:after="Validate" />
+                </div>
+                <div class="col-md-9">
+                    <div class="row g-3">
+                        <div class="col-md-3">
+                            <label class="form-label">Default Permit</label>
+                            <input data-testid="input-default-permit" type="number" class="form-control @(IsInvalid("defaults.permit") ? "is-invalid" : null)" @bind-value="dto.Defaults.PermitLimit" @bind-value:event="oninput" @bind-value:after="Validate" />
+                        </div>
+                        <div class="col-md-3">
+                            <label class="form-label">Default Queue</label>
+                            <input data-testid="input-default-queue" type="number" class="form-control @(IsInvalid("defaults.queue") ? "is-invalid" : null)" @bind-value="dto.Defaults.QueueLimit" @bind-value:event="oninput" @bind-value:after="Validate" />
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <hr />
+            <h5>Route overrides</h5>
+            <div class="row g-3">
+                @foreach (var key in routeKeys)
+                {
+                    var r = dto.Routes.ContainsKey(key) ? dto.Routes[key] : new RateLimitRouteOverride();
+                    <div class="col-12">
+                        <div class="row g-3 align-items-end">
+                            <div class="col-md-2"><label class="form-label">@key</label></div>
+                            <div class="col-md-3">
+                                <label class="form-label">Permit</label>
+                                <input data-testid=@($"input-route-{key}-permit") type="number" class="form-control @(IsInvalid($"route:{key}:permit") ? "is-invalid" : null)" value="@r.PermitLimit" @oninput="(e)=>{ OnPermitChanged(key, e.Value?.ToString()); Validate(); }" />
+                            </div>
+                            <div class="col-md-3">
+                                <label class="form-label">Queue</label>
+                                <input data-testid=@($"input-route-{key}-queue") type="number" class="form-control @(IsInvalid($"route:{key}:queue") ? "is-invalid" : null)" value="@r.QueueLimit" @oninput="(e)=>{ OnQueueChanged(key, e.Value?.ToString()); Validate(); }" />
+                            </div>
+                        </div>
+                    </div>
+                }
+            </div>
+        </div>
+    </div>
+}
+
+@if (showConfirm && dto is not null)
+{
+    <div class="modal d-block" tabindex="-1" style="background: rgba(0,0,0,0.4)">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">Apply rate limit changes?</h5>
+                    <button type="button" class="btn-close" aria-label="Close" @onclick="(()=> showConfirm=false)"></button>
+                </div>
+                <div class="modal-body">
+                    <p>Window: <code>@dto.WindowSeconds</code></p>
+                    <p>Defaults: Permit <code>@dto.Defaults.PermitLimit</code>, Queue <code>@dto.Defaults.QueueLimit</code></p>
+                    <p class="text-muted">Changes will apply immediately at the gateway.</p>
+                </div>
+                <div class="modal-footer">
+                    <button class="btn btn-secondary" @onclick="(()=> showConfirm=false)">Cancel</button>
+                    <button class="btn btn-primary" data-testid="btn-apply" @onclick="DoSaveAsync">Apply</button>
+                </div>
+            </div>
+        </div>
+    </div>
+}
+
+@code {
+    private static readonly string[] routeKeys = new[] { "db", "storage", "identity", "dashboard" };
+
+    private RateLimitConfigDto? dto;
+    private string? error;
+    private string? success;
+    private bool showConfirm = false;
+    private HashSet<string> invalid = new();
+    private List<string> validationErrors = new();
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadAsync();
+    }
+
+    private async Task LoadAsync()
+    {
+        error = null;
+        try
+        {
+            var http = ClientFactory.CreateClient("Gateway");
+            var resp = await http.GetAsync("/admin/api/rate-limits");
+            if (!resp.IsSuccessStatusCode)
+            {
+                error = $"Load failed: {(int)resp.StatusCode} {resp.ReasonPhrase}";
+                return;
+            }
+            var model = await resp.Content.ReadFromJsonAsync<RateLimitConfigDto>();
+            if (model is null) { error = "No body"; return; }
+            dto = model;
+            dto.Routes ??= new();
+            Validate();
+            StateHasChanged();
+        }
+        catch (Exception ex)
+        {
+            error = ex.Message;
+        }
+    }
+
+    private bool CanSave => dto is not null && validationErrors.Count == 0;
+
+    private void SaveClicked()
+    {
+        success = null;
+        error = null;
+        Validate();
+        if (dto is null) return;
+        if (validationErrors.Count > 0) return;
+        showConfirm = true;
+    }
+
+    private async Task DoSaveAsync()
+    {
+        if (dto is null) return;
+        error = null;
+        success = null;
+        try
+        {
+            var http = ClientFactory.CreateClient("Gateway");
+            // Optional CSRF header if configured on gateway; in dev this may be omitted
+            var csrf = Environment.GetEnvironmentVariable("DASHBOARD_CSRF") ?? string.Empty;
+            if (!string.IsNullOrWhiteSpace(csrf))
+            {
+                if (http.DefaultRequestHeaders.Contains("X-Tansu-Csrf"))
+                    http.DefaultRequestHeaders.Remove("X-Tansu-Csrf");
+                http.DefaultRequestHeaders.Add("X-Tansu-Csrf", csrf);
+            }
+            var resp = await http.PostAsJsonAsync("/admin/api/rate-limits", dto);
+            if (!resp.IsSuccessStatusCode)
+            {
+                error = $"Save failed: {(int)resp.StatusCode} {resp.ReasonPhrase}";
+                showConfirm = false;
+                return;
+            }
+            var model = await resp.Content.ReadFromJsonAsync<RateLimitConfigDto>();
+            if (model is not null)
+            {
+                dto = model;
+                success = $"Saved at {DateTime.Now:t}. Window={dto.WindowSeconds}, Defaults: P={dto.Defaults.PermitLimit} Q={dto.Defaults.QueueLimit}";
+            }
+            showConfirm = false;
+        }
+        catch (Exception ex)
+        {
+            error = ex.Message;
+        }
+    }
+
+    private void OnPermitChanged(string key, string? raw)
+    {
+        if (dto is null) return;
+        dto.Routes ??= new();
+        if (!dto.Routes.TryGetValue(key, out var r)) r = new RateLimitRouteOverride();
+        if (int.TryParse(raw, out var v)) r = r with { PermitLimit = v };
+        else r = r with { PermitLimit = null };
+        dto.Routes[key] = r;
+    }
+
+    private void OnQueueChanged(string key, string? raw)
+    {
+        if (dto is null) return;
+        dto.Routes ??= new();
+        if (!dto.Routes.TryGetValue(key, out var r)) r = new RateLimitRouteOverride();
+        if (int.TryParse(raw, out var v)) r = r with { QueueLimit = v };
+        else r = r with { QueueLimit = null };
+        dto.Routes[key] = r;
+    }
+
+    private void Validate()
+    {
+        invalid.Clear();
+        validationErrors.Clear();
+        if (dto is null) return;
+        if (dto.WindowSeconds < 1)
+        {
+            invalid.Add("window");
+            validationErrors.Add("WindowSeconds must be >= 1.");
+        }
+        if (dto.Defaults.PermitLimit < 0)
+        {
+            invalid.Add("defaults.permit");
+            validationErrors.Add("Defaults.PermitLimit must be >= 0.");
+        }
+        if (dto.Defaults.QueueLimit < 0)
+        {
+            invalid.Add("defaults.queue");
+            validationErrors.Add("Defaults.QueueLimit must be >= 0.");
+        }
+        foreach (var key in routeKeys)
+        {
+            if (!dto.Routes.TryGetValue(key, out var r) || r is null) continue;
+            if (r.PermitLimit is not null && r.PermitLimit < 0)
+            {
+                invalid.Add($"route:{key}:permit");
+                validationErrors.Add($"Route '{key}' Permit must be >= 0.");
+            }
+            if (r.QueueLimit is not null && r.QueueLimit < 0)
+            {
+                invalid.Add($"route:{key}:queue");
+                validationErrors.Add($"Route '{key}' Queue must be >= 0.");
+            }
+        }
+    }
+
+    private bool IsInvalid(string key) => invalid.Contains(key);
+
+    // DTOs aligned to gateway
+    public sealed record RateLimitConfigDto
+    {
+        public int WindowSeconds { get; set; }
+        public RateLimitDefaults Defaults { get; set; } = new();
+        public Dictionary<string, RateLimitRouteOverride> Routes { get; set; } = new();
+    }
+
+    public sealed record RateLimitDefaults
+    {
+        public int PermitLimit { get; set; }
+        public int QueueLimit { get; set; }
+    }
+
+    public sealed record RateLimitRouteOverride
+    {
+        public int? PermitLimit { get; set; }
+        public int? QueueLimit { get; set; }
+    }
+}

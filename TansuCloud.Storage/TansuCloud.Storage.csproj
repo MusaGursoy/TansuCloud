@@ -10,8 +10,8 @@
   <ItemGroup>
     <PackageReference Include="Microsoft.AspNetCore.OpenApi" Version="9.0.9" />
     <PackageReference Include="Microsoft.VisualStudio.Azure.Containers.Tools.Targets" Version="1.22.1" />
-  <PackageReference Include="OpenIddict.Validation.AspNetCore" Version="7.1.0" />
-  <PackageReference Include="OpenIddict.Validation.SystemNetHttp" Version="7.1.0" />
+  <PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="9.0.9" />
+  <PackageReference Include="Microsoft.IdentityModel.Protocols.OpenIdConnect" Version="8.14.0" />
   <PackageReference Include="OpenIddict.Abstractions" Version="7.1.0" />
   <PackageReference Include="OpenTelemetry.Extensions.Hosting" Version="1.12.0" />
   <PackageReference Include="OpenTelemetry.Exporter.OpenTelemetryProtocol" Version="1.12.0" />
@@ -21,6 +21,10 @@
   <PackageReference Include="Microsoft.Extensions.Caching.StackExchangeRedis" Version="9.0.9" />
   <PackageReference Include="Microsoft.Extensions.Caching.Hybrid" Version="9.9.0" />
   <PackageReference Include="SixLabors.ImageSharp" Version="3.1.11" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\TansuCloud.Observability.Shared\TansuCloud.Observability.Shared.csproj" />
   </ItemGroup>
 
 </Project>

@@ -1,13 +1,13 @@
 @page "/admin/metrics"
-@attribute [Microsoft.AspNetCore.Authorization.Authorize]
+@attribute [Microsoft.AspNetCore.Authorization.Authorize(Policy = "AdminOnly")]
 @using TansuCloud.Dashboard.Observability
 @inject IPrometheusQueryService Prom
 
-<h1>Metrics</h1>
+<h1 data-testid="metrics-title">Metrics</h1>
 
-<div class="filters">
+<div class="filters" data-testid="metrics-filters">
     <label>Chart:
-    <select @bind="chartId">
+    <select @bind="chartId" data-testid="metrics-chart-select">
             <option value="storage.cache.hitratio">Storage cache hit ratio</option>
             <option value="storage.http.rps">Storage HTTP RPS</option>
             <option value="storage.http.errors">Storage HTTP 5xx rate</option>
@@ -15,12 +15,15 @@
             <option value="overview.rps.byservice">Overview RPS by service</option>
             <option value="overview.errors.byservice">Overview errors by service</option>
             <option value="overview.latency.p95.byservice">Overview latency p95 by service</option>
+            <option value="overview.latency.p50.byservice">Overview latency p50 by service</option>
             <option value="storage.bytes.ingress.rate">Storage ingress bytes/s by tenant</option>
             <option value="storage.bytes.egress.rate">Storage egress bytes/s by tenant</option>
             <option value="storage.http.status">Storage responses by status</option>
             <option value="db.outbox.dispatched.rate">DB outbox dispatched/s</option>
             <option value="db.outbox.retried.rate">DB outbox retried/s</option>
             <option value="db.outbox.deadlettered.rate">DB outbox deadlettered/s</option>
+            <option value="db.http.rps">DB HTTP requests/sec</option>
+            <option value="db.http.errors.5xx">DB HTTP 5xx errors/sec</option>
             <option value="gateway.http.rps.byroute">Gateway RPS by route</option>
             <option value="gateway.http.status">Gateway responses by status</option>
             <option value="gateway.http.latency.p95.byroute">Gateway latency p95 by route</option>
@@ -43,7 +46,7 @@
             <option value="60">1h</option>
         </select>
     </label>
-    <button class="btn btn-primary" @onclick="LoadAsync">Refresh</button>
+    <button class="btn btn-primary" data-testid="metrics-refresh" @onclick="LoadAsync">Refresh</button>
     @if (loading) { <span>Loading…</span> }
     @if (!string.IsNullOrEmpty(error)) { <span class="text-danger">@error</span> }
  </div>
@@ -56,7 +59,7 @@
     }
     else
     {
-        <table class="table table-sm">
+        <table class="table table-sm" data-testid="metrics-table">
             <thead>
                 @if (chartId == "storage.cache.hitratio")
                 {
@@ -84,11 +87,11 @@
                         <th>Sparkline</th>
                     </tr>
                 }
-                else if (chartId == "storage.http.latency.p95")
+                else if (chartId == "storage.http.latency.p95" || chartId == "storage.http.latency.p50")
                 {
                     <tr>
                         <th>Op</th>
-                        <th>p95 (ms)</th>
+                        <th>@(chartId.EndsWith("p50") ? "p50 (ms)" : "p95 (ms)")</th>
                         <th>Sparkline</th>
                     </tr>
                 }
@@ -108,11 +111,25 @@
                         <th>Sparkline</th>
                     </tr>
                 }
-                else if (chartId == "overview.latency.p95.byservice")
+                else if (chartId == "overview.latency.p95.byservice" || chartId == "overview.latency.p50.byservice")
                 {
                     <tr>
                         <th>Service</th>
-                        <th>p95 (ms)</th>
+                        <th>@(chartId.Contains("p50") ? "p50 (ms)" : "p95 (ms)")</th>
+                        <th>Sparkline</th>
+                    </tr>
+                }
+                else if (chartId == "db.http.rps")
+                {
+                    <tr>
+                        <th>RPS</th>
+                        <th>Sparkline</th>
+                    </tr>
+                }
+                else if (chartId == "db.http.errors.5xx")
+                {
+                    <tr>
+                        <th>Errors/s</th>
                         <th>Sparkline</th>
                     </tr>
                 }
@@ -201,7 +218,7 @@
                             <td>@(RenderSparklineSvg(s, 200, 40))</td>
                         </tr>
                     }
-                    else if (chartId == "storage.http.latency.p95")
+                    else if (chartId == "storage.http.latency.p95" || chartId == "storage.http.latency.p50")
                     {
                         <tr>
                             <td>@(s.metric.TryGetValue("op", out var op) ? op : "-")</td>
@@ -225,11 +242,25 @@
                             <td>@(RenderSparklineSvg(s, 200, 40))</td>
                         </tr>
                     }
-                    else if (chartId == "overview.latency.p95.byservice")
+                    else if (chartId == "overview.latency.p95.byservice" || chartId == "overview.latency.p50.byservice")
                     {
                         <tr>
                             <td>@(s.metric.TryGetValue("service", out var sv) ? sv : "-")</td>
                             <td>@FormatMillis(s)</td>
+                            <td>@(RenderSparklineSvg(s, 200, 40))</td>
+                        </tr>
+                    }
+                    else if (chartId == "db.http.rps")
+                    {
+                        <tr>
+                            <td>@FormatNumber(s)</td>
+                            <td>@(RenderSparklineSvg(s, 200, 40))</td>
+                        </tr>
+                    }
+                    else if (chartId == "db.http.errors.5xx")
+                    {
+                        <tr>
+                            <td>@FormatNumber(s)</td>
                             <td>@(RenderSparklineSvg(s, 200, 40))</td>
                         </tr>
                     }
@@ -366,12 +397,15 @@
         "overview.rps.byservice" => "Overview: requests per second by service",
         "overview.errors.byservice" => "Overview: error rate by service",
         "overview.latency.p95.byservice" => "Overview: latency p95 by service (ms)",
+        "overview.latency.p50.byservice" => "Overview: latency p50 by service (ms)",
         "storage.bytes.ingress.rate" => "Storage ingress bytes/s by tenant",
         "storage.bytes.egress.rate" => "Storage egress bytes/s by tenant",
         "storage.http.status" => "Storage responses per second by status",
         "db.outbox.dispatched.rate" => "Database: outbox dispatched per second",
         "db.outbox.retried.rate" => "Database: outbox retried per second",
         "db.outbox.deadlettered.rate" => "Database: outbox deadlettered per second",
+        "db.http.rps" => "Database: HTTP requests per second",
+        "db.http.errors.5xx" => "Database: HTTP 5xx errors per second",
         "gateway.http.rps.byroute" => "Gateway: requests per second by route",
         "gateway.http.status" => "Gateway: responses per second by status",
         "gateway.http.latency.p95.byroute" => "Gateway: latency p95 by route (ms)",

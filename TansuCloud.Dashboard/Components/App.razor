@@ -9,12 +9,12 @@
     <link rel="stylesheet" href="app.css" />
     <link rel="stylesheet" href="TansuCloud.Dashboard.styles.css" />
     <ImportMap />
-    <HeadOutlet @rendermode="new InteractiveServerRenderMode(prerender: false)" />
+    <HeadOutlet @rendermode="new InteractiveServerRenderMode(prerender: true)" />
     
 </head>
 
 <body>
-    <Routes @rendermode="new InteractiveServerRenderMode(prerender: false)">
+    <Routes @rendermode="new InteractiveServerRenderMode(prerender: true)">
     </Routes>
     <script src="_framework/blazor.web.js"></script>
 </body>

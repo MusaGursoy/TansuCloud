@@ -16,6 +16,14 @@ public interface IPrometheusQueryService
         TimeSpan? step = null,
         CancellationToken ct = default
     );
+
+    Task<PromInstantResult?> QueryInstantAsync(
+        string chartId,
+        string? tenant,
+        string? service,
+        DateTimeOffset? at = null,
+        CancellationToken ct = default
+    );
 }
 
 public sealed class PrometheusQueryService(
@@ -100,25 +108,40 @@ public sealed class PrometheusQueryService(
             "storage.http.errors" => BuildStorageErrorsQuery(effectiveTenant, window),
             // Storage HTTP latency p95 by op using histogram buckets
             "storage.http.latency.p95" => BuildStorageLatencyP95Query(effectiveTenant, window),
+            // Storage HTTP latency p50 by op using histogram buckets
+            "storage.http.latency.p50" => BuildStorageLatencyP50Query(effectiveTenant, window),
             // Overview: RPS by service (currently from Storage service request counter)
             "overview.rps.byservice" => BuildOverviewRpsByServiceQuery(effectiveTenant, window),
             // Overview: Error rate (4xx/5xx) by service (from Storage responses counter)
-            "overview.errors.byservice" => BuildOverviewErrorsByServiceQuery(effectiveTenant, window),
+            "overview.errors.byservice"
+                => BuildOverviewErrorsByServiceQuery(effectiveTenant, window),
             // Overview: Latency p95 by service (from Storage histogram)
-            "overview.latency.p95.byservice" => BuildOverviewLatencyP95ByServiceQuery(effectiveTenant, window),
+            "overview.latency.p95.byservice"
+                => BuildOverviewLatencyP95ByServiceQuery(effectiveTenant, window),
+            // Overview: Latency p50 by service (from Storage histogram)
+            "overview.latency.p50.byservice"
+                => BuildOverviewLatencyP50ByServiceQuery(effectiveTenant, window),
             // Storage: ingress/egress bytes rate by tenant
-            "storage.bytes.ingress.rate" => BuildStorageIngressRateByTenantQuery(effectiveTenant, window),
-            "storage.bytes.egress.rate" => BuildStorageEgressRateByTenantQuery(effectiveTenant, window),
+            "storage.bytes.ingress.rate"
+                => BuildStorageIngressRateByTenantQuery(effectiveTenant, window),
+            "storage.bytes.egress.rate"
+                => BuildStorageEgressRateByTenantQuery(effectiveTenant, window),
             // Storage: responses by status class distribution
             "storage.http.status" => BuildStorageStatusByStatusQuery(effectiveTenant, window),
             // Database Outbox: dispatched/retried/deadlettered rates (aggregated)
-            "db.outbox.dispatched.rate" => BuildDbOutboxCounterRateQuery("outbox_dispatched_total", window),
-            "db.outbox.retried.rate" => BuildDbOutboxCounterRateQuery("outbox_retried_total", window),
-            "db.outbox.deadlettered.rate" => BuildDbOutboxCounterRateQuery("outbox_deadlettered_total", window),
+            "db.outbox.dispatched.rate"
+                => BuildDbOutboxCounterRateQuery("outbox_dispatched_total", window),
+            "db.outbox.retried.rate"
+                => BuildDbOutboxCounterRateQuery("outbox_retried_total", window),
+            "db.outbox.deadlettered.rate"
+                => BuildDbOutboxCounterRateQuery("outbox_deadlettered_total", window),
             // Gateway proxy: RPS/status/latency (custom metrics exposed by gateway)
             "gateway.http.rps.byroute" => BuildGatewayRpsByRouteQuery(window),
             "gateway.http.status" => BuildGatewayStatusByStatusQuery(window),
             "gateway.http.latency.p95.byroute" => BuildGatewayLatencyP95ByRouteQuery(window),
+            // Database HTTP metrics (via ASP.NET Core instrumentation)
+            "db.http.rps" => BuildDbHttpRpsQuery(window),
+            "db.http.errors.5xx" => BuildDbHttpErrors5xxQuery(window),
             // Add more chart IDs and templates here as needed
             _ => throw new InvalidOperationException($"Unknown chart id '{chartId}'")
         };
@@ -137,37 +160,200 @@ public sealed class PrometheusQueryService(
         }
         _logger.LogDebug("Prometheus proxy cache MISS for {Key}", key);
 
+        var url =
+            $"api/v1/query_range?query={Uri.EscapeDataString(query)}&start={start.ToUnixTimeSeconds()}&end={end.ToUnixTimeSeconds()}&step={(int)stepDur.TotalSeconds}";
+        var data = await SendWithRetryAsync<PromRangeResult>(baseUri, url, ct);
+        lock (_cache)
+        {
+            _cache[key] = (DateTimeOffset.UtcNow, data);
+        }
+        return data;
+    }
+
+    public async Task<PromInstantResult?> QueryInstantAsync(
+        string chartId,
+        string? tenant,
+        string? service,
+        DateTimeOffset? at = null,
+        CancellationToken ct = default
+    )
+    {
+        if (string.IsNullOrWhiteSpace(_options.BaseUrl))
+        {
+            _logger.LogWarning("Prometheus BaseUrl not configured; returning null");
+            return null;
+        }
+        var baseUri = new Uri(_options.BaseUrl.TrimEnd('/') + "/");
+
+        var httpContext = _httpContextAccessor.HttpContext;
+        string? headerTenant = null;
+        try
+        {
+            headerTenant = httpContext?.Request.Headers["X-Tansu-Tenant"].ToString();
+            if (string.IsNullOrWhiteSpace(headerTenant))
+                headerTenant = null;
+        }
+        catch { }
+        var isAdmin = IsAdmin(httpContext?.User);
+        var effectiveTenant = headerTenant ?? (isAdmin ? tenant : null);
+        if (!string.IsNullOrWhiteSpace(tenant) && !isAdmin && tenant != headerTenant)
+        {
+            _logger.LogInformation(
+                "Ignoring tenant override '{Tenant}' from non-admin; using header tenant '{HeaderTenant}'",
+                tenant,
+                headerTenant
+            );
+        }
+
+        var query = chartId switch
+        {
+            "storage.cache.hitratio"
+                => BuildCacheHitRatioQuery(
+                    effectiveTenant,
+                    service,
+                    TimeSpan.FromMinutes(_options.DefaultRangeMinutes)
+                ),
+            "storage.http.rps"
+                => BuildStorageRpsQuery(
+                    effectiveTenant,
+                    TimeSpan.FromMinutes(_options.DefaultRangeMinutes)
+                ),
+            "storage.http.errors"
+                => BuildStorageErrorsQuery(
+                    effectiveTenant,
+                    TimeSpan.FromMinutes(_options.DefaultRangeMinutes)
+                ),
+            "storage.http.latency.p95"
+                => BuildStorageLatencyP95Query(
+                    effectiveTenant,
+                    TimeSpan.FromMinutes(_options.DefaultRangeMinutes)
+                ),
+            "storage.http.latency.p50"
+                => BuildStorageLatencyP50Query(
+                    effectiveTenant,
+                    TimeSpan.FromMinutes(_options.DefaultRangeMinutes)
+                ),
+            "overview.rps.byservice"
+                => BuildOverviewRpsByServiceQuery(
+                    effectiveTenant,
+                    TimeSpan.FromMinutes(_options.DefaultRangeMinutes)
+                ),
+            "overview.errors.byservice"
+                => BuildOverviewErrorsByServiceQuery(
+                    effectiveTenant,
+                    TimeSpan.FromMinutes(_options.DefaultRangeMinutes)
+                ),
+            "overview.latency.p95.byservice"
+                => BuildOverviewLatencyP95ByServiceQuery(
+                    effectiveTenant,
+                    TimeSpan.FromMinutes(_options.DefaultRangeMinutes)
+                ),
+            "overview.latency.p50.byservice"
+                => BuildOverviewLatencyP50ByServiceQuery(
+                    effectiveTenant,
+                    TimeSpan.FromMinutes(_options.DefaultRangeMinutes)
+                ),
+            "storage.bytes.ingress.rate"
+                => BuildStorageIngressRateByTenantQuery(
+                    effectiveTenant,
+                    TimeSpan.FromMinutes(_options.DefaultRangeMinutes)
+                ),
+            "storage.bytes.egress.rate"
+                => BuildStorageEgressRateByTenantQuery(
+                    effectiveTenant,
+                    TimeSpan.FromMinutes(_options.DefaultRangeMinutes)
+                ),
+            "storage.http.status"
+                => BuildStorageStatusByStatusQuery(
+                    effectiveTenant,
+                    TimeSpan.FromMinutes(_options.DefaultRangeMinutes)
+                ),
+            "db.outbox.dispatched.rate"
+                => BuildDbOutboxCounterRateQuery(
+                    "outbox_dispatched_total",
+                    TimeSpan.FromMinutes(_options.DefaultRangeMinutes)
+                ),
+            "db.outbox.retried.rate"
+                => BuildDbOutboxCounterRateQuery(
+                    "outbox_retried_total",
+                    TimeSpan.FromMinutes(_options.DefaultRangeMinutes)
+                ),
+            "db.outbox.deadlettered.rate"
+                => BuildDbOutboxCounterRateQuery(
+                    "outbox_deadlettered_total",
+                    TimeSpan.FromMinutes(_options.DefaultRangeMinutes)
+                ),
+            "gateway.http.rps.byroute"
+                => BuildGatewayRpsByRouteQuery(TimeSpan.FromMinutes(_options.DefaultRangeMinutes)),
+            "gateway.http.status"
+                => BuildGatewayStatusByStatusQuery(
+                    TimeSpan.FromMinutes(_options.DefaultRangeMinutes)
+                ),
+            "gateway.http.latency.p95.byroute"
+                => BuildGatewayLatencyP95ByRouteQuery(
+                    TimeSpan.FromMinutes(_options.DefaultRangeMinutes)
+                ),
+            "db.http.rps" => BuildDbHttpRpsQuery(TimeSpan.FromMinutes(_options.DefaultRangeMinutes)),
+            "db.http.errors.5xx" => BuildDbHttpErrors5xxQuery(TimeSpan.FromMinutes(_options.DefaultRangeMinutes)),
+            _ => throw new InvalidOperationException($"Unknown chart id '{chartId}'")
+        };
+
+        var ts = (at ?? DateTimeOffset.UtcNow).ToUnixTimeSeconds();
+        var url = $"api/v1/query?query={Uri.EscapeDataString(query)}&time={ts}";
+        var data = await SendWithRetryAsync<PromInstantResult>(baseUri, url, ct);
+        return data;
+    }
+
+    private async Task<T?> SendWithRetryAsync<T>(Uri baseUri, string url, CancellationToken ct)
+        where T : class
+    {
         var http = _httpClientFactory.CreateClient("prometheus");
         http.Timeout = TimeSpan.FromSeconds(_options.TimeoutSeconds);
         http.BaseAddress = baseUri;
 
-        var url =
-            $"api/v1/query_range?query={Uri.EscapeDataString(query)}&start={start.ToUnixTimeSeconds()}&end={end.ToUnixTimeSeconds()}&step={(int)stepDur.TotalSeconds}";
-        try
+        var attempt = 0;
+        var maxAttempts = Math.Max(0, _options.RetryCount) + 1; // initial try + retries
+        var delayBase = Math.Max(10, _options.RetryBaseDelayMs);
+        while (true)
         {
-            var res = await http.GetFromJsonAsync<PromResponse<PromRangeResult>>(
-                url,
-                cancellationToken: ct
-            );
-            if (res?.status != "success")
+            try
+            {
+                var res = await http.GetFromJsonAsync<PromResponse<T>>(url, cancellationToken: ct);
+                if (res?.status != "success")
+                {
+                    _logger.LogWarning("Prometheus status {Status} for {Url}", res?.status, url);
+                }
+                return res?.data;
+            }
+            catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+            {
+                // treat as transient timeout
+            }
+            catch (HttpRequestException)
+            {
+                // treat as transient
+            }
+            catch (TaskCanceledException)
+            {
+                // treat as transient
+            }
+            attempt++;
+            if (attempt >= maxAttempts)
             {
                 _logger.LogWarning(
-                    "Prometheus status {Status} for {ChartId}",
-                    res?.status,
-                    chartId
+                    "Prometheus request failed after {Attempts} attempts: {Url}",
+                    attempt,
+                    url
                 );
+                return default;
             }
-            var data = res?.data;
-            lock (_cache)
+            var jitter = Random.Shared.Next(0, delayBase);
+            var backoffMs = (int)(delayBase * Math.Pow(2, attempt - 1)) + jitter;
+            try
             {
-                _cache[key] = (DateTimeOffset.UtcNow, data);
+                await Task.Delay(backoffMs, ct);
             }
-            return data;
-        }
-        catch (Exception ex)
-        {
-            _logger.LogWarning(ex, "Prometheus query failed for {ChartId}", chartId);
-            return null;
+            catch { }
         }
     }
 
@@ -226,8 +412,23 @@ public sealed class PrometheusQueryService(
         // histogram_quantile expects bucket time series with 'le' label
         // NOTE: The OpenTelemetry Prometheus exporter appends the unit to the histogram name, resulting in
         // tansu_storage_request_duration_ms_milliseconds_bucket|_count|_sum. Use that canonicalized name here.
-        var buckets = $"sum by(op, le)(rate(tansu_storage_request_duration_ms_milliseconds_bucket{selector}[{w}]))";
+        var buckets =
+            $"sum by(op, le)(rate(tansu_storage_request_duration_ms_milliseconds_bucket{selector}[{w}]))";
         var expr = $"histogram_quantile(0.95, {buckets})";
+        return expr;
+    }
+
+    private static string BuildStorageLatencyP50Query(string? tenant, TimeSpan window)
+    {
+        // p50 (median) from histogram buckets; group by op
+        var w = ToPromWindow(window);
+        var filters = new List<string>();
+        if (!string.IsNullOrWhiteSpace(tenant))
+            filters.Add($"tenant=\"{EscapeLabel(tenant)}\"");
+        var selector = filters.Count > 0 ? "{" + string.Join(",", filters) + "}" : string.Empty;
+        var buckets =
+            $"sum by(op, le)(rate(tansu_storage_request_duration_ms_milliseconds_bucket{selector}[{w}]))";
+        var expr = $"histogram_quantile(0.50, {buckets})";
         return expr;
     }
 
@@ -263,8 +464,23 @@ public sealed class PrometheusQueryService(
         if (!string.IsNullOrWhiteSpace(tenant))
             filters.Add($"tenant=\"{EscapeLabel(tenant)}\"");
         var selector = filters.Count > 0 ? "{" + string.Join(",", filters) + "}" : string.Empty;
-        var buckets = $"sum by(service, le)(rate(tansu_storage_request_duration_ms_milliseconds_bucket{selector}[{w}]))";
+        var buckets =
+            $"sum by(service, le)(rate(tansu_storage_request_duration_ms_milliseconds_bucket{selector}[{w}]))";
         var expr = $"histogram_quantile(0.95, {buckets})";
+        return expr;
+    }
+
+    private static string BuildOverviewLatencyP50ByServiceQuery(string? tenant, TimeSpan window)
+    {
+        // p50 latency by service from histogram buckets
+        var w = ToPromWindow(window);
+        var filters = new List<string>();
+        if (!string.IsNullOrWhiteSpace(tenant))
+            filters.Add($"tenant=\"{EscapeLabel(tenant)}\"");
+        var selector = filters.Count > 0 ? "{" + string.Join(",", filters) + "}" : string.Empty;
+        var buckets =
+            $"sum by(service, le)(rate(tansu_storage_request_duration_ms_milliseconds_bucket{selector}[{w}]))";
+        var expr = $"histogram_quantile(0.50, {buckets})";
         return expr;
     }
 
@@ -337,8 +553,29 @@ public sealed class PrometheusQueryService(
     {
         var w = ToPromWindow(window);
         // Prom histogram buckets name will have unit suffix 'milliseconds' added by the exporter
-        var buckets = $"sum by(route, le)(rate(tansu_gateway_proxy_request_duration_ms_milliseconds_bucket[{w}]))";
+        var buckets =
+            $"sum by(route, le)(rate(tansu_gateway_proxy_request_duration_ms_milliseconds_bucket[{w}]))";
         var expr = $"histogram_quantile(0.95, {buckets})";
+        return expr;
+    }
+
+    private static string BuildDbHttpRpsQuery(TimeSpan window)
+    {
+        // OpenTelemetry ASP.NET Core instrumentation exposes request duration histogram with unit seconds.
+        // Prometheus exporter surfaces it as http_server_request_duration_seconds_{bucket|sum|count} with labels
+        // including route, method, and http_response_status_code. Use rate over _count to approximate RPS.
+        // Aggregate across all labels → single series.
+        var w = ToPromWindow(window);
+        var expr = $"sum(rate(http_server_request_duration_seconds_count[{w}]))";
+        return expr;
+    }
+
+    private static string BuildDbHttpErrors5xxQuery(TimeSpan window)
+    {
+        // 5xx error rate using OTel ASP.NET Core histogram _count with status code label.
+        var w = ToPromWindow(window);
+        var selector = "{http_response_status_code=~\"5..\"}";
+        var expr = $"sum(rate(http_server_request_duration_seconds_count{selector}[{w}]))";
         return expr;
     }
 
@@ -400,4 +637,16 @@ public sealed class PromSeries
 {
     public Dictionary<string, string> metric { get; set; } = new();
     public List<object[]> values { get; set; } = new(); // [unix_ts, value_string]
+}
+
+public sealed class PromInstantResult
+{
+    public string? resultType { get; set; }
+    public List<PromInstantSeries> result { get; set; } = new();
+}
+
+public sealed class PromInstantSeries
+{
+    public Dictionary<string, string> metric { get; set; } = new();
+    public object[]? value { get; set; } // [unix_ts, value_string]
 }

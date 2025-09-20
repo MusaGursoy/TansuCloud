@@ -6,9 +6,12 @@ using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.AspNetCore.Authentication.OpenIdConnect;
 using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.Http.Connections;
 using Microsoft.AspNetCore.HttpOverrides;
+using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Routing;
+using Microsoft.Extensions.Diagnostics.HealthChecks;
 using Microsoft.IdentityModel.Protocols; // For ConfigurationManager
 using Microsoft.IdentityModel.Protocols.OpenIdConnect; // For OpenIdConnectConfigurationRetriever
 using Microsoft.IdentityModel.Tokens;
@@ -16,9 +19,12 @@ using OpenTelemetry.Logs;
 using OpenTelemetry.Metrics;
 using OpenTelemetry.Resources;
 using OpenTelemetry.Trace;
+using StackExchange.Redis;
 using TansuCloud.Dashboard.Components;
 using TansuCloud.Dashboard.Hosting;
 using TansuCloud.Dashboard.Observability;
+using TansuCloud.Dashboard.Observability.Logging;
+using TansuCloud.Observability;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -94,6 +100,8 @@ builder
             }
         });
     });
+// Observability core (Task 38)
+builder.Services.AddTansuObservabilityCore();
 builder.Logging.AddOpenTelemetry(o =>
 {
     o.IncludeFormattedMessage = true;
@@ -111,7 +119,18 @@ builder.Logging.AddOpenTelemetry(o =>
 // Elevate our custom OIDC diagnostic categories
 builder.Logging.AddFilter("OIDC-Diagnostics", LogLevel.Information);
 builder.Logging.AddFilter("OIDC-Callback", LogLevel.Information);
+
+// Ensure custom diagnostics for metrics auth probe and ticket events are emitted
+builder.Logging.AddFilter("MetricsAuthDiag", LogLevel.Information);
+builder.Logging.AddFilter("OIDC-Ticket", LogLevel.Information);
 builder.Services.AddHealthChecks();
+// Phase 0: publish health transitions
+builder.Services.AddSingleton<IHealthCheckPublisher, HealthTransitionPublisher>();
+builder.Services.Configure<HealthCheckPublisherOptions>(o =>
+{
+    o.Delay = TimeSpan.FromSeconds(2);
+    o.Period = TimeSpan.FromSeconds(15);
+});
 
 // Enable detailed IdentityModel logs in Development to diagnose OIDC metadata retrieval
 if (builder.Environment.IsDevelopment())
@@ -136,6 +155,103 @@ builder.Services.AddHttpContextAccessor();
 builder.Services.Configure<PrometheusOptions>(builder.Configuration.GetSection("Prometheus"));
 builder.Services.AddHttpClient("prometheus");
 builder.Services.AddSingleton<IPrometheusQueryService, PrometheusQueryService>();
+
+// Log capture and reporting: options, buffer, provider, runtime switch, reporter, background service
+builder.Services.Configure<LoggingReportOptions>(builder.Configuration.GetSection("LoggingReport"));
+
+// Bind product telemetry reporting options (used by background reporter and admin APIs)
+builder.Services.Configure<LogReportingOptions>(builder.Configuration.GetSection("LogReporting"));
+builder.Services.AddSingleton<ILogBuffer>(sp =>
+{
+    var opts =
+        sp.GetRequiredService<Microsoft.Extensions.Options.IOptionsMonitor<LoggingReportOptions>>().CurrentValue;
+    return new InMemoryLogBuffer(Math.Max(100, opts.MaxBufferEntries));
+});
+builder.Services.AddSingleton<ILoggerProvider, BufferedLoggerProvider>();
+builder.Services.AddSingleton<ILogReportingRuntimeSwitch>(sp =>
+{
+    var opts =
+        sp.GetRequiredService<Microsoft.Extensions.Options.IOptionsMonitor<LoggingReportOptions>>().CurrentValue;
+    return new LogReportingRuntimeSwitch(opts.Enabled);
+});
+builder.Services.AddHttpClient("log-reporter");
+builder.Services.AddSingleton<ILogReporter>(sp =>
+{
+    var optsOld =
+        sp.GetRequiredService<Microsoft.Extensions.Options.IOptionsMonitor<TansuCloud.Dashboard.Observability.Logging.LogReportingOptions>>().CurrentValue;
+    if (string.IsNullOrWhiteSpace(optsOld.MainServerUrl))
+    {
+        return new NoopLogReporter();
+    }
+    var http = sp.GetRequiredService<IHttpClientFactory>().CreateClient("log-reporter");
+    return new HttpLogReporter(http, optsOld);
+});
+builder.Services.AddHostedService<LogReportingBackgroundService>();
+
+// Persist Data Protection keys so antiforgery and auth cookies can be decrypted across restarts/instances
+// Prefer Redis when available; otherwise fall back to filesystem under /keys
+var dp = builder.Services.AddDataProtection().SetApplicationName("TansuCloud.Dashboard");
+var redisConn = builder.Configuration["Cache:Redis"] ?? builder.Configuration["Cache__Redis"];
+if (!string.IsNullOrWhiteSpace(redisConn))
+{
+    try
+    {
+        var mux = ConnectionMultiplexer.Connect(redisConn);
+        builder.Services.AddSingleton<IConnectionMultiplexer>(mux);
+        dp.PersistKeysToStackExchangeRedis(mux, "DataProtection-Keys:Dashboard");
+        Console.WriteLine(
+            "[DataProtection] Using Redis key ring at 'DataProtection-Keys:Dashboard' (StackExchange.Redis)"
+        );
+    }
+    catch
+    {
+        // fall back to filesystem if Redis connect fails
+        var fallback = builder.Configuration["DataProtection:KeysPath"] ?? "/keys";
+        try
+        {
+            Directory.CreateDirectory(fallback);
+        }
+        catch { }
+        dp.PersistKeysToFileSystem(new DirectoryInfo(fallback));
+        Console.WriteLine(
+            $"[DataProtection] Redis connect failed; using filesystem key ring at '{fallback}'"
+        );
+    }
+}
+else
+{
+    var keysPath = builder.Configuration["DataProtection:KeysPath"] ?? "/keys";
+    try
+    {
+        Directory.CreateDirectory(keysPath);
+    }
+    catch { }
+    dp.PersistKeysToFileSystem(new DirectoryInfo(keysPath));
+    Console.WriteLine($"[DataProtection] Using filesystem key ring at '{keysPath}'");
+}
+
+// One-time startup diagnostic to log current key ring entries (best-effort)
+try
+{
+    var tmpProvider = dp.Services.BuildServiceProvider();
+    var kp = tmpProvider.GetRequiredService<IDataProtectionProvider>();
+    var xmlRepoField = kp.GetType()
+        .GetField(
+            "_keyRingProvider",
+            System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance
+        );
+    var repo = xmlRepoField?.GetValue(kp);
+    var keyCount = 0;
+    if (repo is not null)
+    {
+        // Avoid reflection-deep dependencies; just emit a generic count when available
+        keyCount = 0; // Unknown without internal API; left as 0 by design
+    }
+    Console.WriteLine(
+        $"[DataProtection] Startup complete. KeyRingCount~{keyCount} (approx) ApplicationName=TansuCloud.Dashboard"
+    );
+}
+catch { }
 
 // OIDC sign-in (simplified deterministic preload)
 builder
@@ -241,6 +357,7 @@ builder
                 : true;
             options.TokenValidationParameters.ValidateAudience = true;
             options.TokenValidationParameters.ValidAudience = options.ClientId; // OpenIddict ID token aud = client id
+            // Claims enrichment is handled inside the consolidated oidcEvents.OnTokenValidated below.
 
             // Optional DEV-only bypass of signature validation for isolation: DASHBOARD_BYPASS_IDTOKEN_SIGNATURE=1
             var bypassSig = Environment.GetEnvironmentVariable(
@@ -286,6 +403,34 @@ builder
                 var docRetriever = new HttpDocumentRetriever
                 {
                     RequireHttps = options.RequireHttpsMetadata
+                };
+
+                // Additional diagnostic: log when the authentication ticket is created and about to be stored in the cookie.
+                options.Events ??= new OpenIdConnectEvents();
+                var existingOnTicket = options.Events.OnTicketReceived;
+                options.Events.OnTicketReceived = async ctx =>
+                {
+                    try
+                    {
+                        var log = ctx
+                            .HttpContext.RequestServices.GetRequiredService<ILoggerFactory>()
+                            .CreateLogger("OIDC-Ticket");
+                        var claims =
+                            ctx.Principal?.Claims?.Select(c => c.Type + "=" + c.Value).Take(40)
+                            ?? Enumerable.Empty<string>();
+                        log.LogInformation(
+                            "[Ticket] Received OIDC ticket. AuthType={AuthType} Claims={Claims}",
+                            ctx.Principal?.Identity?.AuthenticationType,
+                            string.Join(";", claims)
+                        );
+                    }
+                    catch
+                    { /* best effort */
+                    }
+                    if (existingOnTicket != null)
+                    {
+                        await existingOnTicket(ctx);
+                    }
                 };
                 var cfgManager = new ConfigurationManager<OpenIdConnectConfiguration>(
                     metadataAddress,
@@ -448,15 +593,15 @@ builder
 
             // Minimal events: adjust redirect URI behind prefix and log token validation summary
             var oidcEvents = new OpenIdConnectEvents();
-            oidcEvents.OnMessageReceived = ctx =>
+            oidcEvents.OnMessageReceived = async ctx =>
             {
                 try
                 {
-                    var logger = ctx
-                        .HttpContext.RequestServices.GetRequiredService<ILoggerFactory>()
+                    var sp = ctx.HttpContext.RequestServices;
+                    var logger = sp.GetRequiredService<ILoggerFactory>()
                         .CreateLogger("OIDC-Diagnostics");
                     var monitor =
-                        ctx.HttpContext.RequestServices.GetRequiredService<Microsoft.Extensions.Options.IOptionsMonitor<OpenIdConnectOptions>>();
+                        sp.GetRequiredService<Microsoft.Extensions.Options.IOptionsMonitor<OpenIdConnectOptions>>();
                     var optsDiag = monitor.Get("oidc");
                     var keyCount = optsDiag.Configuration?.SigningKeys.Count ?? 0;
                     logger.LogInformation(
@@ -465,9 +610,104 @@ builder
                         keyCount,
                         optsDiag.Configuration != null
                     );
+
+                    // If no signing keys are loaded yet, fetch JWKS eagerly to avoid first-hit signature failures.
+                    if ((optsDiag.Configuration == null || keyCount == 0))
+                    {
+                        try
+                        {
+                            // Ensure a configuration manager exists
+                            if (
+                                optsDiag.ConfigurationManager == null
+                                && !string.IsNullOrWhiteSpace(optsDiag.MetadataAddress)
+                            )
+                            {
+                                optsDiag.ConfigurationManager =
+                                    new ConfigurationManager<OpenIdConnectConfiguration>(
+                                        optsDiag.MetadataAddress,
+                                        new OpenIdConnectConfigurationRetriever(),
+                                        new HttpDocumentRetriever
+                                        {
+                                            RequireHttps = optsDiag.RequireHttpsMetadata
+                                        }
+                                    );
+                            }
+
+                            // Try to get configuration (discovery) if missing
+                            if (
+                                optsDiag.ConfigurationManager is not null
+                                && optsDiag.Configuration is null
+                            )
+                            {
+                                var cfg = await optsDiag.ConfigurationManager.GetConfigurationAsync(
+                                    ctx.HttpContext.RequestAborted
+                                );
+                                optsDiag.Configuration = cfg;
+                                keyCount = cfg.SigningKeys.Count;
+                            }
+
+                            // If still no keys, query JWKS directly and hydrate
+                            if (
+                                optsDiag.Configuration is not null
+                                && optsDiag.Configuration.SigningKeys.Count == 0
+                            )
+                            {
+                                // Prefer rebasing JWKS to the gateway host if MetadataAddress is set
+                                var jwksUrl = optsDiag.Configuration.JwksUri;
+                                try
+                                {
+                                    if (!string.IsNullOrWhiteSpace(optsDiag.MetadataAddress))
+                                    {
+                                        var md = new Uri(optsDiag.MetadataAddress);
+                                        var gatewayBase = new Uri(
+                                            new Uri(md, "../").ToString().TrimEnd('/') + "/"
+                                        );
+                                        jwksUrl = new Uri(
+                                            gatewayBase,
+                                            ".well-known/jwks"
+                                        ).AbsoluteUri;
+                                    }
+                                }
+                                catch { }
+
+                                using var http = optsDiag.Backchannel ?? new HttpClient();
+                                http.Timeout = TimeSpan.FromSeconds(3);
+                                var jwksJson = await http.GetStringAsync(
+                                    jwksUrl,
+                                    ctx.HttpContext.RequestAborted
+                                );
+                                var jwks = new JsonWebKeySet(jwksJson);
+                                foreach (var k in jwks.GetSigningKeys())
+                                {
+                                    optsDiag.Configuration.SigningKeys.Add(k);
+                                }
+
+                                if (
+                                    optsDiag.Configuration.SigningKeys.Count > 0
+                                    && (
+                                        optsDiag.TokenValidationParameters.IssuerSigningKeys == null
+                                        || !optsDiag.TokenValidationParameters.IssuerSigningKeys.Any()
+                                    )
+                                )
+                                {
+                                    optsDiag.TokenValidationParameters.IssuerSigningKeys =
+                                        optsDiag.Configuration.SigningKeys.ToList();
+                                }
+                            }
+                        }
+                        catch (Exception jwksEx)
+                        {
+                            // Log and continue; the handler may refresh on key-not-found and succeed on retry
+                            var msg = jwksEx.Message;
+                            logger.LogWarning(
+                                jwksEx,
+                                "OIDC OnMessageReceived JWKS preload failed: {Message}",
+                                msg
+                            );
+                        }
+                    }
                 }
                 catch { }
-                return Task.CompletedTask;
             }; // End of OnMessageReceived
             // Log id_token header as soon as token response is received (code flow)
             oidcEvents.OnTokenResponseReceived = ctx =>
@@ -705,6 +945,111 @@ builder
                         );
                     }
 
+                    // Enrich the cookie principal with scopes/roles from the access token so server-side
+                    // authorization (AdminOnly) works for API calls using the cookie auth.
+                    try
+                    {
+                        var accessToken =
+                            ctx.TokenEndpointResponse?.AccessToken
+                            ?? ctx.ProtocolMessage.AccessToken;
+                        if (!string.IsNullOrWhiteSpace(accessToken))
+                        {
+                            var handler = new JwtSecurityTokenHandler();
+                            var at = handler.ReadJwtToken(accessToken);
+                            var newClaims = new List<System.Security.Claims.Claim>();
+
+                            // scope (space-delimited)
+                            foreach (
+                                var sc in at.Claims.Where(c =>
+                                    string.Equals(
+                                        c.Type,
+                                        "scope",
+                                        StringComparison.OrdinalIgnoreCase
+                                    )
+                                )
+                            )
+                            {
+                                var parts = sc.Value.Split(
+                                    ' ',
+                                    StringSplitOptions.RemoveEmptyEntries
+                                        | StringSplitOptions.TrimEntries
+                                );
+                                newClaims.AddRange(
+                                    parts.Select(p => new System.Security.Claims.Claim("scope", p))
+                                );
+                            }
+                            // scp (Azure style)
+                            foreach (
+                                var scp in at.Claims.Where(c =>
+                                    string.Equals(c.Type, "scp", StringComparison.OrdinalIgnoreCase)
+                                )
+                            )
+                            {
+                                var parts = scp.Value.Split(
+                                    ' ',
+                                    StringSplitOptions.RemoveEmptyEntries
+                                        | StringSplitOptions.TrimEntries
+                                );
+                                newClaims.AddRange(
+                                    parts.Select(p => new System.Security.Claims.Claim("scp", p))
+                                );
+                            }
+                            // roles / role
+                            foreach (
+                                var role in at.Claims.Where(c =>
+                                    string.Equals(
+                                        c.Type,
+                                        "role",
+                                        StringComparison.OrdinalIgnoreCase
+                                    )
+                                )
+                            )
+                            {
+                                newClaims.Add(
+                                    new System.Security.Claims.Claim(
+                                        System.Security.Claims.ClaimTypes.Role,
+                                        role.Value
+                                    )
+                                );
+                            }
+                            foreach (
+                                var roles in at.Claims.Where(c =>
+                                    string.Equals(
+                                        c.Type,
+                                        "roles",
+                                        StringComparison.OrdinalIgnoreCase
+                                    )
+                                )
+                            )
+                            {
+                                newClaims.Add(
+                                    new System.Security.Claims.Claim(
+                                        System.Security.Claims.ClaimTypes.Role,
+                                        roles.Value
+                                    )
+                                );
+                            }
+
+                            if (newClaims.Count > 0)
+                            {
+                                var identity =
+                                    ctx.Principal?.Identities.FirstOrDefault()
+                                    ?? new System.Security.Claims.ClaimsIdentity("oidc");
+                                identity.AddClaims(newClaims);
+                                if (ctx.Principal is null)
+                                {
+                                    ctx.Principal = new System.Security.Claims.ClaimsPrincipal(
+                                        identity
+                                    );
+                                }
+                            }
+                        }
+                    }
+                    catch
+                    {
+                        // best-effort enrichment
+                    }
+
                     // Normalize the post-authentication RedirectUri to include the dashboard prefix when hosted behind the gateway.
                     // In some flows, the saved RedirectUri is a root-anchored path like "/admin/metrics" without the "/dashboard" prefix,
                     // which leads to a 404 at the gateway. Force-prefix it when needed and build an absolute public URL.
@@ -922,6 +1267,129 @@ builder
                             ctx.ReturnUri
                         );
                     }
+
+                    // Additionally, enrich the cookie principal with scopes/roles from the access token
+                    // at this late stage where tokens are guaranteed to be present in the auth properties.
+                    try
+                    {
+                        var accessToken = ctx.Properties?.GetTokenValue("access_token");
+                        if (!string.IsNullOrWhiteSpace(accessToken))
+                        {
+                            var handler = new JwtSecurityTokenHandler();
+                            var at = handler.ReadJwtToken(accessToken);
+
+                            var identity =
+                                ctx.Principal?.Identities.FirstOrDefault()
+                                ?? new System.Security.Claims.ClaimsIdentity("oidc");
+
+                            // Avoid duplicate additions: collect existing values
+                            var existingScopes = new HashSet<string>(
+                                identity.FindAll("scope").Select(c => c.Value),
+                                StringComparer.OrdinalIgnoreCase
+                            );
+                            foreach (
+                                var sc in at.Claims.Where(c =>
+                                    string.Equals(
+                                        c.Type,
+                                        "scope",
+                                        StringComparison.OrdinalIgnoreCase
+                                    )
+                                )
+                            )
+                            {
+                                var parts = sc.Value.Split(
+                                    ' ',
+                                    StringSplitOptions.RemoveEmptyEntries
+                                        | StringSplitOptions.TrimEntries
+                                );
+                                foreach (var p in parts)
+                                {
+                                    if (existingScopes.Add(p))
+                                        identity.AddClaim(
+                                            new System.Security.Claims.Claim("scope", p)
+                                        );
+                                }
+                            }
+
+                            var existingScp = new HashSet<string>(
+                                identity.FindAll("scp").Select(c => c.Value),
+                                StringComparer.OrdinalIgnoreCase
+                            );
+                            foreach (
+                                var scp in at.Claims.Where(c =>
+                                    string.Equals(c.Type, "scp", StringComparison.OrdinalIgnoreCase)
+                                )
+                            )
+                            {
+                                var parts = scp.Value.Split(
+                                    ' ',
+                                    StringSplitOptions.RemoveEmptyEntries
+                                        | StringSplitOptions.TrimEntries
+                                );
+                                foreach (var p in parts)
+                                {
+                                    if (existingScp.Add(p))
+                                        identity.AddClaim(
+                                            new System.Security.Claims.Claim("scp", p)
+                                        );
+                                }
+                            }
+
+                            var existingRoles = new HashSet<string>(
+                                identity
+                                    .FindAll(System.Security.Claims.ClaimTypes.Role)
+                                    .Select(c => c.Value),
+                                StringComparer.OrdinalIgnoreCase
+                            );
+                            foreach (
+                                var role in at.Claims.Where(c =>
+                                    string.Equals(
+                                        c.Type,
+                                        "role",
+                                        StringComparison.OrdinalIgnoreCase
+                                    )
+                                )
+                            )
+                            {
+                                if (existingRoles.Add(role.Value))
+                                    identity.AddClaim(
+                                        new System.Security.Claims.Claim(
+                                            System.Security.Claims.ClaimTypes.Role,
+                                            role.Value
+                                        )
+                                    );
+                            }
+                            foreach (
+                                var roles in at.Claims.Where(c =>
+                                    string.Equals(
+                                        c.Type,
+                                        "roles",
+                                        StringComparison.OrdinalIgnoreCase
+                                    )
+                                )
+                            )
+                            {
+                                if (existingRoles.Add(roles.Value))
+                                    identity.AddClaim(
+                                        new System.Security.Claims.Claim(
+                                            System.Security.Claims.ClaimTypes.Role,
+                                            roles.Value
+                                        )
+                                    );
+                            }
+
+                            if (ctx.Principal is null)
+                            {
+                                ctx.Principal = new System.Security.Claims.ClaimsPrincipal(
+                                    identity
+                                );
+                            }
+                        }
+                    }
+                    catch
+                    {
+                        // best-effort enrichment
+                    }
                 }
                 catch { }
                 return Task.CompletedTask;
@@ -957,7 +1425,41 @@ builder.Services.PostConfigure<OpenIdConnectOptions>(
 
 // Removed warm-up hosted service & post-configure: deterministic preload above handles key availability.
 
-builder.Services.AddAuthorization();
+builder.Services.AddAuthorization(options =>
+{
+    options.AddPolicy(
+        "AdminOnly",
+        policy =>
+        {
+            policy.RequireAssertion(ctx =>
+            {
+                try
+                {
+                    var user = ctx.User;
+                    if (user == null)
+                        return false;
+                    if (user.IsInRole("Admin"))
+                        return true;
+                    var scopes = user.FindAll("scope")
+                        .Select(c => c.Value)
+                        .Concat(user.FindAll("scp").Select(c => c.Value));
+                    return scopes.Any(s =>
+                        s.Split(
+                                ' ',
+                                StringSplitOptions.RemoveEmptyEntries
+                                    | StringSplitOptions.TrimEntries
+                            )
+                            .Contains("admin.full", StringComparer.OrdinalIgnoreCase)
+                    );
+                }
+                catch
+                {
+                    return false;
+                }
+            });
+        }
+    );
+});
 
 // HttpClient for server-side calls to backend via Gateway
 builder.Services.AddTransient<TansuCloud.Dashboard.Security.BearerTokenHandler>();
@@ -979,6 +1481,20 @@ builder.Services.AddSingleton(sp =>
 );
 
 var app = builder.Build();
+// Startup diagnostic: log OIDC metadata source choice (Task 38)
+try
+{
+    var log = app.Services.GetRequiredService<ILoggerFactory>().CreateLogger("OIDC-Config");
+    var authority = builder.Configuration["Oidc:Authority"] ?? "http://127.0.0.1:8080/identity";
+    var configuredMd = builder.Configuration["Oidc:MetadataAddress"];
+    string effectiveMd = configuredMd ?? ($"{authority!.TrimEnd('/')}/.well-known/openid-configuration");
+    var src = string.IsNullOrWhiteSpace(configuredMd) ? "authority-derived" : "explicit-config";
+    log.LogOidcMetadataChoice(src, authority.TrimEnd('/'), effectiveMd);
+}
+catch { }
+
+// Task 38 enrichment middleware
+app.UseMiddleware<RequestEnrichmentMiddleware>();
 
 // Configure the HTTP request pipeline.
 if (!app.Environment.IsDevelopment())
@@ -1013,9 +1529,12 @@ app.Use(
     async (context, next) =>
     {
         var prefix = context.Request.Headers["X-Forwarded-Prefix"].ToString();
-        if (!string.IsNullOrWhiteSpace(prefix))
+        // Avoid altering PathBase for API calls so Minimal API routes like "/api/*" match correctly.
+        // UI endpoints still benefit from PathBase for correct base href/link generation under a proxy prefix.
+        var isApiRequest = context.Request.Path.StartsWithSegments("/api", out _);
+        if (!string.IsNullOrWhiteSpace(prefix) && !isApiRequest)
         {
-            // Behave like UsePathBase: if the path starts with the prefix, move it to PathBase and trim from Path.
+            // Behave like UsePathBase only when the incoming path actually starts with the prefix.
             if (context.Request.Path.StartsWithSegments(prefix, out var rest))
             {
                 context.Request.PathBase = prefix;
@@ -1023,11 +1542,13 @@ app.Use(
             }
             else
             {
-                // Otherwise, at least set PathBase so link generation/base URI are correct under a proxy path.
+                // For non-API UI requests, setting PathBase helps Blazor generate correct base URIs behind the gateway.
                 context.Request.PathBase = prefix;
             }
         }
-        else if (context.Request.Path.StartsWithSegments("/dashboard", out var rest2))
+        else if (
+            !isApiRequest && context.Request.Path.StartsWithSegments("/dashboard", out var rest2)
+        )
         {
             // Fallback inference: in case the proxy did not propagate X-Forwarded-Prefix, infer from the incoming path.
             // This keeps NavigationManager.BaseUri correct (".../dashboard/") and allows deep links to /dashboard/* to resolve.
@@ -1298,12 +1819,223 @@ app.Use(
 app.UseAuthentication();
 app.UseAuthorization();
 
+// Diagnostics: log auth state & claims for metrics page to investigate repeated challenges/timeouts
+app.Use(
+    async (context, next) =>
+    {
+        if (
+            context.Request.Path.StartsWithSegments(
+                "/admin/metrics",
+                StringComparison.OrdinalIgnoreCase
+            )
+        )
+        {
+            try
+            {
+                var logger = context
+                    .RequestServices.GetRequiredService<ILoggerFactory>()
+                    .CreateLogger("MetricsAuthDiag");
+                var user = context.User;
+                var isAuth = user?.Identity?.IsAuthenticated ?? false;
+                var claims =
+                    user?.Claims?.Select(c => c.Type + "=" + c.Value)
+                        .Take(50) // avoid log bloat
+                        .ToArray() ?? Array.Empty<string>();
+                logger.LogInformation(
+                    "/admin/metrics auth probe IsAuthenticated={Auth} Claims={Claims}",
+                    isAuth,
+                    string.Join(";", claims)
+                );
+            }
+            catch
+            { /* best effort */
+            }
+        }
+        await next();
+    }
+);
+
 app.UseAntiforgery();
 
 // Static assets must be allowed anonymously; the app has a global fallback authorization policy
 // and we don't want to gate framework files like blazor.server.js or CSS under auth.
 app.MapStaticAssets().AllowAnonymous();
 
+// --------------------
+// API endpoints (map BEFORE Razor components so Blazor's catch-all doesn't shadow /api/*)
+// --------------------
+// Health endpoints
+app.MapHealthChecks("/health/live").AllowAnonymous();
+app.MapHealthChecks("/health/ready").AllowAnonymous();
+
+// Dev-only: expose dynamic logging override shim for Dashboard logs too
+if (app.Environment.IsDevelopment())
+{
+    app.MapPost(
+        "/dev/logging/overrides",
+        (IDynamicLogLevelOverride ovr, [AsParameters] LogOverrideRequest req) =>
+        {
+            if (string.IsNullOrWhiteSpace(req.Category))
+                return Results.Problem("Category is required", statusCode: 400);
+            if (req.TtlSeconds <= 0)
+                return Results.Problem("TtlSeconds must be > 0", statusCode: 400);
+            ovr.Set(req.Category!, req.Level, TimeSpan.FromSeconds(req.TtlSeconds));
+            return Results.Ok(new { ok = true });
+        }
+    ).AllowAnonymous();
+    app.MapGet(
+        "/dev/logging/overrides",
+        (IDynamicLogLevelOverride ovr) =>
+            Results.Json(
+                ovr.Snapshot().ToDictionary(k => k.Key, v => new { v.Value.Level, v.Value.Expires })
+            )
+    ).AllowAnonymous();
+}
+
+// Admin-only metrics API (allowlisted)
+app.MapGet(
+        "/api/metrics/catalog",
+        () => Results.Json(TansuCloud.Dashboard.Observability.ChartCatalog.All)
+    )
+    .RequireAuthorization("AdminOnly");
+
+// Admin-only log reporting status/toggle API
+app.MapGet(
+        "/api/admin/log-reporting/status",
+        (
+            Microsoft.Extensions.Options.IOptionsMonitor<TansuCloud.Dashboard.Observability.Logging.LogReportingOptions> monitor,
+            Microsoft.Extensions.Options.IOptionsMonitor<LoggingReportOptions> capture,
+            ILogReportingRuntimeSwitch runtime,
+            ILogBuffer buffer
+        ) =>
+        {
+            var opts = monitor.CurrentValue;
+            var captureOpts = capture.CurrentValue;
+            var effective = (opts.Enabled && runtime.Enabled);
+            return Results.Json(
+                new
+                {
+                    configured = opts.Enabled,
+                    runtime = runtime.Enabled,
+                    effective,
+                    reportIntervalMinutes = opts.ReportIntervalMinutes,
+                    mainServerUrl = opts.MainServerUrl,
+                    severityThreshold = opts.SeverityThreshold,
+                    queryWindowMinutes = opts.QueryWindowMinutes,
+                    maxItems = opts.MaxItems,
+                    httpTimeoutSeconds = opts.HttpTimeoutSeconds,
+                    capture = new
+                    {
+                        captureOpts.Enabled,
+                        MinimumLevel = captureOpts.MinimumLevel.ToString(),
+                        captureOpts.MaxBufferEntries,
+                        captureOpts.MaxBatchSize,
+                        captureOpts.ReportInterval
+                    },
+                    buffer = new { buffer.Capacity, buffer.Count }
+                }
+            );
+        }
+    )
+    .RequireAuthorization("AdminOnly");
+
+app.MapPost(
+        "/api/admin/log-reporting/toggle",
+        ([FromBody] TansuCloud.Dashboard.ToggleRequest body, ILogReportingRuntimeSwitch runtime) =>
+        {
+            runtime.Enabled = body.Enabled;
+            return Results.NoContent();
+        }
+    )
+    .RequireAuthorization("AdminOnly");
+
+// Admin API: recent logs snapshot (paged basic)
+app.MapGet(
+        "/api/admin/logs/recent",
+        (ILogBuffer buffer, int? take, string? level, string? categoryContains, int? skip) =>
+        {
+            var items = buffer.Snapshot().AsEnumerable();
+            if (!string.IsNullOrWhiteSpace(level))
+            {
+                items = items.Where(i =>
+                    string.Equals(i.Level, level, StringComparison.OrdinalIgnoreCase)
+                );
+            }
+            if (!string.IsNullOrWhiteSpace(categoryContains))
+            {
+                items = items.Where(i =>
+                    (i.Category ?? string.Empty).Contains(
+                        categoryContains,
+                        StringComparison.OrdinalIgnoreCase
+                    )
+                );
+            }
+            var t = Math.Max(1, take ?? 200);
+            var s = Math.Max(0, skip ?? 0);
+            var list = items.Skip(s).Take(t).ToList();
+            return Results.Json(list);
+        }
+    )
+    .RequireAuthorization("AdminOnly");
+
+app.MapGet(
+        "/api/metrics/range",
+        async (
+            string chartId,
+            string? tenant,
+            string? service,
+            int? rangeMinutes,
+            int? stepSeconds,
+            IPrometheusQueryService svc,
+            CancellationToken ct
+        ) =>
+        {
+            if (
+                !TansuCloud.Dashboard.Observability.ChartCatalog.All.Any(c =>
+                    string.Equals(c.Id, chartId, StringComparison.Ordinal)
+                )
+            )
+                return Results.BadRequest(new { error = "unknown_chart_id" });
+            TimeSpan? range = rangeMinutes.HasValue
+                ? TimeSpan.FromMinutes(rangeMinutes.Value)
+                : null;
+            TimeSpan? step = stepSeconds.HasValue ? TimeSpan.FromSeconds(stepSeconds.Value) : null;
+            var data = await svc.QueryRangeAsync(chartId, tenant, service, range, step, ct);
+            object payload =
+                (object?)data ?? new { resultType = "matrix", result = Array.Empty<object>() };
+            return Results.Json(payload);
+        }
+    )
+    .RequireAuthorization("AdminOnly");
+
+app.MapGet(
+        "/api/metrics/instant",
+        async (
+            string chartId,
+            string? tenant,
+            string? service,
+            DateTimeOffset? at,
+            IPrometheusQueryService svc,
+            CancellationToken ct
+        ) =>
+        {
+            if (
+                !TansuCloud.Dashboard.Observability.ChartCatalog.All.Any(c =>
+                    string.Equals(c.Id, chartId, StringComparison.Ordinal)
+                )
+            )
+                return Results.BadRequest(new { error = "unknown_chart_id" });
+            var data = await svc.QueryInstantAsync(chartId, tenant, service, at, ct);
+            object payload =
+                (object?)data ?? new { resultType = "vector", result = Array.Empty<object>() };
+            return Results.Json(payload);
+        }
+    )
+    .RequireAuthorization("AdminOnly");
+
+// --------------------
+// UI endpoints (Razor components)
+// --------------------
 // Map Razor components with global authorization but explicitly allow Blazor infrastructure endpoints
 // to avoid OIDC challenges on framework/negotiate requests when not yet authenticated (per .NET 8/9 guidance).
 app.MapRazorComponents<App>()
@@ -1313,14 +2045,9 @@ app.MapRazorComponents<App>()
     {
         if (e is RouteEndpointBuilder reb && reb.RoutePattern.RawText is string raw)
         {
-            // Allow anonymous for the Blazor Server script endpoint served via endpoint routing in .NET 8+
-            if (
-                string.Equals(
-                    raw,
-                    "/_framework/blazor.server.js",
-                    StringComparison.OrdinalIgnoreCase
-                )
-            )
+            // Allow anonymous for Blazor framework assets served via endpoint routing in .NET 8/9
+            // Includes blazor.web.js, blazor.server.js and other resources under /_framework/
+            if (raw.StartsWith("/_framework/", StringComparison.OrdinalIgnoreCase))
             {
                 e.Metadata.Add(new AllowAnonymousAttribute());
             }
@@ -1342,10 +2069,6 @@ app.MapRazorComponents<App>()
             dispatcherOptions.CloseOnAuthenticationExpiration = true;
         }
     });
-
-// Health endpoints
-app.MapHealthChecks("/health/live").AllowAnonymous();
-app.MapHealthChecks("/health/ready").AllowAnonymous();
 
 // Development-only OIDC diagnostics endpoint exposing current client config & signing keys (not for production)
 if (app.Environment.IsDevelopment())
@@ -1394,9 +2117,19 @@ if (app.Environment.IsDevelopment())
 
 app.Run();
 
+public sealed record LogOverrideRequest(string Category, LogLevel Level, int TtlSeconds);
+
 // Support types (kept at end to avoid interfering with top-level statements above)
 namespace TansuCloud.Dashboard
 {
+    public sealed record MetricsRangeRequest(
+        string ChartId,
+        string? Tenant,
+        string? Service,
+        TimeSpan? Range,
+        TimeSpan? Step
+    );
+
     // Deterministic static configuration manager to avoid races once discovery & JWKS are loaded at startup.
     sealed class StaticConfigurationManager<T> : IConfigurationManager<T>
         where T : class

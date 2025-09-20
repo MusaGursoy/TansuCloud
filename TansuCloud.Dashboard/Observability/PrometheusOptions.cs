@@ -35,4 +35,14 @@ public sealed class PrometheusOptions
     /// In-memory proxy cache TTL seconds for chart responses.
     /// </summary>
     public int CacheTtlSeconds { get; set; } = 10;
+
+    /// <summary>
+    /// Number of retry attempts for transient Prometheus HTTP failures.
+    /// </summary>
+    public int RetryCount { get; set; } = 2;
+
+    /// <summary>
+    /// Base delay in milliseconds for exponential backoff between retries.
+    /// </summary>
+    public int RetryBaseDelayMs { get; set; } = 100;
 } // End of Class PrometheusOptions

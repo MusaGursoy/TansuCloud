@@ -4,6 +4,7 @@
 
 Tansu.Cloud is a modern backend-as-a-service (BaaS) platform built on .NET, providing identity, API gateway, dashboards, database and storage services, observability, and health management. This guide helps admins and tenant operators deploy, configure, and operate the platform.
 
+
 ## 1. Getting Started
 
 - Architecture at a glance
@@ -32,7 +33,7 @@ Tansu.Cloud is a modern backend-as-a-service (BaaS) platform built on .NET, prov
 
 Set your public base URL and sensitive values via a `.env` file next to `docker-compose.yml`. Docker Compose will auto-load it and substitute values into service environments.
 
-1) Create `.env` with your domain and secrets
+1. Create `.env` with your domain and secrets
 
 ```env
 # Public HTTPS base URL of your gateway (include scheme; no trailing slash)
@@ -51,22 +52,22 @@ PGCAT_ADMIN_PASSWORD=change-me
 GATEWAY_CERT_PASSWORD=changeit
 ```
 
-2) What these influence
+1. What these influence
 
 - PUBLIC_BASE_URL configures all OIDC and callback URLs exposed externally:
-	- Identity issuer: `${PUBLIC_BASE_URL}/identity/`
-	- Dashboard OIDC authority: `${PUBLIC_BASE_URL}/identity`
-	- Redirect URIs (dashboard behind gateway path):
-		- `${PUBLIC_BASE_URL}/dashboard/signin-oidc`
-		- `${PUBLIC_BASE_URL}/dashboard/signout-callback-oidc`
-	- Root variants (if you front the dashboard at the domain root as an alternative):
-		- `${PUBLIC_BASE_URL}/signin-oidc`
-		- `${PUBLIC_BASE_URL}/signout-callback-oidc`
+  - Identity issuer: `${PUBLIC_BASE_URL}/identity/`
+  - Dashboard OIDC authority: `${PUBLIC_BASE_URL}/identity`
+  - Redirect URIs (dashboard behind gateway path):
+    - `${PUBLIC_BASE_URL}/dashboard/signin-oidc`
+    - `${PUBLIC_BASE_URL}/dashboard/signout-callback-oidc`
+  - Root variants (if you front the dashboard at the domain root as an alternative):
+    - `${PUBLIC_BASE_URL}/signin-oidc`
+    - `${PUBLIC_BASE_URL}/signout-callback-oidc`
 - DASHBOARD_CLIENT_SECRET is injected into the Dashboard container as its client secret.
-- POSTGRES_* and PGCAT_* configure the database and PgCat admin access used by services.
+- `POSTGRES_*` and `PGCAT_*` configure the database and PgCat admin access used by services.
 - GATEWAY_CERT_PASSWORD is only required when HTTPS is enabled on the gateway with a PFX (see 5.x).
 
-3) DNS and TLS
+1. DNS and TLS
 
 - Point your domain (A/AAAA) to the gateway host.
 - Use a valid certificate (section 5) and set `PUBLIC_BASE_URL` to the HTTPS origin.
@@ -179,6 +180,7 @@ Option B — Shell environment variable (one-off runs, CI/CD)
 
 ```powershell
 $env:GATEWAY_CERT_PASSWORD = "changeit"
+
 docker compose up -d
 ```
 
@@ -186,6 +188,7 @@ docker compose up -d
 
 ```bash
 export GATEWAY_CERT_PASSWORD=changeit
+
 docker compose up -d
 ```
 
@@ -195,6 +198,15 @@ Notes
 - For HTTP-only runs, leave 443 and TLS envs unset, and (in dev) you can set `Gateway:DisableHttpsRedirect=true` to prevent redirects.
 
 ## 6. Identity & Authentication
+
+### 6.1 Admin access to Dashboard configuration (Rate Limits)
+
+- Admin-only pages are available after OIDC login with a user in the Admin role (or an access token with the `admin.full` scope).
+- To edit Gateway rate limits in development:
+	- Navigate to `/dashboard/admin/rate-limits`.
+	- Click “Load current”, adjust Window seconds and Default/Route permit/queue limits, and save. Changes apply immediately at the Gateway.
+	- In environments where CSRF is enabled, the Dashboard attaches `X-Tansu-Csrf` when the `DASHBOARD_CSRF` environment variable is set.
+- In CI/dev E2Es, Identity discovery readiness is checked at `/identity/.well-known/openid-configuration` to avoid flakiness. If discovery is unavailable and strict mode is disabled, UI tests may skip.
 
 - Identity issuer and discovery under /identity
 - Configuring OIDC issuer for downstream services (Oidc:Issuer)
@@ -243,8 +255,9 @@ Gateway login alias
 - Services use Microsoft.Extensions.Caching.Hybrid with Redis as the distributed backing store when configured.
 - Development toggle `Cache:Disable=1` (per service) bypasses HybridCache entirely for troubleshooting.
 - Redis connectivity is covered by custom health checks ("redis" tag) that ping the configured endpoint; readiness will report degraded when Redis is unreachable.
+- Gateway OutputCache: Anonymous responses may be cached briefly (default TTL 15s, configurable via `Gateway:OutputCache:DefaultTtlSeconds`). Requests with `Authorization` are not cached at the Gateway.
 - Cache keys are tenant-scoped and versioned: `t:{tenant}:v{version}:{service}:{resource}:...`.
-	- Database invalidates via outbox events (see Task 12).
+	- Database and Storage invalidate via outbox events (see Task 12 and Task 15). Storage also bumps the tenant cache version on local PUT/DELETE for immediate invalidation.
 	- Storage bumps a per-tenant version on PUT/DELETE to invalidate list/head entries.
 - Metrics: the Storage service exposes counters via the `tansu.storage` meter:
 	- `tansu_storage_cache_attempts_total`
@@ -264,6 +277,55 @@ Troubleshooting tips
 - Log collection and troubleshooting
 - Backup and restore considerations (DB/storage specifics TBD)
 
+### 9.1 Product telemetry reporting (Dashboard → main server)
+
+What it is
+
+- The Dashboard captures Warning+ logs locally and, by default, reports a minimal, privacy-preserving subset to a central “main server” hourly. This helps improve the product without exposing tenant data.
+
+What leaves your deployment (defaults)
+
+- Errors and Critical logs relevant to product health.
+- Selected Warnings from allowlisted categories (Identity/OIDC, Gateway proxy, Storage/Database dependencies, security boundary). Other Warnings are sampled (default 10%).
+- Aggregated performance SLO breaches as summary items (counts/percentiles), not per-request details.
+- Coarse context only: service name, environment, version, timestamp, optional normalized route/operation, optional status class, optional exception type, and a hash of the message template.
+- No PII or payloads: no raw URLs, query strings, headers, bodies, cookies, user IDs/emails, object keys/paths.
+
+Configuration (Dashboard)
+
+- App settings section: `LogReporting` (binds to options in code).
+	- `Enabled` (bool, default true): master switch for periodic reports.
+	- `ReportIntervalMinutes` (int, default 60): how often to send.
+	- `MainServerUrl` (string): base URL of your main server; reports POST to `<MainServerUrl>/api/logs/report`.
+	- `ApiKey` (string, optional): bearer token for the report request.
+	- `SeverityThreshold` (string, default `Warning`): minimum level to consider.
+	- `QueryWindowMinutes` (int, default 60): time window to include.
+	- `MaxItems` (int, default 2000): cap per report.
+	- `HttpTimeoutSeconds` (int, default 30): outbound HTTP timeout.
+	- `WarningSamplingPercent` (int, default 10): sampling for non-allowlisted warnings.
+	- `AllowedWarningCategories` (string[], defaults include `OIDC-`, `Tansu.Gateway`, `Tansu.Storage`, `Tansu.Database`, `Tansu.Identity`).
+	- `HttpLatencyP95Ms` (int, default 500), `DbDurationP95Ms` (int, default 300), `ErrorRatePercent` (int, default 1) for aggregated perf events.
+
+Runtime toggle
+
+- Admins can disable or re-enable reporting on the fly at Dashboard → Admin → Logs. This does not affect local log capture/viewing.
+
+Buffering and failure handling
+
+- Logs are first captured into a bounded in-memory buffer (default 5,000 entries) for the Admin Logs page.
+- The reporter snapshots the buffer, filters items for reporting, sends them, and only then dequeues the sent items. If the send fails (non-2xx or network error), nothing is removed and the next cycle retries. This avoids data loss.
+
+Security notes
+
+- Use HTTPS for `MainServerUrl` in production and set a strong `ApiKey`.
+- Ensure the main server’s ingestion endpoint validates the bearer token and rate-limits as needed.
+
+Troubleshooting
+
+- Reporting disabled: set `LogReporting:Enabled=true` and verify `MainServerUrl` is set.
+- Connectivity/auth: check Dashboard logs for "Log report failed" messages and confirm `ApiKey` is valid.
+- Volume too high: raise `SeverityThreshold`, lower `WarningSamplingPercent`, or tighten `AllowedWarningCategories`.
+
 ## 10. Security Hardening
 
 - CORS at the gateway
@@ -278,12 +340,44 @@ Output caching (gateway)
   - Host and path
   - Headers: `X-Tansu-Tenant`, `Accept`, `Accept-Encoding`
   - Selected query parameters depending on route
+- TTL: Default 15s (configurable via `Gateway:OutputCache:DefaultTtlSeconds`). Suitable for anonymous/static responses; tune per environment.
 - Authorization-aware:
-  - When an `Authorization` header is present (authenticated, per-route protected content), the gateway bypasses output caching (no-store) to avoid serving cached private responses.
+	- Requests with an `Authorization` header are not cached at the gateway to avoid serving private data from cache.
+
+OutputCache policy matrix
+
+- Base policy (anonymous responses only)
+	- TTL: `Gateway:OutputCache:DefaultTtlSeconds` (default 15 seconds)
+	- Vary: `Host`, `X-Tansu-Tenant`, `Accept`, `Accept-Encoding`
+- PublicStaticLong (static assets)
+	- Routes: `/_framework/*`, `/dashboard/_framework/*`, `/_content/*`, `/dashboard/_content/*`, `/_blazor/*`, `/dashboard/_blazor/*`, `/favicon.ico`, `/app.css`, `/app.{hash}.css`, `/TansuCloud.Dashboard.styles.css`, `/TansuCloud.Dashboard.{hash}.styles.css`, and Identity/Dashboard assets addressed under `/lib/*`, `/css/*`, `/js/*`.
+	- TTL: `Gateway:OutputCache:StaticTtlSeconds` (default 300 seconds)
+	- Vary: `Host`, `Accept-Encoding`
+
+Notes
+
+- Authenticated requests bypass the OutputCache entirely at the gateway.
+- Downstream services still emit `ETag` and `Vary` headers; client/proxy caches may leverage them even when gateway caching is bypassed.
 
 Global rate limits
 
-- Partitioned by route prefix and tenant to reduce cross-tenant interference.
+- Fixed window (default 10s, configurable via `Gateway:RateLimits:WindowSeconds`) with per-route-family limits; Identity has no queue.
+- Partitioning to balance fairness and privacy:
+	- Public (no `Authorization`): partition by tenant + client IP.
+	- Authenticated: partition by tenant + hash(Authorization token) — hashed to avoid any sensitive value leakage.
+- 429 responses include `Retry-After` equal to the configured window seconds to hint clients when to retry.
+
+Configuration knobs (gateway)
+
+- `Gateway:RateLimits:WindowSeconds` — fixed window length in seconds (default 10). Also controls the `Retry-After` header value.
+- `Gateway:RateLimits:Defaults:PermitLimit` and `Gateway:RateLimits:Defaults:QueueLimit` — fallback limits (default 100/100).
+- `Gateway:RateLimits:Routes:{prefix}:PermitLimit` and `...:QueueLimit` — per route-family overrides. Built-in defaults:
+	- `db` PermitLimit=200, QueueLimit=PermitLimit
+	- `storage` PermitLimit=150, QueueLimit=PermitLimit
+	- `identity` PermitLimit=600, QueueLimit=0 (no queue to avoid auth timeouts)
+	- `dashboard` PermitLimit=300, QueueLimit=PermitLimit
+- `Gateway:OutputCache:DefaultTtlSeconds` — base anonymous cache TTL (default 15s)
+- `Gateway:OutputCache:StaticTtlSeconds` — static asset policy TTL (default 300s)
 
 Request body size limits (defaults)
 
@@ -359,6 +453,7 @@ To enable the Redis E2E outbox test locally:
 
 ```powershell
 $env:REDIS_URL = "localhost:6379" # or full configuration string supported by StackExchange.Redis
+
 dotnet test .\tests\TansuCloud.E2E.Tests\TansuCloud.E2E.Tests.csproj -c Debug --filter Full_Dispatcher_Redis_Publish
 ```
 
@@ -434,6 +529,36 @@ Troubleshooting
 Configuration
 
 - Prometheus base URL, timeouts, default ranges, and caps are configured in the Dashboard via `PrometheusOptions` (appsettings/environment). In Docker Compose, the default is `http://prometheus:9090`; alternatively, use the OTEL collector exporter at `http://otel-collector:8889`.
+
+Admin metrics HTTP API
+
+- The Dashboard exposes admin-only endpoints that proxy Prometheus with an allowlist and tenant/RBAC enforcement:
+		- `GET /api/metrics/catalog` — returns allowlisted chart definitions (id, title, category, requiresTenant, acceptsService, unit).
+		- `GET /api/metrics/range?chartId=...&tenant=...&service=...&rangeMinutes=...&stepSeconds=...` — returns matrix data for the time window (range clamped by MaxRangeMinutes; step clamped by MaxStepSeconds). 400 for unknown chartId.
+		- `GET /api/metrics/instant?chartId=...&tenant=...&service=...&at=...` — returns vector data at an instant (RFC3339 `at`; defaults to now). 400 for unknown chartId.
+- RBAC and tenant scoping:
+		- Endpoints require Admin role or admin.full scope.
+		- Tenant precedence: gateway-provided `X-Tanzu-Tenant` overrides non-admin requests; admin may pass `tenant` when header is absent.
+- Resilience and caching knobs (PrometheusOptions): `TimeoutSeconds`, `DefaultRangeMinutes`, `MaxRangeMinutes`, `MaxStepSeconds`, `CacheTtlSeconds`, `RetryCount`, and `RetryBaseDelayMs`.
+
+Examples (development)
+
+- Catalog
+	- http://127.0.0.1:8080/dashboard/api/metrics/catalog
+- Range (1–5 minutes typical for smoke)
+	- http://127.0.0.1:8080/dashboard/api/metrics/range?chartId=storage.http.rps&rangeMinutes=5&stepSeconds=30
+- Instant
+	- http://127.0.0.1:8080/dashboard/api/metrics/instant?chartId=gateway.http.rps.byroute
+
+Notes
+
+- Responses mirror Prometheus HTTP API shapes: `{ status, data: { resultType, result } }`.
+- The Metrics UI under `/dashboard/admin/metrics` surfaces curated charts including:
+	- Overview: RPS, Errors, Latency p95/p50 by service
+	- Storage: HTTP RPS/Errors, Latency p95/p50, Status, Ingress/Egress, Cache hit ratio
+	- Gateway: HTTP RPS by route, Status, Latency p95 by route
+	- Database: Outbox counters; HTTP RPS and HTTP 5xx errors
+- Screenshot walkthroughs will be added in a later iteration.
 
 Quick dev smoke
 

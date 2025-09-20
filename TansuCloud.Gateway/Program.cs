@@ -2,15 +2,22 @@
 
 using System.Collections.Generic;
 using System.Diagnostics.Metrics;
+using System.Linq;
+using System.Security.Cryptography;
+using System.Text;
 using System.Threading.RateLimiting;
+using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.OutputCaching;
+using Microsoft.Extensions.Diagnostics.HealthChecks;
 using Microsoft.Extensions.Caching.Hybrid;
 using Microsoft.Extensions.Caching.StackExchangeRedis;
+using Microsoft.IdentityModel.Tokens;
 using OpenTelemetry.Logs;
 using OpenTelemetry.Metrics;
 using OpenTelemetry.Resources;
 using OpenTelemetry.Trace;
 using TansuCloud.Gateway.Services;
+using TansuCloud.Observability;
 using Yarp.ReverseProxy.Configuration;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -97,6 +104,9 @@ builder
         });
     });
 
+// Shared observability core (Task 38): dynamic log level overrides, etc.
+builder.Services.AddTansuObservabilityCore();
+
 // Wire OpenTelemetry logging exporter (structured logs as OTLP) in addition to console/aspnet defaults
 builder.Logging.AddOpenTelemetry(logging =>
 {
@@ -114,6 +124,118 @@ builder.Logging.AddOpenTelemetry(logging =>
 
 // Health checks
 builder.Services.AddHealthChecks();
+// Phase 0: publish health transitions (Info) for ops visibility
+builder.Services.AddSingleton<IHealthCheckPublisher, HealthTransitionPublisher>();
+builder.Services.Configure<HealthCheckPublisherOptions>(o =>
+{
+    o.Delay = TimeSpan.FromSeconds(2);
+    o.Period = TimeSpan.FromSeconds(15);
+});
+
+// Observability shared primitives (Task 38): dynamic levels, enrichment middleware
+builder.Services.AddTansuObservabilityCore();
+
+// OIDC JWT bearer authentication for admin API (replace temporary header guard)
+builder
+    .Services.AddAuthentication(options =>
+    {
+        options.DefaultAuthenticateScheme = JwtBearerDefaults.AuthenticationScheme;
+        options.DefaultChallengeScheme = JwtBearerDefaults.AuthenticationScheme;
+    })
+    .AddJwtBearer(
+        JwtBearerDefaults.AuthenticationScheme,
+        options =>
+        {
+            // Derive Authority/Metadata per repo guidance
+            var issuer = builder.Configuration["Oidc:Issuer"] ?? "http://127.0.0.1:8080/identity/";
+            var issuerTrim = issuer.TrimEnd('/');
+            options.Authority = issuerTrim;
+
+            var metadataAddress = builder.Configuration["Oidc:MetadataAddress"];
+            if (!string.IsNullOrWhiteSpace(metadataAddress))
+            {
+                options.MetadataAddress = metadataAddress;
+            }
+            else if (
+                string.Equals(
+                    Environment.GetEnvironmentVariable("DOTNET_RUNNING_IN_CONTAINER"),
+                    "true",
+                    StringComparison.OrdinalIgnoreCase
+                )
+            )
+            {
+                options.MetadataAddress =
+                    "http://gateway:8080/identity/.well-known/openid-configuration";
+            }
+            else
+            {
+                options.MetadataAddress = issuerTrim + "/.well-known/openid-configuration";
+            }
+
+            options.RequireHttpsMetadata = !builder.Environment.IsDevelopment();
+            options.MapInboundClaims = false; // keep raw JWT claim types
+            options.TokenValidationParameters = new TokenValidationParameters
+            {
+                ValidateIssuer = true,
+                // Accept common dev variations (with/without trailing slash; localhost vs 127.0.0.1)
+                ValidIssuers = new[]
+                {
+                    issuerTrim,
+                    issuerTrim + "/",
+                    issuerTrim.Replace(
+                        "127.0.0.1",
+                        "localhost",
+                        StringComparison.OrdinalIgnoreCase
+                    ),
+                    issuerTrim.Replace("127.0.0.1", "localhost", StringComparison.OrdinalIgnoreCase)
+                        + "/"
+                },
+                // In Development, it's acceptable to relax audience validation at the gateway admin layer
+                ValidateAudience = !builder.Environment.IsDevelopment(),
+                ValidTypes = new[] { "at+jwt", "JWT", "jwt" }
+            };
+        }
+    );
+
+// Admin authorization policy: Admin role or admin.full scope
+builder.Services.AddAuthorization(options =>
+{
+    options.AddPolicy(
+        "AdminOnly",
+        policy =>
+        {
+            policy.RequireAssertion(ctx =>
+            {
+                try
+                {
+                    var user = ctx.User;
+                    if (user == null)
+                        return false;
+                    if (user.IsInRole("Admin"))
+                        return true;
+                    // scope/scp may be space-delimited or repeated
+                    var scopeValues = user.FindAll("scope")
+                        .Select(c => c.Value)
+                        .Concat(user.FindAll("scp").Select(c => c.Value));
+                    foreach (var v in scopeValues)
+                    {
+                        var parts = v.Split(
+                            ' ',
+                            StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries
+                        );
+                        if (parts.Contains("admin.full", StringComparer.OrdinalIgnoreCase))
+                            return true;
+                    }
+                    return false;
+                }
+                catch
+                {
+                    return false;
+                }
+            });
+        }
+    );
+});
 
 // CORS: tighten cross-origin access at the gateway; configure allowed origins via Gateway:Cors:AllowedOrigins
 builder.Services.AddCors(options =>
@@ -154,10 +276,119 @@ if (!string.IsNullOrWhiteSpace(redisConn) && !disableCache)
         .AddCheck("redis", new TansuCloud.Gateway.Services.RedisPingHealthCheck(redisConn));
 }
 
+// Gateway knobs: rate limit window for Retry-After, and static assets cache TTL
+var rateLimitWindowSeconds = builder.Configuration.GetValue("Gateway:RateLimits:WindowSeconds", 10);
+var staticAssetsTtlSeconds = builder.Configuration.GetValue(
+    "Gateway:OutputCache:StaticTtlSeconds",
+    300
+);
+
+// Runtime rate limit configuration (Iteration 1 Task 17)
+var initialDefaults = new RateLimitDefaults
+{
+    PermitLimit = builder.Configuration.GetValue("Gateway:RateLimits:Defaults:PermitLimit", 100),
+    QueueLimit = builder.Configuration.GetValue(
+        "Gateway:RateLimits:Defaults:QueueLimit",
+        builder.Configuration.GetValue("Gateway:RateLimits:Defaults:PermitLimit", 100)
+    )
+};
+var initialRoutes = new Dictionary<string, RateLimitRouteOverride>(StringComparer.OrdinalIgnoreCase)
+{
+    {
+        "db",
+        new RateLimitRouteOverride
+        {
+            PermitLimit = builder.Configuration.GetValue<int?>(
+                "Gateway:RateLimits:Routes:db:PermitLimit"
+            ),
+            QueueLimit = builder.Configuration.GetValue<int?>(
+                "Gateway:RateLimits:Routes:db:QueueLimit"
+            )
+        }
+    },
+    {
+        "storage",
+        new RateLimitRouteOverride
+        {
+            PermitLimit = builder.Configuration.GetValue<int?>(
+                "Gateway:RateLimits:Routes:storage:PermitLimit"
+            ),
+            QueueLimit = builder.Configuration.GetValue<int?>(
+                "Gateway:RateLimits:Routes:storage:QueueLimit"
+            )
+        }
+    },
+    {
+        "identity",
+        new RateLimitRouteOverride
+        {
+            PermitLimit = builder.Configuration.GetValue<int?>(
+                "Gateway:RateLimits:Routes:identity:PermitLimit"
+            ),
+            QueueLimit = builder.Configuration.GetValue<int?>(
+                "Gateway:RateLimits:Routes:identity:QueueLimit"
+            )
+        }
+    },
+    {
+        "dashboard",
+        new RateLimitRouteOverride
+        {
+            PermitLimit = builder.Configuration.GetValue<int?>(
+                "Gateway:RateLimits:Routes:dashboard:PermitLimit"
+            ),
+            QueueLimit = builder.Configuration.GetValue<int?>(
+                "Gateway:RateLimits:Routes:dashboard:QueueLimit"
+            )
+        }
+    }
+};
+var rlRuntime = new RateLimitRuntime(rateLimitWindowSeconds, initialDefaults, initialRoutes);
+builder.Services.AddSingleton<IRateLimitRuntime>(rlRuntime);
+builder.Services.AddSingleton<RateLimitRejectionAggregator>(sp =>
+{
+    var logger = sp.GetRequiredService<ILogger<RateLimitRejectionAggregator>>();
+    var overrides = sp.GetRequiredService<IDynamicLogLevelOverride>();
+    return new RateLimitRejectionAggregator(logger, overrides, rateLimitWindowSeconds);
+});
+
 // Safety controls: Rate Limiting
 builder.Services.AddRateLimiter(options =>
 {
     options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
+    options.OnRejected = (context, token) =>
+    {
+        try
+        {
+            // Align with FixedWindow window length to provide a clear client backoff hint
+            var retryAfter = rlRuntime.WindowSeconds.ToString();
+            context.HttpContext.Response.Headers["Retry-After"] = retryAfter;
+            context.HttpContext.Response.Headers["X-Retry-After"] = retryAfter;
+            // Aggregate this rejection for summary logging
+            var path = context.HttpContext.Request.Path;
+            var prefix = path.HasValue ? path.Value!.TrimStart('/') : string.Empty;
+            var first = string.IsNullOrEmpty(prefix) ? string.Empty : prefix.Split('/', 2)[0];
+            var tenant = context.HttpContext.Request.Headers["X-Tansu-Tenant"].ToString();
+            var hasAuth = context.HttpContext.Request.Headers.ContainsKey("Authorization");
+            string idPart;
+            if (!hasAuth)
+            {
+                var ip = context.HttpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown";
+                idPart = $"ip:{ip}";
+            }
+            else
+            {
+                var authHeader = context.HttpContext.Request.Headers["Authorization"].ToString();
+                idPart = $"auth:{HashKey(authHeader)}";
+            }
+            var key = $"{first}|{tenant}|{idPart}|v{rlRuntime.Version}";
+            var agg =
+                context.HttpContext.RequestServices.GetRequiredService<RateLimitRejectionAggregator>();
+            agg.Report(first, tenant, key);
+        }
+        catch { }
+        return ValueTask.CompletedTask;
+    };
     options.GlobalLimiter = PartitionedRateLimiter.Create<HttpContext, string>(context =>
     {
         // Partition key: route prefix + tenant id for fairness
@@ -165,47 +396,79 @@ builder.Services.AddRateLimiter(options =>
         var prefix = path.HasValue ? path.Value!.TrimStart('/') : string.Empty;
         var first = string.IsNullOrEmpty(prefix) ? string.Empty : prefix.Split('/', 2)[0];
         var tenant = context.Request.Headers["X-Tansu-Tenant"].ToString();
-        var key = $"{first}|{tenant}";
-
-        // Different limits per route family
-        var permitLimit = first switch
+        // Public (no Authorization): partition by client IP to reduce noisy neighbor impact
+        // Authenticated: partition by tenant + hashed token (no PII/token leak)
+        var hasAuth = context.Request.Headers.ContainsKey("Authorization");
+        string idPart;
+        if (!hasAuth)
         {
-            "db" => 200, // DB APIs
-            "storage" => 150, // Storage APIs
-            "identity" => 600, // Auth endpoints (discovery/token can burst during tests)
-            "dashboard" => 300, // UI
-            _ => 100
-        };
+            var ip = context.Connection.RemoteIpAddress?.ToString() ?? "unknown";
+            idPart = $"ip:{ip}";
+        }
+        else
+        {
+            var token = context.Request.Headers["Authorization"].ToString();
+            // Hash token to avoid storing sensitive values and reduce cardinality
+            idPart = $"auth:{HashKey(token)}";
+        }
+        // Include a runtime version component so that when the admin updates limits, we create
+        // new limiter partitions and don't keep using cached FixedWindow instances with stale values.
+        var key = $"{first}|{tenant}|{idPart}|v{rlRuntime.Version}";
 
-        return RateLimitPartition.GetFixedWindowLimiter(
+        // Different limits per route family (configurable with sane defaults)
+        var (permitLimit, queueLimit, windowSeconds) = rlRuntime.Resolve(first);
+
+        var limiter = RateLimitPartition.GetFixedWindowLimiter(
             partitionKey: key,
             factory: _ => new FixedWindowRateLimiterOptions
             {
                 PermitLimit = permitLimit,
-                Window = TimeSpan.FromSeconds(10),
+                Window = TimeSpan.FromSeconds(Math.Max(1, windowSeconds)),
                 QueueProcessingOrder = QueueProcessingOrder.OldestFirst,
-                QueueLimit = first == "identity" ? 0 : permitLimit // avoid queueing for identity to reduce timeouts
+                QueueLimit = queueLimit
             }
         );
+        // Emit a structured debug for partition resolution
+        var plogger = context
+            .RequestServices.GetRequiredService<ILoggerFactory>()
+            .CreateLogger("RateLimiter");
+        plogger.LogRateLimitPartition(first, tenant, key, permitLimit, queueLimit, windowSeconds);
+        return limiter;
     });
 });
 
 // Output caching: tenant-aware variation and safe defaults
 builder.Services.AddOutputCache(options =>
 {
+    var defaultTtlSeconds = builder.Configuration.GetValue(
+        "Gateway:OutputCache:DefaultTtlSeconds",
+        15
+    );
     options.AddBasePolicy(policy =>
         policy
-            .Cache() // applies default: only GET/HEAD, 200s, not authenticated
+            .Cache() // default: GET/HEAD, 200s
+            .Expire(TimeSpan.FromSeconds(Math.Max(0, defaultTtlSeconds)))
             .SetVaryByHeader("X-Tansu-Tenant", "Accept", "Accept-Encoding")
             .SetVaryByHost(true)
+    );
+    // Named policy for public static assets (longer TTL, minimal vary-by)
+    options.AddPolicy(
+        "PublicStaticLong",
+        policy =>
+            policy
+                .Cache()
+                .Expire(TimeSpan.FromSeconds(Math.Max(0, staticAssetsTtlSeconds)))
+                .SetVaryByHeader("Accept-Encoding")
+                .SetVaryByHost(true)
     );
 });
 
 // Resolve downstream service base URLs from configuration/environment for Aspire wiring
-var dashboardBase = builder.Configuration["Services:DashboardBaseUrl"] ?? "http://localhost:5136";
-var identityBase = builder.Configuration["Services:IdentityBaseUrl"] ?? "http://localhost:5095";
-var dbBase = builder.Configuration["Services:DatabaseBaseUrl"] ?? "http://localhost:5278";
-var storageBase = builder.Configuration["Services:StorageBaseUrl"] ?? "http://localhost:5257";
+// Use 127.0.0.1 instead of localhost to avoid IPv6/loopback divergence in dev
+var dashboardBase = builder.Configuration["Services:DashboardBaseUrl"] ?? "http://127.0.0.1:5136";
+var identityBase = builder.Configuration["Services:IdentityBaseUrl"] ?? "http://127.0.0.1:5095";
+var dbBase = builder.Configuration["Services:DatabaseBaseUrl"] ?? "http://127.0.0.1:5278";
+var storageBase = builder.Configuration["Services:StorageBaseUrl"] ?? "http://127.0.0.1:5257";
 
 // Add YARP Reverse Proxy from in-memory config so we don't depend on JSON comment support
 var reverseProxyBuilder = builder.Services.AddReverseProxy();
@@ -270,6 +533,7 @@ reverseProxyBuilder.LoadFromMemory(
             ClusterId = "identity",
             Order = 5,
             Match = new RouteMatch { Path = "/lib/{**catch-all}" },
+            OutputCachePolicy = "PublicStaticLong",
             Transforms = new[]
             {
                 new Dictionary<string, string> { ["RequestHeaderOriginalHost"] = "true" },
@@ -283,6 +547,7 @@ reverseProxyBuilder.LoadFromMemory(
             ClusterId = "identity",
             Order = 5,
             Match = new RouteMatch { Path = "/css/{**catch-all}" },
+            OutputCachePolicy = "PublicStaticLong",
             Transforms = new[]
             {
                 new Dictionary<string, string> { ["RequestHeaderOriginalHost"] = "true" },
@@ -296,6 +561,7 @@ reverseProxyBuilder.LoadFromMemory(
             ClusterId = "identity",
             Order = 5,
             Match = new RouteMatch { Path = "/js/{**catch-all}" },
+            OutputCachePolicy = "PublicStaticLong",
             Transforms = new[]
             {
                 new Dictionary<string, string> { ["RequestHeaderOriginalHost"] = "true" },
@@ -309,6 +575,7 @@ reverseProxyBuilder.LoadFromMemory(
             RouteId = "dashboard-framework",
             ClusterId = "dashboard",
             Match = new RouteMatch { Path = "/_framework/{**catch-all}" },
+            OutputCachePolicy = "PublicStaticLong",
             Transforms = new[]
             {
                 new Dictionary<string, string> { ["RequestHeaderOriginalHost"] = "true" },
@@ -322,6 +589,7 @@ reverseProxyBuilder.LoadFromMemory(
             RouteId = "dashboard-framework-under-dashboard",
             ClusterId = "dashboard",
             Match = new RouteMatch { Path = "/dashboard/_framework/{**catch-all}" },
+            OutputCachePolicy = "PublicStaticLong",
             Transforms = new[]
             {
                 new Dictionary<string, string> { ["PathRemovePrefix"] = "/dashboard" },
@@ -476,13 +744,15 @@ reverseProxyBuilder.LoadFromMemory(
                 new Dictionary<string, string> { ["ResponseHeadersCopy"] = "true" }
             }
         },
-        // Note: Root-level "/.well-known/*" and "/connect/*" routes removed to enforce canonical
-        // "/identity" base. Only the prefixed routes below are supported.
+        // Note: Root-level "/.well-known/*" and "/connect/*" routes are kept as low-priority
+        // aliases for compatibility, but the canonical public base is "/identity/*".
+        // Prefer the prefixed routes and reserve the root paths for legacy clients only.
         new RouteConfig
         {
             RouteId = "dashboard-content",
             ClusterId = "dashboard",
             Match = new RouteMatch { Path = "/_content/{**catch-all}" },
+            OutputCachePolicy = "PublicStaticLong",
             Transforms = new[]
             {
                 new Dictionary<string, string> { ["RequestHeaderOriginalHost"] = "true" },
@@ -495,6 +765,7 @@ reverseProxyBuilder.LoadFromMemory(
             RouteId = "dashboard-content-under-dashboard",
             ClusterId = "dashboard",
             Match = new RouteMatch { Path = "/dashboard/_content/{**catch-all}" },
+            OutputCachePolicy = "PublicStaticLong",
             Transforms = new[]
             {
                 new Dictionary<string, string> { ["PathRemovePrefix"] = "/dashboard" },
@@ -508,6 +779,7 @@ reverseProxyBuilder.LoadFromMemory(
             RouteId = "dashboard-blazor",
             ClusterId = "dashboard",
             Match = new RouteMatch { Path = "/_blazor/{**catch-all}" },
+            OutputCachePolicy = "PublicStaticLong",
             Transforms = new[]
             {
                 new Dictionary<string, string> { ["RequestHeaderOriginalHost"] = "true" },
@@ -527,6 +799,7 @@ reverseProxyBuilder.LoadFromMemory(
             RouteId = "dashboard-blazor-under-dashboard",
             ClusterId = "dashboard",
             Match = new RouteMatch { Path = "/dashboard/_blazor/{**catch-all}" },
+            OutputCachePolicy = "PublicStaticLong",
             Transforms = new[]
             {
                 new Dictionary<string, string> { ["PathRemovePrefix"] = "/dashboard" },
@@ -546,6 +819,7 @@ reverseProxyBuilder.LoadFromMemory(
             RouteId = "dashboard-favicon",
             ClusterId = "dashboard",
             Match = new RouteMatch { Path = "/favicon.ico" },
+            OutputCachePolicy = "PublicStaticLong",
             Transforms = new[]
             {
                 new Dictionary<string, string> { ["RequestHeaderOriginalHost"] = "true" },
@@ -560,6 +834,7 @@ reverseProxyBuilder.LoadFromMemory(
             ClusterId = "dashboard",
             Order = -5,
             Match = new RouteMatch { Path = "/app.css" },
+            OutputCachePolicy = "PublicStaticLong",
             Transforms = new[]
             {
                 new Dictionary<string, string> { ["RequestHeaderOriginalHost"] = "true" },
@@ -574,6 +849,7 @@ reverseProxyBuilder.LoadFromMemory(
             ClusterId = "dashboard",
             Order = -5,
             Match = new RouteMatch { Path = "/app.{hash}.css" },
+            OutputCachePolicy = "PublicStaticLong",
             Transforms = new[]
             {
                 new Dictionary<string, string> { ["RequestHeaderOriginalHost"] = "true" },
@@ -588,6 +864,7 @@ reverseProxyBuilder.LoadFromMemory(
             ClusterId = "dashboard",
             Order = -10,
             Match = new RouteMatch { Path = "/TansuCloud.Dashboard.{hash}.styles.css" },
+            OutputCachePolicy = "PublicStaticLong",
             Transforms = new[]
             {
                 new Dictionary<string, string> { ["RequestHeaderOriginalHost"] = "true" },
@@ -602,6 +879,7 @@ reverseProxyBuilder.LoadFromMemory(
             ClusterId = "dashboard",
             Order = -10,
             Match = new RouteMatch { Path = "/TansuCloud.Dashboard.styles.css" },
+            OutputCachePolicy = "PublicStaticLong",
             Transforms = new[]
             {
                 new Dictionary<string, string> { ["RequestHeaderOriginalHost"] = "true" },
@@ -616,6 +894,7 @@ reverseProxyBuilder.LoadFromMemory(
             ClusterId = "dashboard",
             Order = -10,
             Match = new RouteMatch { Path = "/dashboard/TansuCloud.Dashboard.styles.css" },
+            OutputCachePolicy = "PublicStaticLong",
             Transforms = new[]
             {
                 new Dictionary<string, string> { ["PathRemovePrefix"] = "/dashboard" },
@@ -639,10 +918,41 @@ reverseProxyBuilder.LoadFromMemory(
                 new Dictionary<string, string> { ["ResponseHeadersCopy"] = "true" }
             }
         },
+        // Forward Dashboard admin/API calls under /dashboard/api/* to the Dashboard app preserving the /api/* path
+        // so Minimal API endpoints like /api/metrics/* are reachable via the gateway canonical prefix.
+        new RouteConfig
+        {
+            RouteId = "dashboard-api-under-dashboard",
+            ClusterId = "dashboard",
+            Order = -100,
+            Match = new RouteMatch { Path = "/dashboard/api/{**catch-all}" },
+            Transforms = new[]
+            {
+                // Remove the /dashboard prefix but preserve the remaining /api/* path
+                new Dictionary<string, string> { ["PathRemovePrefix"] = "/dashboard" },
+                // Preserve original Host header for downstream
+                new Dictionary<string, string> { ["RequestHeaderOriginalHost"] = "true" },
+                // Surface HTTPS scheme to downstream so OIDC and cookie policies remain consistent
+                new Dictionary<string, string>
+                {
+                    ["RequestHeader"] = "X-Forwarded-Proto",
+                    ["Set"] = "https"
+                },
+                // Inform downstream it is hosted under /dashboard (useful for building absolute links)
+                new Dictionary<string, string>
+                {
+                    ["RequestHeader"] = "X-Forwarded-Prefix",
+                    ["Set"] = "/dashboard"
+                },
+                new Dictionary<string, string> { ["RequestHeadersCopy"] = "true" },
+                new Dictionary<string, string> { ["ResponseHeadersCopy"] = "true" }
+            }
+        },
         new RouteConfig
         {
             RouteId = "dashboard-route",
             ClusterId = "dashboard",
+            Order = 100,
             Match = new RouteMatch { Path = "/dashboard/{**catch-all}" },
             Transforms = new[]
             {
@@ -922,11 +1232,78 @@ var app = builder.Build();
 // Support WebSockets through the gateway and send regular pings
 app.UseWebSockets(new WebSocketOptions { KeepAliveInterval = TimeSpan.FromSeconds(15) });
 
+// Enrichment middleware (Task 38) - correlation, tenant, route base in logging scope
+app.UseMiddleware<RequestEnrichmentMiddleware>();
+
+// Safety net: ensure any 429 response carries a Retry-After header
+// Place BEFORE the rate limiter so it applies even when requests are rejected early.
+app.Use(
+    (context, next) =>
+    {
+        context.Response.OnStarting(() =>
+        {
+            if (context.Response.StatusCode == StatusCodes.Status429TooManyRequests)
+            {
+                if (!context.Response.Headers.ContainsKey("Retry-After"))
+                {
+                    context.Response.Headers["Retry-After"] = rlRuntime.WindowSeconds.ToString(); // fixed-window length hint
+                }
+                if (!context.Response.Headers.ContainsKey("X-Retry-After"))
+                {
+                    context.Response.Headers["X-Retry-After"] = rlRuntime.WindowSeconds.ToString();
+                }
+            }
+            return Task.CompletedTask;
+        });
+        return next();
+    }
+); // End of Middleware Retry-After Safety
+
 // Global Rate Limiter
 app.UseRateLimiter();
 
 // CORS before proxy to ensure preflight and headers are handled at the edge
 app.UseCors("Default");
+
+// Startup diagnostic: log OIDC metadata source choice (Task 38)
+try
+{
+    var log = app.Services.GetRequiredService<ILoggerFactory>().CreateLogger("OIDC-Config");
+    var issuer = builder.Configuration["Oidc:Issuer"] ?? "http://127.0.0.1:8080/identity/";
+    var issuerTrim = issuer.TrimEnd('/');
+    var configuredMd = builder.Configuration["Oidc:MetadataAddress"];
+    string effectiveMd;
+    string source;
+    if (!string.IsNullOrWhiteSpace(configuredMd))
+    {
+        effectiveMd = configuredMd!;
+        source = "explicit-config";
+    }
+    else if (
+        string.Equals(
+            Environment.GetEnvironmentVariable("DOTNET_RUNNING_IN_CONTAINER"),
+            "true",
+            StringComparison.OrdinalIgnoreCase
+        )
+    )
+    {
+        effectiveMd = "http://gateway:8080/identity/.well-known/openid-configuration";
+        source = "container-gateway";
+    }
+    else
+    {
+        effectiveMd = issuerTrim + "/.well-known/openid-configuration";
+        source = "issuer-derived";
+    }
+    log.LogOidcMetadataChoice(source, issuerTrim, effectiveMd);
+}
+catch
+{
+    // best-effort only
+}
+
+// Attach correlation/tenant enrichment as early as possible (Task 38)
+app.UseMiddleware<RequestEnrichmentMiddleware>();
 
 // Redirect HTTP -> HTTPS in dev when not disabled (Aspire fronting may handle TLS)
 var disableHttpsRedirect = builder.Configuration.GetValue<bool>(
@@ -946,7 +1323,11 @@ var disableOutputCache = builder.Configuration.GetValue(
 );
 if (!disableOutputCache)
 {
-    app.UseOutputCache();
+    // Do not cache authenticated requests at the gateway to avoid leakage and keep semantics simple
+    app.UseWhen(
+        ctx => !ctx.Request.Headers.ContainsKey("Authorization"),
+        branch => branch.UseOutputCache()
+    );
 }
 
 // Resolve tenant from host or path and stamp a header for downstream services
@@ -1106,6 +1487,199 @@ app.MapGet("/", () => "TansuCloud Gateway is running");
 app.MapHealthChecks("/health/live").AllowAnonymous();
 app.MapHealthChecks("/health/ready").AllowAnonymous();
 
+// Enable authentication/authorization (required for admin API JWT validation)
+app.UseAuthentication();
+app.UseAuthorization();
+
+// Admin API endpoints
+// In Development, keep them anonymously accessible for ease of testing.
+// In non-Development, require AdminOnly policy via JWT bearer.
+var adminGroup = app.MapGroup("/admin/api");
+if (app.Environment.IsDevelopment())
+{
+    adminGroup.AllowAnonymous();
+}
+else
+{
+    adminGroup.RequireAuthorization("AdminOnly");
+}
+
+app.MapGet("/ratelimit/ping", () => Results.Text("OK", "text/plain")).AllowAnonymous();
+
+adminGroup
+    .MapGet("/rate-limits", () => Results.Json(rlRuntime.GetSnapshot()))
+    .WithDisplayName("Admin: Get rate limits");
+
+adminGroup
+    .MapPost(
+        "/rate-limits",
+        (
+            HttpContext http,
+            RateLimitConfigDto body,
+            ILoggerFactory loggerFactory,
+            IConfiguration cfg
+        ) =>
+        {
+            // Basic validation with ProblemDetails-style response
+            if (body is null)
+            {
+                return Results.Problem(
+                    title: "Invalid body",
+                    detail: "Request body is required.",
+                    statusCode: StatusCodes.Status400BadRequest
+                );
+            }
+            var errors = new List<string>();
+            if (body.WindowSeconds < 1)
+            {
+                errors.Add("WindowSeconds must be >= 1.");
+            }
+            if (body.Defaults is not null)
+            {
+                if (body.Defaults.PermitLimit < 0)
+                    errors.Add("Defaults.PermitLimit must be >= 0.");
+                if (body.Defaults.QueueLimit < 0)
+                    errors.Add("Defaults.QueueLimit must be >= 0.");
+            }
+            if (body.Routes is not null)
+            {
+                foreach (var kv in body.Routes)
+                {
+                    if (string.IsNullOrWhiteSpace(kv.Key))
+                        errors.Add("Route keys must be non-empty.");
+                    var r = kv.Value;
+                    if (r is null)
+                        continue;
+                    if (r.PermitLimit is not null && r.PermitLimit < 0)
+                        errors.Add($"Routes['{kv.Key}'].PermitLimit must be >= 0.");
+                    if (r.QueueLimit is not null && r.QueueLimit < 0)
+                        errors.Add($"Routes['{kv.Key}'].QueueLimit must be >= 0.");
+                }
+            }
+            if (errors.Count > 0)
+            {
+                return Results.ValidationProblem(
+                    errors.GroupBy(e => "rateLimits").ToDictionary(g => g.Key, g => g.ToArray()),
+                    statusCode: StatusCodes.Status400BadRequest,
+                    title: "Validation failed"
+                );
+            }
+
+            // Optional CSRF check (dev-friendly): if Gateway:Admin:Csrf is configured, require matching header X-Tansu-Csrf
+            var expectedCsrf = cfg["Gateway:Admin:Csrf"];
+            if (!string.IsNullOrWhiteSpace(expectedCsrf))
+            {
+                if (
+                    !http.Request.Headers.TryGetValue("X-Tansu-Csrf", out var csrf)
+                    || csrf != expectedCsrf
+                )
+                {
+                    return Results.Problem(
+                        title: "Unauthorized",
+                        detail: "Missing or invalid X-Tansu-Csrf.",
+                        statusCode: StatusCodes.Status401Unauthorized
+                    );
+                }
+            }
+
+            // Audit: capture a minimal diff and log an informational event
+            var adminLogger = loggerFactory.CreateLogger("Gateway.Admin");
+            var before = rlRuntime.GetSnapshot();
+
+            rlRuntime.Apply(body);
+            var after = rlRuntime.GetSnapshot();
+
+            try
+            {
+                var remote = http.Connection.RemoteIpAddress?.ToString() ?? "unknown";
+                var changedRoutes = new List<string>();
+                var beforeRoutes =
+                    before.Routes?.Keys?.ToHashSet(StringComparer.OrdinalIgnoreCase)
+                    ?? new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                var afterRoutes =
+                    after.Routes?.Keys?.ToHashSet(StringComparer.OrdinalIgnoreCase)
+                    ?? new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                foreach (var k in beforeRoutes.Union(afterRoutes))
+                {
+                    TansuCloud.Gateway.Services.RateLimitRouteOverride? b = null;
+                    TansuCloud.Gateway.Services.RateLimitRouteOverride? a = null;
+                    var bHas = before.Routes != null && before.Routes.TryGetValue(k, out b);
+                    var aHas = after.Routes != null && after.Routes.TryGetValue(k, out a);
+                    if (!bHas && aHas)
+                    {
+                        changedRoutes.Add($"+{k}");
+                        continue;
+                    }
+                    if (bHas && !aHas)
+                    {
+                        changedRoutes.Add($"-{k}");
+                        continue;
+                    }
+                    if (
+                        bHas
+                        && aHas
+                        && (
+                            (b?.PermitLimit) != (a?.PermitLimit)
+                            || (b?.QueueLimit) != (a?.QueueLimit)
+                        )
+                    )
+                        changedRoutes.Add($"~{k}");
+                }
+
+                adminLogger.LogInformation(
+                    "RateLimits changed by {Remote} WindowSeconds {BeforeWindow}->{AfterWindow}; Defaults P:{BeforeP} Q:{BeforeQ} -> P:{AfterP} Q:{AfterQ}; Routes changed: {ChangedRoutes}",
+                    remote,
+                    before.WindowSeconds,
+                    after.WindowSeconds,
+                    before.Defaults?.PermitLimit,
+                    before.Defaults?.QueueLimit,
+                    after.Defaults?.PermitLimit,
+                    after.Defaults?.QueueLimit,
+                    string.Join(",", changedRoutes)
+                );
+            }
+            catch { }
+
+            return Results.Json(after);
+        }
+    )
+    .WithDisplayName("Admin: Set rate limits");
+
+// Phase 0: dynamic log level override shim (Development only)
+if (app.Environment.IsDevelopment())
+{
+    adminGroup.MapPost(
+        "/logging/overrides",
+        (IDynamicLogLevelOverride ovr, [AsParameters] LogOverrideRequest req) =>
+        {
+            if (string.IsNullOrWhiteSpace(req.Category))
+                return Results.Problem("Category is required", statusCode: 400);
+            if (req.TtlSeconds <= 0)
+                return Results.Problem("TtlSeconds must be > 0", statusCode: 400);
+            ovr.Set(req.Category!, req.Level, TimeSpan.FromSeconds(req.TtlSeconds));
+            return Results.Ok(new { ok = true });
+        }
+    ).WithDisplayName("Admin: Set log level override (dev)");
+
+    adminGroup.MapGet(
+        "/logging/overrides",
+        (IDynamicLogLevelOverride ovr) =>
+            Results.Json(
+                ovr.Snapshot().ToDictionary(k => k.Key, v => new { v.Value.Level, v.Value.Expires })
+            )
+    ).WithDisplayName("Admin: Get log level overrides (dev)");
+
+    // Rate limit summary snapshot for dashboard read-only card
+    adminGroup.MapGet(
+        "/rate-limits/summary",
+        (RateLimitRejectionAggregator agg) =>
+        {
+            var snap = agg.GetLastSnapshot();
+            return snap is null ? Results.NoContent() : Results.Json(snap);
+        }
+    ).WithDisplayName("Admin: Get rate limit summary (dev)");
+}
+
 // Diagnostic middleware: log Identity token proxy 5xx to help deflake tests in Dev
 if (app.Environment.IsDevelopment())
 {
@@ -1189,7 +1763,11 @@ if (app.Environment.IsDevelopment())
 app.Use(
     async (context, next) =>
     {
-        if (context.Request.Path.StartsWithSegments("/admin", out var rest))
+        var reqPath = context.Request.Path;
+        // Exclude admin API endpoints from redirect so programmatic calls (e.g., Dashboard/E2E) work at /admin/api/*
+        // Use PathString.StartsWithSegments for robust matching.
+        var isAdminApi = reqPath.StartsWithSegments("/admin/api", out _);
+        if (!isAdminApi && reqPath.StartsWithSegments("/admin", out var rest))
         {
             // Capture diagnostics to find the source of incorrect root-level /admin links
             try
@@ -1257,7 +1835,6 @@ app.Use(
                     or "_blazor"
                     or "signin-oidc"
                     or "signout-callback-oidc"
-                    or "identity"
                     or "lib"
                     or "css"
                     or "js";
@@ -1294,3 +1871,25 @@ app.Use(
 app.MapReverseProxy();
 
 app.Run();
+
+// Helper: stable short hash for rate limiting partitions (no PII/token leakage)
+static string HashKey(string value)
+{
+    try
+    {
+        var bytes = Encoding.UTF8.GetBytes(value);
+        using var sha = SHA256.Create();
+        var hash = sha.ComputeHash(bytes);
+        // Return first 8 bytes as hex for compactness
+        var sb = new StringBuilder(16);
+        for (int i = 0; i < 8 && i < hash.Length; i++)
+            sb.Append(hash[i].ToString("x2"));
+        return sb.ToString();
+    }
+    catch
+    {
+        return "hasherr";
+    }
+} // End of Method HashKey
+
+public sealed record LogOverrideRequest(string Category, LogLevel Level, int TtlSeconds);

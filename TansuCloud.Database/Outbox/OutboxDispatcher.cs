@@ -7,6 +7,7 @@ using Microsoft.Extensions.Options;
 using StackExchange.Redis;
 using TansuCloud.Database.EF;
 using TansuCloud.Database.Services;
+using TansuCloud.Observability;
 
 namespace TansuCloud.Database.Outbox;
 
@@ -155,6 +156,7 @@ internal sealed class OutboxDispatcher(
             }
             try
             {
+                _logger.LogOutboxDispatchAttempt(e.Id, e.Attempts + 1);
                 var payloadJson = e.Payload is null ? "null" : e.Payload.RootElement.GetRawText();
                 await publisher.PublishAsync(_opts.Channel, payloadJson, ct);
                 e.Status = OutboxStatus.Dispatched;

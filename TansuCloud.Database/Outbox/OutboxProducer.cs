@@ -2,6 +2,7 @@
 using System.Diagnostics.Metrics;
 using System.Text.Json;
 using TansuCloud.Database.EF;
+using TansuCloud.Observability;
 
 namespace TansuCloud.Database.Outbox;
 
@@ -46,11 +47,7 @@ public sealed class OutboxProducer(ILogger<OutboxProducer> logger) : IOutboxProd
                 && db.OutboxEvents.Any(e => e.IdempotencyKey == normalizedKey && e.Type == type);
             if (existsLocal || existsPersisted)
             {
-                _logger.LogDebug(
-                    "Skipped duplicate idempotent outbox event type={Type} key={Key}",
-                    type,
-                    normalizedKey
-                );
+                _logger.LogOutboxDispatchAttempt(Guid.Empty, 0); // signal duplicate path with special values
                 return; // End of duplicate fast path
             }
         }
@@ -68,7 +65,7 @@ public sealed class OutboxProducer(ILogger<OutboxProducer> logger) : IOutboxProd
         };
         db.OutboxEvents.Add(e);
         Produced.Add(1);
-        _logger.LogDebug("Enqueued outbox event {Id} type={Type}", e.Id, e.Type);
+        _logger.LogOutboxEnqueued(e.Id, e.Type);
         // Note: SaveChanges is owned by the caller to keep transactional boundaries aligned with domain write.
     }
 }

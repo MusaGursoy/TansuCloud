@@ -1,0 +1,142 @@
+// Tansu.Cloud Public Repository:    https://github.com/MusaGursoy/TansuCloud
+@page "/admin/logs"
+@attribute [Microsoft.AspNetCore.Authorization.Authorize(Policy = "AdminOnly")]
+
+<h3>Logs</h3>
+
+<div class="mb-2">
+    <button class="btn btn-sm btn-primary" @onclick="Refresh">Refresh</button>
+    <label class="ms-3">
+        <input type="checkbox" @bind="runtimeEnabled" /> Reporting Enabled (runtime)
+    </label>
+    <span class="ms-3">Buffered: @bufferCount / @bufferCapacity</span>
+    <span class="ms-3">Min Level (capture): @captureMinLevel</span>
+    <span class="ms-3">Report every: @status.reportIntervalMinutes min</span>
+    <span class="ms-3">Endpoint: @status.mainServerUrl</span>
+    <div class="text-muted"><small>Configured: @status.configured; Effective: @status.effective</small></div>
+    <div class="mt-2">
+        <label>Level:
+            <select @bind="filterLevel">
+                <option value="">All</option>
+                <option>Critical</option>
+                <option>Error</option>
+                <option>Warning</option>
+                <option>Information</option>
+                <option>Debug</option>
+                <option>Trace</option>
+            </select>
+        </label>
+        <label class="ms-2">Category contains:
+            <input @bind="filterCategory" />
+        </label>
+        <label class="ms-2">Take:
+            <input type="number" min="1" max="1000" @bind-value="take" @bind-value:event="oninput" />
+        </label>
+        <label class="ms-2">Skip:
+            <input type="number" min="0" @bind-value="skip" @bind-value:event="oninput" />
+        </label>
+        <button class="btn btn-sm btn-secondary ms-2" @onclick="ApplyFilters">Apply</button>
+    </div>
+</div>
+
+<table class="table table-sm table-striped">
+    <thead>
+        <tr>
+            <th>Time (UTC)</th>
+            <th>Level</th>
+            <th>Category</th>
+            <th>Message</th>
+        </tr>
+    </thead>
+    <tbody>
+        @foreach (var r in recent)
+        {
+            <tr>
+                <td>@r.Timestamp.ToString("o")</td>
+                <td>@r.Level</td>
+                <td>@r.Category</td>
+                <td>@r.Message</td>
+            </tr>
+        }
+    </tbody>
+</table>
+
+@code {
+    private List<TansuCloud.Dashboard.Observability.Logging.LogRecord> recent = new();
+    private StatusDto status = new();
+    private int bufferCount;
+    private int bufferCapacity;
+    private string captureMinLevel = "";
+    private bool runtimeEnabled;
+    private string? filterLevel;
+    private string? filterCategory;
+    private int take = 200;
+    private int skip = 0;
+
+    [Inject] private HttpClient Http { get; set; } = default!;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadAsync();
+    }
+
+    private async Task LoadAsync()
+    {
+    var s = await Http.GetFromJsonAsync<StatusDto>("/api/admin/log-reporting/status");
+    status = s ?? new();
+    bufferCount = status.buffer.Count;
+    bufferCapacity = status.buffer.Capacity;
+    captureMinLevel = status.capture.MinimumLevel ?? "";
+    runtimeEnabled = status.runtime;
+        var url = $"/api/admin/logs/recent?take={take}&skip={skip}&level={Uri.EscapeDataString(filterLevel ?? string.Empty)}&categoryContains={Uri.EscapeDataString(filterCategory ?? string.Empty)}";
+        var logs = await Http.GetFromJsonAsync<List<TansuCloud.Dashboard.Observability.Logging.LogRecord>>(url);
+        recent = logs ?? new();
+        StateHasChanged();
+    }
+
+    private async Task Refresh()
+    {
+        await LoadAsync();
+    }
+
+    private async Task Toggle()
+    {
+        await Http.PostAsJsonAsync("/api/admin/log-reporting/toggle", new { enabled = runtimeEnabled });
+        await LoadAsync();
+    }
+
+    private async Task ApplyFilters()
+    {
+        skip = Math.Max(0, skip);
+        take = Math.Clamp(take, 1, 1000);
+        await LoadAsync();
+    }
+
+    private sealed class StatusDto
+    {
+        public bool configured { get; set; }
+        public bool runtime { get; set; }
+        public bool effective { get; set; }
+        public int reportIntervalMinutes { get; set; }
+        public string? mainServerUrl { get; set; }
+        public string? severityThreshold { get; set; }
+        public int queryWindowMinutes { get; set; }
+        public int maxItems { get; set; }
+        public int httpTimeoutSeconds { get; set; }
+        public CaptureDto capture { get; set; } = new();
+        public BufferDto buffer { get; set; } = new();
+    }
+    private sealed class CaptureDto
+    {
+        public bool Enabled { get; set; }
+        public string? MinimumLevel { get; set; }
+        public int MaxBufferEntries { get; set; }
+        public int MaxBatchSize { get; set; }
+        public TimeSpan ReportInterval { get; set; }
+    }
+    private sealed class BufferDto
+    {
+        public int Capacity { get; set; }
+        public int Count { get; set; }
+    }
+}

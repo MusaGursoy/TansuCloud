@@ -26,7 +26,7 @@
 		{
 			"label": "dev: up",
 			"type": "shell",
-			"command": "$ErrorActionPreference='Stop'; dotnet build .\\TansuCloud.sln -c Debug; Start-Job -Name tansu-identity -ScriptBlock { dotnet run --no-build --project .\\TansuCloud.Identity\\TansuCloud.Identity.csproj -c Debug } | Out-Null; Start-Job -Name tansu-dashboard -ScriptBlock { dotnet run --no-build --project .\\TansuCloud.Dashboard\\TansuCloud.Dashboard.csproj -c Debug } | Out-Null; Start-Job -Name tansu-database -ScriptBlock { dotnet run --no-build --project .\\TansuCloud.Database\\TansuCloud.Database.csproj -c Debug } | Out-Null; Start-Job -Name tansu-storage -ScriptBlock { dotnet run --no-build --project .\\TansuCloud.Storage\\TansuCloud.Storage.csproj -c Debug } | Out-Null; Start-Sleep -Seconds 2; dotnet run --no-build --project .\\TansuCloud.Gateway\\TansuCloud.Gateway.csproj -c Debug",
+			"command": "$ErrorActionPreference='Stop'; dotnet build .\\TansuCloud.sln -c Debug; Start-Job -Name tansu-identity -ScriptBlock { dotnet run --no-build --project .\\TansuCloud.Identity\\TansuCloud.Identity.csproj -c Debug } | Out-Null; Start-Job -Name tansu-dashboard -ScriptBlock { dotnet run --no-build --project .\\TansuCloud.Dashboard\\TansuCloud.Dashboard.csproj -c Debug } | Out-Null; Start-Job -Name tansu-database -ScriptBlock { dotnet run --no-build --project .\\TansuCloud.Database\\TansuCloud.Database.csproj -c Debug } | Out-Null; Start-Job -Name tansu-storage -ScriptBlock { dotnet run --no-build --project .\\TansuCloud.Storage\\TansuCloud.Storage.csproj -c Debug } | Out-Null; Start-Sleep -Seconds 15; dotnet run --no-build --project .\\TansuCloud.Gateway\\TansuCloud.Gateway.csproj -c Debug",
 			"group": "build",
 			"isBackground": true
 		},
@@ -96,7 +96,7 @@
 			"args": [
 				"-NoProfile",
 				"-Command",
-				"$ErrorActionPreference=Stop; $out = docker exec tansu-pgcat cat /proc/1/cmdline; if ($out -like \"*pgcat*\") { Write-Host \"pgcat running\" } else { throw \"pgcat not running\" }"
+				"$ErrorActionPreference=Stop; $out = docker exec tansu-pgcat cat /proc/1/cmdline; if ($null -ne $out -and ($out | Out-String).Contains(\"pgcat\")) { Write-Host \"pgcat running\" } else { throw \"pgcat not running\" }"
 			],
 			"group": "build"
 		},
@@ -122,7 +122,12 @@
 		{
 			"label": "compose: validate config",
 			"type": "shell",
-			"command": "$ErrorActionPreference=\"Stop\"; $env:POSTGRES_USER='postgres'; $env:POSTGRES_PASSWORD='postgres'; $env:PGCAT_ADMIN_USER='admin'; $env:PGCAT_ADMIN_PASSWORD='admin'; $env:DASHBOARD_CLIENT_SECRET='dev-secret'; $env:PUBLIC_BASE_URL='http://gateway:8080'; docker compose -f .\\docker-compose.yml config | Out-String -Width 4096"
+			"command": "pwsh",
+			"args": [
+				"-NoProfile",
+				"-Command",
+				"{ $ErrorActionPreference=\"Stop\"; $env:POSTGRES_USER='postgres'; $env:POSTGRES_PASSWORD='postgres'; $env:PGCAT_ADMIN_USER='admin'; $env:PGCAT_ADMIN_PASSWORD='admin'; $env:DASHBOARD_CLIENT_SECRET='dev-secret'; $env:PUBLIC_BASE_URL='http://gateway:8080'; docker compose -f .\\docker-compose.yml config | Out-String -Width 4096 }"
+			]
 		},
 		{
 			"label": "Run Task 11 verification tests",
@@ -134,7 +139,7 @@
 				"-c",
 				"Debug",
 				"--filter",
-				"(FullyQualifiedName~TansuCloud.E2E.Tests.GatewayAliasTests|FullyQualifiedName~TansuCloud.E2E.Tests.ProvisioningE2E)"
+				"\"(FullyQualifiedName~TansuCloud.E2E.Tests.GatewayAliasTests|FullyQualifiedName~TansuCloud.E2E.Tests.ProvisioningE2E)\""
 			]
 		},
 		{
@@ -210,6 +215,62 @@
 		},
 		{
 			"label": "temp: build-sln (wire metrics nav + cache)",
+			"type": "shell",
+			"command": "dotnet build .\\TansuCloud.sln -c Debug",
+			"isBackground": false,
+			"group": "build"
+		},
+		{
+			"label": "temp: quick build",
+			"type": "shell",
+			"command": "dotnet build .\\TansuCloud.sln -c Debug",
+			"isBackground": false,
+			"group": "build"
+		},
+		{
+			"label": "temp: run metrics smoke",
+			"type": "shell",
+			"command": "dotnet",
+			"args": [
+				"test",
+				"tests/TansuCloud.E2E.Tests/TansuCloud.E2E.Tests.csproj",
+				"-c",
+				"Debug",
+				"--filter",
+				"FullyQualifiedName~TansuCloud.E2E.Tests.DashboardMetricsSmoke.Metrics_Page_Renders"
+			],
+			"group": "build"
+		},
+		{
+			"label": "temp: build-sln (corr-tests + link)",
+			"type": "shell",
+			"command": "dotnet build .\\TansuCloud.sln -c Debug",
+			"isBackground": false,
+			"group": "build"
+		},
+		{
+			"label": "temp: build-sln (fix Program partial + tests)",
+			"type": "shell",
+			"command": "dotnet build .\\TansuCloud.sln -c Debug",
+			"isBackground": false,
+			"group": "build"
+		},
+		{
+			"label": "temp: build-sln (retry)",
+			"type": "shell",
+			"command": "dotnet build .\\TansuCloud.sln -c Debug",
+			"isBackground": false,
+			"group": "build"
+		},
+		{
+			"label": "temp: build-sln (corr echo)",
+			"type": "shell",
+			"command": "dotnet build .\\TansuCloud.sln -c Debug",
+			"isBackground": false,
+			"group": "build"
+		},
+		{
+			"label": "temp: build-sln (fix storage using)",
 			"type": "shell",
 			"command": "dotnet build .\\TansuCloud.sln -c Debug",
 			"isBackground": false,

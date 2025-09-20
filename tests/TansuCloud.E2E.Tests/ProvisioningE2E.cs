@@ -69,6 +69,30 @@ public class ProvisioningE2E
             }
             await Task.Delay(500, ct);
         }
+        throw new TimeoutException("Gateway not ready");
+    }
+
+    // Wait until Identity publishes OIDC discovery via the gateway to avoid racing token requests.
+    private static async Task WaitForIdentityAsync(HttpClient client, CancellationToken ct)
+    {
+        var baseUrl = GetGatewayBaseUrl();
+        for (var i = 0; i < 40; i++)
+        {
+            try
+            {
+                using var res = await client.GetAsync(
+                    $"{baseUrl}/identity/.well-known/openid-configuration",
+                    ct
+                );
+                if ((int)res.StatusCode < 500)
+                {
+                    return;
+                }
+            }
+            catch { }
+            await Task.Delay(500, ct);
+        }
+        // last resort: do not throw here; subsequent calls will still retry below
     }
 
     [Fact(DisplayName = "Provisioning: idempotent tenant create via gateway with token")]
@@ -77,17 +101,17 @@ public class ProvisioningE2E
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(90));
         using var client = CreateClient();
         await WaitForGatewayAsync(client, cts.Token);
+        await WaitForIdentityAsync(client, cts.Token);
 
         var baseUrl = GetGatewayBaseUrl();
 
         // 1) Get access token via client_credentials through the gateway
-        var tokenReq = new HttpRequestMessage(HttpMethod.Post, $"{baseUrl}/identity/connect/token");
-        tokenReq.Content = new StringContent(
-            "grant_type=client_credentials&client_id=tansu-dashboard&client_secret=dev-secret&scope=db.write%20admin.full",
-            Encoding.UTF8,
-            "application/x-www-form-urlencoded"
+        using var tokenRes = await SendTokenAsync(
+            client,
+            baseUrl,
+            cts.Token,
+            "grant_type=client_credentials&client_id=tansu-dashboard&client_secret=dev-secret&scope=db.write%20admin.full"
         );
-        using var tokenRes = await client.SendAsync(tokenReq, cts.Token);
         Assert.Equal(HttpStatusCode.OK, tokenRes.StatusCode);
         var tokenJson = await tokenRes.Content.ReadAsStringAsync(cts.Token);
         using var tokenDoc = JsonDocument.Parse(tokenJson);
@@ -131,5 +155,37 @@ public class ProvisioningE2E
         using var doc2 = JsonDocument.Parse(json2);
         var created2 = doc2.RootElement.GetProperty("created").GetBoolean();
         Assert.False(created2); // must not create twice
+    }
+
+    private static async Task<HttpResponseMessage> SendTokenAsync(
+        HttpClient client,
+        string baseUrl,
+        CancellationToken ct,
+        string form
+    )
+    {
+        // Retry on transient 5xx/502 until Identity is fully ready behind the gateway
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        HttpResponseMessage? last = null;
+        while (sw.Elapsed < TimeSpan.FromSeconds(20))
+        {
+            last?.Dispose();
+            using var req = new HttpRequestMessage(
+                HttpMethod.Post,
+                $"{baseUrl}/identity/connect/token"
+            );
+            req.Content = new StringContent(
+                form,
+                Encoding.UTF8,
+                "application/x-www-form-urlencoded"
+            );
+            last = await client.SendAsync(req, ct);
+            if ((int)last.StatusCode < 500)
+            {
+                return last;
+            }
+            await Task.Delay(250, ct);
+        }
+        return last!;
     }
 } // End of Class ProvisioningE2E

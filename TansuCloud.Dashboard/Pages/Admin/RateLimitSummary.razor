@@ -1,0 +1,98 @@
+@attribute [Microsoft.AspNetCore.Authorization.Authorize(Policy = "AdminOnly")]
+@page "/admin/rate-limits/summary"
+@inject IHttpClientFactory ClientFactory
+@using System.Net.Http.Json
+
+<h3>Gateway Rate Limit Summary</h3>
+<p class="text-muted">Read-only snapshot of the last gateway rate-limit window (dev only).</p>
+
+@if (!string.IsNullOrWhiteSpace(error))
+{
+    <div class="alert alert-danger">@error</div>
+}
+
+@if (snapshot is null)
+{
+    <em>Loading…</em>
+}
+else
+{
+    <div class="card" style="max-width: 720px">
+        <div class="card-body">
+            <div class="d-flex justify-content-between">
+                <div>
+                    <div class="fw-bold">Window</div>
+                    <div>@snapshot.WindowSeconds s</div>
+                </div>
+                <div>
+                    <div class="fw-bold">Total Rejections</div>
+                    <div>@snapshot.Total</div>
+                </div>
+                <div>
+                    <div class="fw-bold">Emitted (UTC)</div>
+                    <div>@snapshot.EmittedAtUtc.ToString("u")</div>
+                </div>
+            </div>
+            <hr />
+            <h6>Top partitions</h6>
+            @if (snapshot.TopPartitions is null || snapshot.TopPartitions.Count == 0)
+            {
+                <em>none</em>
+            }
+            else
+            {
+                <ul>
+                @foreach (var p in snapshot.TopPartitions)
+                {
+                    <li><code>@p.Partition</code>: <strong>@p.Count</strong></li>
+                }
+                </ul>
+            }
+            <button class="btn btn-sm btn-secondary" @onclick="LoadAsync">Refresh</button>
+        </div>
+    </div>
+}
+
+@code {
+    private SummaryDto? snapshot;
+    private string? error;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadAsync();
+    }
+
+    private async Task LoadAsync()
+    {
+        error = null;
+        try
+        {
+            var http = ClientFactory.CreateClient("Gateway");
+            var resp = await http.GetAsync("/admin/api/rate-limits/summary");
+            if (resp.StatusCode == System.Net.HttpStatusCode.NoContent)
+            {
+                snapshot = new SummaryDto { WindowSeconds = 0, Total = 0, EmittedAtUtc = DateTimeOffset.UtcNow, TopPartitions = new() };
+                return;
+            }
+            if (!resp.IsSuccessStatusCode)
+            {
+                error = $"Load failed: {(int)resp.StatusCode} {resp.ReasonPhrase}";
+                return;
+            }
+            snapshot = await resp.Content.ReadFromJsonAsync<SummaryDto>();
+        }
+        catch (Exception ex)
+        {
+            error = ex.Message;
+        }
+    }
+
+    public sealed class SummaryDto
+    {
+        public int WindowSeconds { get; set; }
+        public int Total { get; set; }
+        public DateTimeOffset EmittedAtUtc { get; set; }
+        public List<PartitionDto> TopPartitions { get; set; } = new();
+    }
+    public sealed class PartitionDto { public string Partition { get; set; } = string.Empty; public int Count { get; set; } }
+}

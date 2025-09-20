@@ -64,6 +64,26 @@ public class StorageApiE2E
         throw new TimeoutException("Gateway not ready");
     } // End of Method WaitForGatewayAsync
 
+    // Ensure Identity discovery is published before requesting tokens
+    private static async Task WaitForIdentityAsync(HttpClient client, CancellationToken ct)
+    {
+        var baseUrl = GetGatewayBaseUrl();
+        for (var i = 0; i < 40; i++)
+        {
+            try
+            {
+                using var res = await client.GetAsync(
+                    $"{baseUrl}/identity/.well-known/openid-configuration",
+                    ct
+                );
+                if ((int)res.StatusCode < 500)
+                    return;
+            }
+            catch { }
+            await Task.Delay(500, ct);
+        }
+    }
+
     private static async Task<HttpResponseMessage> SendAsync(
         HttpClient client,
         Func<HttpRequestMessage> make,
@@ -97,16 +117,12 @@ public class StorageApiE2E
     private static async Task<string> GetAccessTokenAsync(HttpClient client, CancellationToken ct)
     {
         var baseUrl = GetGatewayBaseUrl();
-        using var tokenReq = new HttpRequestMessage(
-            HttpMethod.Post,
-            $"{baseUrl}/identity/connect/token"
+        using var tokenRes = await SendTokenAsync(
+            client,
+            baseUrl,
+            ct,
+            "grant_type=client_credentials&client_id=tansu-dashboard&client_secret=dev-secret&scope=storage.write%20storage.read%20admin.full"
         );
-        tokenReq.Content = new StringContent(
-            "grant_type=client_credentials&client_id=tansu-dashboard&client_secret=dev-secret&scope=storage.write%20storage.read%20admin.full",
-            Encoding.UTF8,
-            "application/x-www-form-urlencoded"
-        );
-        using var tokenRes = await client.SendAsync(tokenReq, ct);
         Assert.Equal(HttpStatusCode.OK, tokenRes.StatusCode);
         var tokenJson = await tokenRes.Content.ReadAsStringAsync(ct);
         using var tokenDoc = JsonDocument.Parse(tokenJson);
@@ -115,6 +131,35 @@ public class StorageApiE2E
         await Task.Delay(500, ct);
         return accessToken!;
     } // End of Method GetAccessTokenAsync
+
+    private static async Task<HttpResponseMessage> SendTokenAsync(
+        HttpClient client,
+        string baseUrl,
+        CancellationToken ct,
+        string form
+    )
+    {
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        HttpResponseMessage? last = null;
+        while (sw.Elapsed < TimeSpan.FromSeconds(20))
+        {
+            last?.Dispose();
+            using var req = new HttpRequestMessage(
+                HttpMethod.Post,
+                $"{baseUrl}/identity/connect/token"
+            );
+            req.Content = new StringContent(
+                form,
+                Encoding.UTF8,
+                "application/x-www-form-urlencoded"
+            );
+            last = await client.SendAsync(req, ct);
+            if ((int)last.StatusCode < 500)
+                return last;
+            await Task.Delay(250, ct);
+        }
+        return last!;
+    }
 
     private static async Task EnsureTenantAsync(
         HttpClient client,
@@ -164,6 +209,7 @@ public class StorageApiE2E
         using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(2));
         using var client = CreateClient();
         await WaitForGatewayAsync(client, cts.Token);
+        await WaitForIdentityAsync(client, cts.Token);
 
         var baseUrl = GetGatewayBaseUrl();
         var token = await GetAccessTokenAsync(client, cts.Token);
@@ -2281,6 +2327,7 @@ public class StorageApiE2E
             Assert.True(delB.StatusCode is HttpStatusCode.NoContent or HttpStatusCode.NotFound);
         }
     }
+
     [Fact(DisplayName = "Storage: Transform presigned GET invalid format returns 400")]
     public async Task Storage_Transform_InvalidFormat_BadRequest()
     {
@@ -2301,7 +2348,10 @@ public class StorageApiE2E
             client,
             () =>
             {
-                var req = new HttpRequestMessage(HttpMethod.Put, $"{baseUrl}/storage/api/buckets/{bucket}");
+                var req = new HttpRequestMessage(
+                    HttpMethod.Put,
+                    $"{baseUrl}/storage/api/buckets/{bucket}"
+                );
                 req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
                 req.Headers.TryAddWithoutValidation("X-Tansu-Tenant", tenantId);
                 return req;
@@ -2318,11 +2368,15 @@ public class StorageApiE2E
                 client,
                 () =>
                 {
-                    var req = new HttpRequestMessage(HttpMethod.Put, $"{baseUrl}/storage/api/objects/{bucket}/{Uri.EscapeDataString(key)}");
+                    var req = new HttpRequestMessage(
+                        HttpMethod.Put,
+                        $"{baseUrl}/storage/api/objects/{bucket}/{Uri.EscapeDataString(key)}"
+                    );
                     req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
                     req.Headers.TryAddWithoutValidation("X-Tansu-Tenant", tenantId);
                     req.Content = new ByteArrayContent(pngBytes);
-                    req.Content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("image/png");
+                    req.Content.Headers.ContentType =
+                        new System.Net.Http.Headers.MediaTypeHeaderValue("image/png");
                     return req;
                 },
                 cts.Token
@@ -2339,7 +2393,10 @@ public class StorageApiE2E
                 client,
                 () =>
                 {
-                    var req = new HttpRequestMessage(HttpMethod.Post, $"{baseUrl}/storage/api/presign/transform");
+                    var req = new HttpRequestMessage(
+                        HttpMethod.Post,
+                        $"{baseUrl}/storage/api/presign/transform"
+                    );
                     req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
                     req.Headers.TryAddWithoutValidation("X-Tansu-Tenant", tenantId);
                     var payload = new
@@ -2352,7 +2409,11 @@ public class StorageApiE2E
                         Quality = 80,
                         ExpirySeconds = 120
                     };
-                    req.Content = new StringContent(JsonSerializer.Serialize(payload), Encoding.UTF8, "application/json");
+                    req.Content = new StringContent(
+                        JsonSerializer.Serialize(payload),
+                        Encoding.UTF8,
+                        "application/json"
+                    );
                     return req;
                 },
                 cts.Token
@@ -2366,16 +2427,18 @@ public class StorageApiE2E
         }
 
         // GET transform should return 400
-        using (var res = await SendAsync(
-            client,
-            () =>
-            {
-                var req = new HttpRequestMessage(HttpMethod.Get, $"{GetGatewayBaseUrl()}{url}");
-                req.Headers.TryAddWithoutValidation("X-Tansu-Tenant", tenantId);
-                return req;
-            },
-            cts.Token
-        ))
+        using (
+            var res = await SendAsync(
+                client,
+                () =>
+                {
+                    var req = new HttpRequestMessage(HttpMethod.Get, $"{GetGatewayBaseUrl()}{url}");
+                    req.Headers.TryAddWithoutValidation("X-Tansu-Tenant", tenantId);
+                    return req;
+                },
+                cts.Token
+            )
+        )
         {
             Assert.Equal(HttpStatusCode.BadRequest, res.StatusCode);
         }
@@ -2385,7 +2448,10 @@ public class StorageApiE2E
             client,
             () =>
             {
-                var req = new HttpRequestMessage(HttpMethod.Delete, $"{baseUrl}/storage/api/objects/{bucket}/{Uri.EscapeDataString(key)}");
+                var req = new HttpRequestMessage(
+                    HttpMethod.Delete,
+                    $"{baseUrl}/storage/api/objects/{bucket}/{Uri.EscapeDataString(key)}"
+                );
                 req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
                 req.Headers.TryAddWithoutValidation("X-Tansu-Tenant", tenantId);
                 return req;
@@ -2396,7 +2462,10 @@ public class StorageApiE2E
             client,
             () =>
             {
-                var req = new HttpRequestMessage(HttpMethod.Delete, $"{baseUrl}/storage/api/buckets/{bucket}");
+                var req = new HttpRequestMessage(
+                    HttpMethod.Delete,
+                    $"{baseUrl}/storage/api/buckets/{bucket}"
+                );
                 req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
                 req.Headers.TryAddWithoutValidation("X-Tansu-Tenant", tenantId);
                 return req;
@@ -2425,7 +2494,10 @@ public class StorageApiE2E
             client,
             () =>
             {
-                var req = new HttpRequestMessage(HttpMethod.Put, $"{baseUrl}/storage/api/buckets/{bucket}");
+                var req = new HttpRequestMessage(
+                    HttpMethod.Put,
+                    $"{baseUrl}/storage/api/buckets/{bucket}"
+                );
                 req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
                 req.Headers.TryAddWithoutValidation("X-Tansu-Tenant", tenantId);
                 return req;
@@ -2441,11 +2513,16 @@ public class StorageApiE2E
             client,
             () =>
             {
-                var req = new HttpRequestMessage(HttpMethod.Put, $"{baseUrl}/storage/api/objects/{bucket}/{Uri.EscapeDataString(key)}");
+                var req = new HttpRequestMessage(
+                    HttpMethod.Put,
+                    $"{baseUrl}/storage/api/objects/{bucket}/{Uri.EscapeDataString(key)}"
+                );
                 req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
                 req.Headers.TryAddWithoutValidation("X-Tansu-Tenant", tenantId);
                 req.Content = new ByteArrayContent(pngBytes);
-                req.Content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("image/png");
+                req.Content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue(
+                    "image/png"
+                );
                 return req;
             },
             cts.Token
@@ -2458,7 +2535,10 @@ public class StorageApiE2E
                 client,
                 () =>
                 {
-                    var req = new HttpRequestMessage(HttpMethod.Post, $"{baseUrl}/storage/api/presign/transform");
+                    var req = new HttpRequestMessage(
+                        HttpMethod.Post,
+                        $"{baseUrl}/storage/api/presign/transform"
+                    );
                     req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
                     req.Headers.TryAddWithoutValidation("X-Tansu-Tenant", tenantId);
                     var payload = new
@@ -2471,7 +2551,11 @@ public class StorageApiE2E
                         Quality = 80,
                         ExpirySeconds = 120
                     };
-                    req.Content = new StringContent(JsonSerializer.Serialize(payload), Encoding.UTF8, "application/json");
+                    req.Content = new StringContent(
+                        JsonSerializer.Serialize(payload),
+                        Encoding.UTF8,
+                        "application/json"
+                    );
                     return req;
                 },
                 cts.Token
@@ -2485,16 +2569,18 @@ public class StorageApiE2E
         }
 
         // GET transform should return 400
-        using (var res = await SendAsync(
-            client,
-            () =>
-            {
-                var req = new HttpRequestMessage(HttpMethod.Get, $"{GetGatewayBaseUrl()}{url}");
-                req.Headers.TryAddWithoutValidation("X-Tansu-Tenant", tenantId);
-                return req;
-            },
-            cts.Token
-        ))
+        using (
+            var res = await SendAsync(
+                client,
+                () =>
+                {
+                    var req = new HttpRequestMessage(HttpMethod.Get, $"{GetGatewayBaseUrl()}{url}");
+                    req.Headers.TryAddWithoutValidation("X-Tansu-Tenant", tenantId);
+                    return req;
+                },
+                cts.Token
+            )
+        )
         {
             Assert.Equal(HttpStatusCode.BadRequest, res.StatusCode);
         }
@@ -2504,7 +2590,10 @@ public class StorageApiE2E
             client,
             () =>
             {
-                var req = new HttpRequestMessage(HttpMethod.Delete, $"{baseUrl}/storage/api/objects/{bucket}/{Uri.EscapeDataString(key)}");
+                var req = new HttpRequestMessage(
+                    HttpMethod.Delete,
+                    $"{baseUrl}/storage/api/objects/{bucket}/{Uri.EscapeDataString(key)}"
+                );
                 req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
                 req.Headers.TryAddWithoutValidation("X-Tansu-Tenant", tenantId);
                 return req;
@@ -2515,7 +2604,10 @@ public class StorageApiE2E
             client,
             () =>
             {
-                var req = new HttpRequestMessage(HttpMethod.Delete, $"{baseUrl}/storage/api/buckets/{bucket}");
+                var req = new HttpRequestMessage(
+                    HttpMethod.Delete,
+                    $"{baseUrl}/storage/api/buckets/{bucket}"
+                );
                 req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
                 req.Headers.TryAddWithoutValidation("X-Tansu-Tenant", tenantId);
                 return req;
@@ -2544,7 +2636,10 @@ public class StorageApiE2E
             client,
             () =>
             {
-                var req = new HttpRequestMessage(HttpMethod.Put, $"{baseUrl}/storage/api/buckets/{bucket}");
+                var req = new HttpRequestMessage(
+                    HttpMethod.Put,
+                    $"{baseUrl}/storage/api/buckets/{bucket}"
+                );
                 req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
                 req.Headers.TryAddWithoutValidation("X-Tansu-Tenant", tenantId);
                 return req;
@@ -2561,11 +2656,15 @@ public class StorageApiE2E
                 client,
                 () =>
                 {
-                    var req = new HttpRequestMessage(HttpMethod.Put, $"{baseUrl}/storage/api/objects/{bucket}/{Uri.EscapeDataString(key)}");
+                    var req = new HttpRequestMessage(
+                        HttpMethod.Put,
+                        $"{baseUrl}/storage/api/objects/{bucket}/{Uri.EscapeDataString(key)}"
+                    );
                     req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
                     req.Headers.TryAddWithoutValidation("X-Tansu-Tenant", tenantId);
                     req.Content = new ByteArrayContent(pngBytes);
-                    req.Content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("image/png");
+                    req.Content.Headers.ContentType =
+                        new System.Net.Http.Headers.MediaTypeHeaderValue("image/png");
                     return req;
                 },
                 cts.Token
@@ -2583,7 +2682,10 @@ public class StorageApiE2E
                     client,
                     () =>
                     {
-                        var req = new HttpRequestMessage(HttpMethod.Post, $"{baseUrl}/storage/api/presign/transform");
+                        var req = new HttpRequestMessage(
+                            HttpMethod.Post,
+                            $"{baseUrl}/storage/api/presign/transform"
+                        );
                         req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
                         req.Headers.TryAddWithoutValidation("X-Tansu-Tenant", tenantId);
                         var payload = new
@@ -2596,7 +2698,11 @@ public class StorageApiE2E
                             Quality = 80,
                             ExpirySeconds = 120
                         };
-                        req.Content = new StringContent(JsonSerializer.Serialize(payload), Encoding.UTF8, "application/json");
+                        req.Content = new StringContent(
+                            JsonSerializer.Serialize(payload),
+                            Encoding.UTF8,
+                            "application/json"
+                        );
                         return req;
                     },
                     cts.Token
@@ -2632,7 +2738,10 @@ public class StorageApiE2E
             client,
             () =>
             {
-                var req = new HttpRequestMessage(HttpMethod.Delete, $"{baseUrl}/storage/api/objects/{bucket}/{Uri.EscapeDataString(key)}");
+                var req = new HttpRequestMessage(
+                    HttpMethod.Delete,
+                    $"{baseUrl}/storage/api/objects/{bucket}/{Uri.EscapeDataString(key)}"
+                );
                 req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
                 req.Headers.TryAddWithoutValidation("X-Tansu-Tenant", tenantId);
                 return req;
@@ -2643,7 +2752,10 @@ public class StorageApiE2E
             client,
             () =>
             {
-                var req = new HttpRequestMessage(HttpMethod.Delete, $"{baseUrl}/storage/api/buckets/{bucket}");
+                var req = new HttpRequestMessage(
+                    HttpMethod.Delete,
+                    $"{baseUrl}/storage/api/buckets/{bucket}"
+                );
                 req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
                 req.Headers.TryAddWithoutValidation("X-Tansu-Tenant", tenantId);
                 return req;
@@ -2652,4 +2764,3 @@ public class StorageApiE2E
         );
     }
 } // End of Class StorageApiE2E
-

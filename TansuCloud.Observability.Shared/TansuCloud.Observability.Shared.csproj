@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net9.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <Description>Shared observability primitives (EventIds, logging helpers) for TansuCloud.</Description>
+  </PropertyGroup>
+  <ItemGroup>
+    <!-- Needed for HttpContext / RequestDelegate / IServiceCollection etc. -->
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+</Project>

@@ -1,0 +1,36 @@
+@inherits LayoutComponentBase
+@using Microsoft.AspNetCore.Authorization
+@using Microsoft.AspNetCore.Components.Routing
+@attribute [Authorize(Policy="AdminOnly")]
+
+<div class="container-fluid">
+    <div class="row">
+        <nav class="col-md-2 d-none d-md-block bg-light sidebar" style="min-height:100vh; border-right: 1px solid #eee;">
+            <div class="position-sticky pt-3">
+                <ul class="nav flex-column">
+                    <li class="nav-item"><NavLink class="nav-link" data-testid="nav-overview" href="admin" Match="NavLinkMatch.Prefix">Overview</NavLink></li>
+                    <li class="nav-item"><strong class="ms-2 text-muted">Networking</strong></li>
+                    <li class="nav-item"><NavLink class="nav-link" data-testid="nav-domains" href="admin/domains" Match="NavLinkMatch.Prefix">Domains & TLS</NavLink></li>
+                    <li class="nav-item"><NavLink class="nav-link" data-testid="nav-providers" href="admin/providers" Match="NavLinkMatch.Prefix">Providers</NavLink></li>
+                    <li class="nav-item"><strong class="ms-2 text-muted">Routing</strong></li>
+                    <li class="nav-item"><NavLink class="nav-link" data-testid="nav-routes" href="admin/routes" Match="NavLinkMatch.Prefix">YARP Routes</NavLink></li>
+                    <li class="nav-item"><strong class="ms-2 text-muted">Caching</strong></li>
+                    <li class="nav-item"><NavLink class="nav-link" data-testid="nav-rate-limits" href="admin/rate-limits" Match="NavLinkMatch.Prefix">Rate Limits</NavLink></li>
+                    <li class="nav-item"><strong class="ms-2 text-muted">Identity</strong></li>
+                    <li class="nav-item"><NavLink class="nav-link" data-testid="nav-security" href="admin/security" Match="NavLinkMatch.Prefix">Security Events</NavLink></li>
+                    <li class="nav-item"><strong class="ms-2 text-muted">Observability</strong></li>
+                    <li class="nav-item"><NavLink class="nav-link" data-testid="nav-metrics" href="admin/metrics" Match="NavLinkMatch.Prefix">Metrics</NavLink></li>
+                    <li class="nav-item"><NavLink class="nav-link" data-testid="nav-logs" href="admin/logs" Match="NavLinkMatch.Prefix">Logs</NavLink></li>
+                    <li class="nav-item"><strong class="ms-2 text-muted">Storage/DB</strong></li>
+                    <li class="nav-item"><NavLink class="nav-link" data-testid="nav-storage" href="admin/storage" Match="NavLinkMatch.Prefix">Storage</NavLink></li>
+                    <li class="nav-item"><strong class="ms-2 text-muted">ML</strong></li>
+                    <li class="nav-item"><NavLink class="nav-link" data-testid="nav-ml" href="admin/ml" Match="NavLinkMatch.Prefix">ML Management</NavLink></li>
+                </ul>
+            </div>
+        </nav>
+        <main class="col-md-10 ms-sm-auto px-4 py-3">
+            @Body
+        </main>
+    </div>
+    </div>
+
