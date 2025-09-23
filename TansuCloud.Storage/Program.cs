@@ -4,8 +4,9 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.ResponseCompression;
 using Microsoft.Extensions.Caching.Hybrid;
 using Microsoft.Extensions.Caching.StackExchangeRedis;
-using Microsoft.Extensions.Diagnostics.HealthChecks;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Diagnostics.HealthChecks;
+using Microsoft.AspNetCore.Diagnostics.HealthChecks;
 using Microsoft.IdentityModel.Protocols;
 using Microsoft.IdentityModel.Protocols.OpenIdConnect;
 using Microsoft.IdentityModel.Tokens;
@@ -15,10 +16,11 @@ using OpenTelemetry.Metrics;
 using OpenTelemetry.Resources;
 using OpenTelemetry.Trace;
 using StackExchange.Redis;
+using TansuCloud.Observability;
+using TansuCloud.Observability.Auditing;
 using TansuCloud.Storage.Hosting;
 using TansuCloud.Storage.Security;
 using TansuCloud.Storage.Services;
-using TansuCloud.Observability;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -59,6 +61,7 @@ builder
         metrics.AddAspNetCoreInstrumentation();
         metrics.AddHttpClientInstrumentation();
         metrics.AddMeter("tansu.storage");
+        metrics.AddMeter("TansuCloud.Audit");
         metrics.AddOtlpExporter(otlp =>
         {
             var endpoint = builder.Configuration["OpenTelemetry:Otlp:Endpoint"];
@@ -68,8 +71,10 @@ builder
             }
         });
     });
+
 // Observability core (Task 38)
 builder.Services.AddTansuObservabilityCore();
+builder.Services.AddTansuAudit(builder.Configuration);
 builder.Logging.AddOpenTelemetry(o =>
 {
     o.IncludeFormattedMessage = true;
@@ -83,7 +88,10 @@ builder.Logging.AddOpenTelemetry(o =>
         }
     });
 });
-builder.Services.AddHealthChecks();
+builder
+    .Services.AddHealthChecks()
+    .AddCheck("self", () => HealthCheckResult.Healthy(), tags: new[] { "self" });
+
 // Phase 0: health status transition publisher for ops visibility
 builder.Services.AddSingleton<IHealthCheckPublisher, HealthTransitionPublisher>();
 builder.Services.Configure<HealthCheckPublisherOptions>(o =>
@@ -109,13 +117,25 @@ if (!string.IsNullOrWhiteSpace(cacheRedisForHealth))
         .Services.AddHealthChecks()
         .AddCheck(
             "redis",
-            new TansuCloud.Storage.Services.RedisPingHealthCheck(cacheRedisForHealth)
+            new TansuCloud.Storage.Services.RedisPingHealthCheck(cacheRedisForHealth),
+            tags: new[] { "ready", "redis" }
         );
 }
 
 // Add services to the container.
 
 builder.Services.AddControllers();
+
+// Development-only diagnostics endpoint gate (opt-in via STORAGE_ENABLE_TEST_THROW=1)
+var enableTestThrow = Environment.GetEnvironmentVariable("STORAGE_ENABLE_TEST_THROW");
+if (
+    builder.Environment.IsDevelopment()
+    && string.Equals(enableTestThrow, "1", StringComparison.OrdinalIgnoreCase)
+)
+{
+    // Register a minimal API route for testing exceptions
+    // Path: /dev/throw; Query: message optional
+}
 
 // Response compression (Task 14): enable Brotli for compressible types using configurable options
 builder.Services.AddResponseCompression(options =>
@@ -486,6 +506,7 @@ builder.Services.AddAuthorization(options =>
 });
 
 var app = builder.Build();
+
 // Startup diagnostic: log OIDC metadata source choice (Task 38)
 try
 {
@@ -501,14 +522,23 @@ try
         effectiveMd = configuredMd!;
         src = "explicit-config";
     }
-    else if (string.Equals(Environment.GetEnvironmentVariable("DOTNET_RUNNING_IN_CONTAINER"), "true", StringComparison.OrdinalIgnoreCase))
+    else if (
+        string.Equals(
+            Environment.GetEnvironmentVariable("DOTNET_RUNNING_IN_CONTAINER"),
+            "true",
+            StringComparison.OrdinalIgnoreCase
+        )
+    )
     {
         effectiveMd = "http://gateway:8080/identity/.well-known/openid-configuration";
         src = "container-gateway";
     }
     else
     {
-        effectiveMd = new Uri(new Uri(issuerWithSlash), ".well-known/openid-configuration").AbsoluteUri;
+        effectiveMd = new Uri(
+            new Uri(issuerWithSlash),
+            ".well-known/openid-configuration"
+        ).AbsoluteUri;
         src = "issuer-derived";
     }
     log.LogOidcMetadataChoice(src, issuerNoSlash, effectiveMd);
@@ -593,32 +623,70 @@ app.UseMiddleware<RequestMetricsMiddleware>();
 
 app.MapControllers();
 
+// Development-only diagnostic route that throws an exception to test SigNoz capture
+// Enabled unconditionally in Development to simplify local E2E validation
+if (app.Environment.IsDevelopment())
+{
+    app.MapGet(
+            "/dev/throw",
+            (HttpContext ctx) =>
+            {
+                var msg = ctx.Request.Query["message"].ToString();
+                // Emit a log before throwing so log ingestion can be asserted
+                try
+                {
+                    var logger = ctx.RequestServices
+                        .GetRequiredService<ILoggerFactory>()
+                        .CreateLogger("DevThrow");
+                    logger.LogError("Dev throw triggered: {Message}",
+                        string.IsNullOrWhiteSpace(msg) ? "Intentional test exception" : msg);
+                }
+                catch { }
+                throw new InvalidOperationException(
+                    string.IsNullOrWhiteSpace(msg) ? "Intentional test exception" : msg
+                );
+            }
+        )
+        .WithName("DevThrow").AllowAnonymous();
+}
+
 // Health endpoints
-app.MapHealthChecks("/health/live").AllowAnonymous();
-app.MapHealthChecks("/health/ready").AllowAnonymous();
+app.MapHealthChecks(
+        "/health/live",
+        new HealthCheckOptions { Predicate = r => r.Tags.Contains("self") }
+    )
+    .AllowAnonymous();
+app.MapHealthChecks(
+        "/health/ready",
+        new HealthCheckOptions { Predicate = r => r.Tags.Contains("ready") }
+    )
+    .AllowAnonymous();
 
 // Dev-only: dynamic logging override shim to aid troubleshooting
 if (app.Environment.IsDevelopment())
 {
     app.MapPost(
-        "/dev/logging/overrides",
-        (IDynamicLogLevelOverride ovr, [AsParameters] LogOverrideRequest req) =>
-        {
-            if (string.IsNullOrWhiteSpace(req.Category))
-                return Results.Problem("Category is required", statusCode: 400);
-            if (req.TtlSeconds <= 0)
-                return Results.Problem("TtlSeconds must be > 0", statusCode: 400);
-            ovr.Set(req.Category!, req.Level, TimeSpan.FromSeconds(req.TtlSeconds));
-            return Results.Ok(new { ok = true });
-        }
-    ).AllowAnonymous();
+            "/dev/logging/overrides",
+            (IDynamicLogLevelOverride ovr, [AsParameters] LogOverrideRequest req) =>
+            {
+                if (string.IsNullOrWhiteSpace(req.Category))
+                    return Results.Problem("Category is required", statusCode: 400);
+                if (req.TtlSeconds <= 0)
+                    return Results.Problem("TtlSeconds must be > 0", statusCode: 400);
+                ovr.Set(req.Category!, req.Level, TimeSpan.FromSeconds(req.TtlSeconds));
+                return Results.Ok(new { ok = true });
+            }
+        )
+        .AllowAnonymous();
     app.MapGet(
-        "/dev/logging/overrides",
-        (IDynamicLogLevelOverride ovr) =>
-            Results.Json(
-                ovr.Snapshot().ToDictionary(k => k.Key, v => new { v.Value.Level, v.Value.Expires })
-            )
-    ).AllowAnonymous();
+            "/dev/logging/overrides",
+            (IDynamicLogLevelOverride ovr) =>
+                Results.Json(
+                    ovr.Snapshot()
+                        .ToDictionary(k => k.Key, v => new { v.Value.Level, v.Value.Expires })
+                )
+        )
+        .AllowAnonymous();
 }
 
 app.Run();

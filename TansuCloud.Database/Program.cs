@@ -5,6 +5,7 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.Extensions.Caching.Hybrid;
 using Microsoft.Extensions.Caching.StackExchangeRedis;
 using Microsoft.Extensions.Diagnostics.HealthChecks;
+using Microsoft.AspNetCore.Diagnostics.HealthChecks;
 using Microsoft.Extensions.Options;
 using Microsoft.IdentityModel.Protocols;
 using Microsoft.IdentityModel.Protocols.OpenIdConnect;
@@ -15,13 +16,13 @@ using OpenTelemetry.Metrics;
 using OpenTelemetry.Resources;
 using OpenTelemetry.Trace;
 using StackExchange.Redis;
-using TansuCloud.Observability;
 using TansuCloud.Database.Caching;
 using TansuCloud.Database.Hosting;
 using TansuCloud.Database.Outbox;
 using TansuCloud.Database.Provisioning;
 using TansuCloud.Database.Security;
 using TansuCloud.Observability;
+using TansuCloud.Observability.Auditing;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -59,6 +60,7 @@ builder
         metrics.AddHttpClientInstrumentation();
         // Export custom Outbox meter so Prometheus exposes outbox_* counters
         metrics.AddMeter("TansuCloud.Database.Outbox");
+        metrics.AddMeter("TansuCloud.Audit");
         metrics.AddOtlpExporter(otlp =>
         {
             var endpoint = builder.Configuration["OpenTelemetry:Otlp:Endpoint"];
@@ -68,8 +70,12 @@ builder
             }
         });
     });
+
 // Observability core (Task 38)
 builder.Services.AddTansuObservabilityCore();
+
+// Audit SDK (Task 31 Phase 1)
+builder.Services.AddTansuAudit(builder.Configuration);
 builder.Logging.AddOpenTelemetry(o =>
 {
     o.IncludeFormattedMessage = true;
@@ -83,7 +89,16 @@ builder.Logging.AddOpenTelemetry(o =>
         }
     });
 });
-builder.Services.AddHealthChecks();
+builder
+    .Services.AddHealthChecks()
+    .AddCheck("self", () => HealthCheckResult.Healthy(), tags: new[] { "self" });
+
+// Audit retention options and background job (Phase 3)
+builder.Services.AddOptions<TansuCloud.Database.Services.AuditRetentionOptions>()
+    .Bind(builder.Configuration.GetSection("AuditRetention"));
+builder.Services.AddHostedService<TansuCloud.Database.Services.AuditRetentionWorker>();
+builder.Services.AddSingleton<TansuCloud.Database.Services.IAuditDbConnectionFactory, TansuCloud.Database.Services.NpgsqlAuditDbConnectionFactory>();
+
 // Phase 0: health transition publisher for Info logs on state changes
 builder.Services.AddSingleton<IHealthCheckPublisher, HealthTransitionPublisher>();
 builder.Services.Configure<HealthCheckPublisherOptions>(o =>
@@ -103,7 +118,8 @@ if (!string.IsNullOrWhiteSpace(cacheRedisForHealth))
         .Services.AddHealthChecks()
         .AddCheck(
             "redis",
-            new TansuCloud.Database.Services.RedisPingHealthCheck(cacheRedisForHealth)
+            new TansuCloud.Database.Services.RedisPingHealthCheck(cacheRedisForHealth),
+            tags: new[] { "ready", "redis" }
         );
 }
 
@@ -129,6 +145,7 @@ builder.Services.AddSingleton<
     TansuCloud.Database.Outbox.IOutboxProducer,
     TansuCloud.Database.Outbox.OutboxProducer
 >();
+builder.Services.AddSingleton<TansuCloud.Database.Services.IAuditQueryService, TansuCloud.Database.Services.AuditQueryService>();
 
 // Optional HybridCache backed by Redis when Cache:Redis is set
 var cacheRedis = builder.Configuration["Cache:Redis"];
@@ -229,7 +246,6 @@ builder
         // Backchannel discovery/JWKS: prefer explicit configuration, otherwise derive from configured issuer.
         // When running in a container, default to gateway for discovery to avoid localhost loopback issues.
         var metadataAddress = builder.Configuration["Oidc:MetadataAddress"];
-        string source;
         if (string.IsNullOrWhiteSpace(metadataAddress))
         {
             var issuerUri = new Uri(issuerWithSlash);
@@ -241,17 +257,14 @@ builder
             if (inContainer)
             {
                 metadataAddress = "http://gateway:8080/identity/.well-known/openid-configuration";
-                source = "container-gateway";
             }
             else
             {
-                metadataAddress = new Uri(issuerUri, ".well-known/openid-configuration").AbsoluteUri;
-                source = "issuer-derived";
+                metadataAddress = new Uri(
+                    issuerUri,
+                    ".well-known/openid-configuration"
+                ).AbsoluteUri;
             }
-        }
-        else
-        {
-            source = "explicit-config";
         }
         options.MetadataAddress = metadataAddress;
 
@@ -859,6 +872,7 @@ builder.Services.AddAuthorization(options =>
 // No OpenIddict validation here; JwtBearer handles access token validation against the issuer's JWKS
 
 var app = builder.Build();
+
 // Startup diagnostic: log OIDC metadata source choice (Task 38)
 try
 {
@@ -874,14 +888,23 @@ try
         effectiveMd = configuredMd!;
         src = "explicit-config";
     }
-    else if (string.Equals(Environment.GetEnvironmentVariable("DOTNET_RUNNING_IN_CONTAINER"), "true", StringComparison.OrdinalIgnoreCase))
+    else if (
+        string.Equals(
+            Environment.GetEnvironmentVariable("DOTNET_RUNNING_IN_CONTAINER"),
+            "true",
+            StringComparison.OrdinalIgnoreCase
+        )
+    )
     {
         effectiveMd = "http://gateway:8080/identity/.well-known/openid-configuration";
         src = "container-gateway";
     }
     else
     {
-        effectiveMd = new Uri(new Uri(issuerWithSlash), ".well-known/openid-configuration").AbsoluteUri;
+        effectiveMd = new Uri(
+            new Uri(issuerWithSlash),
+            ".well-known/openid-configuration"
+        ).AbsoluteUri;
         src = "issuer-derived";
     }
     log.LogOidcMetadataChoice(src, issuerNoSlash, effectiveMd);
@@ -945,31 +968,120 @@ app.UseMiddleware<RequestEnrichmentMiddleware>();
 app.MapControllers();
 
 // Health endpoints
-app.MapHealthChecks("/health/live").AllowAnonymous();
-app.MapHealthChecks("/health/ready").AllowAnonymous();
+app.MapHealthChecks(
+        "/health/live",
+        new HealthCheckOptions { Predicate = r => r.Tags.Contains("self") }
+    )
+    .AllowAnonymous();
+app.MapHealthChecks(
+        "/health/ready",
+        new HealthCheckOptions { Predicate = r => r.Tags.Contains("ready") }
+    )
+    .AllowAnonymous();
 
-// Dev-only: dynamic logging override shim to aid troubleshooting
+// Dev-only: dynamic logging override shim to aid troubleshooting (audited)
 if (app.Environment.IsDevelopment())
 {
     app.MapPost(
-        "/dev/logging/overrides",
-        (IDynamicLogLevelOverride ovr, [AsParameters] LogOverrideRequest req) =>
-        {
-            if (string.IsNullOrWhiteSpace(req.Category))
-                return Results.Problem("Category is required", statusCode: 400);
-            if (req.TtlSeconds <= 0)
-                return Results.Problem("TtlSeconds must be > 0", statusCode: 400);
-            ovr.Set(req.Category!, req.Level, TimeSpan.FromSeconds(req.TtlSeconds));
-            return Results.Ok(new { ok = true });
-        }
-    ).AllowAnonymous();
+            "/dev/logging/overrides",
+            (
+                IDynamicLogLevelOverride ovr,
+                [AsParameters] LogOverrideRequest req,
+                TansuCloud.Observability.Auditing.IAuditLogger audit,
+                HttpContext http
+            ) =>
+            {
+                if (string.IsNullOrWhiteSpace(req.Category))
+                {
+                    // Emit failure audit (validation)
+                    var evFail = new TansuCloud.Observability.Auditing.AuditEvent
+                    {
+                        Category = "Admin",
+                        Action = "LogLevelOverride",
+                        Subject = http.User?.Identity?.Name ?? "system",
+                        Outcome = "Failure",
+                        ReasonCode = "ValidationError",
+                        RouteTemplate = "/dev/logging/overrides",
+                        CorrelationId = http.TraceIdentifier
+                    };
+                    audit.TryEnqueueRedacted(
+                        evFail,
+                        req,
+                        new[] { nameof(LogOverrideRequest.Category), nameof(LogOverrideRequest.Level), nameof(LogOverrideRequest.TtlSeconds) }
+                    );
+                    return Results.Problem("Category is required", statusCode: 400);
+                }
+                if (req.TtlSeconds <= 0)
+                {
+                    var evFail = new TansuCloud.Observability.Auditing.AuditEvent
+                    {
+                        Category = "Admin",
+                        Action = "LogLevelOverride",
+                        Subject = http.User?.Identity?.Name ?? "system",
+                        Outcome = "Failure",
+                        ReasonCode = "ValidationError",
+                        RouteTemplate = "/dev/logging/overrides",
+                        CorrelationId = http.TraceIdentifier
+                    };
+                    audit.TryEnqueueRedacted(
+                        evFail,
+                        req,
+                        new[] { nameof(LogOverrideRequest.Category), nameof(LogOverrideRequest.Level), nameof(LogOverrideRequest.TtlSeconds) }
+                    );
+                    return Results.Problem("TtlSeconds must be > 0", statusCode: 400);
+                }
+
+                ovr.Set(req.Category!, req.Level, TimeSpan.FromSeconds(req.TtlSeconds));
+
+                // Emit success audit
+                var ev = new TansuCloud.Observability.Auditing.AuditEvent
+                {
+                    Category = "Admin",
+                    Action = "LogLevelOverride",
+                    Subject = http.User?.Identity?.Name ?? "system",
+                    Outcome = "Success",
+                    RouteTemplate = "/dev/logging/overrides",
+                    CorrelationId = http.TraceIdentifier
+                };
+                audit.TryEnqueueRedacted(
+                    ev,
+                    req,
+                    new[] { nameof(LogOverrideRequest.Category), nameof(LogOverrideRequest.Level), nameof(LogOverrideRequest.TtlSeconds) }
+                );
+
+                return Results.Ok(new { ok = true });
+            }
+        )
+        .AllowAnonymous();
+
     app.MapGet(
-        "/dev/logging/overrides",
-        (IDynamicLogLevelOverride ovr) =>
-            Results.Json(
-                ovr.Snapshot().ToDictionary(k => k.Key, v => new { v.Value.Level, v.Value.Expires })
-            )
-    ).AllowAnonymous();
+            "/dev/logging/overrides",
+            (
+                IDynamicLogLevelOverride ovr,
+                TansuCloud.Observability.Auditing.IAuditLogger audit,
+                HttpContext http
+            ) =>
+            {
+                var snapshot = ovr.Snapshot();
+                // Emit read audit with minimal details (count only)
+                var ev = new TansuCloud.Observability.Auditing.AuditEvent
+                {
+                    Category = "Admin",
+                    Action = "LogLevelOverridesRead",
+                    Subject = http.User?.Identity?.Name ?? "system",
+                    Outcome = "Success",
+                    RouteTemplate = "/dev/logging/overrides",
+                    CorrelationId = http.TraceIdentifier
+                };
+                var details = new { count = snapshot.Count };
+                audit.TryEnqueueRedacted(ev, details, new[] { "count" });
+
+                return Results.Json(
+                    snapshot.ToDictionary(k => k.Key, v => new { v.Value.Level, v.Value.Expires })
+                );
+            }
+        )
+        .AllowAnonymous();
 }
 
 app.Run();

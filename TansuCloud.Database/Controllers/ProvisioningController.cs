@@ -8,6 +8,7 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.IdentityModel.JsonWebTokens;
 using Microsoft.IdentityModel.Tokens;
 using TansuCloud.Database.Provisioning;
+using TansuCloud.Observability.Auditing;
 
 namespace TansuCloud.Database.Controllers;
 
@@ -15,11 +16,13 @@ namespace TansuCloud.Database.Controllers;
 [Route("api/[controller]")]
 public sealed class ProvisioningController(
     ITenantProvisioner provisioner,
-    ILogger<ProvisioningController> logger
+    ILogger<ProvisioningController> logger,
+    IAuditLogger audit
 ) : ControllerBase
 {
     private readonly ITenantProvisioner _provisioner = provisioner;
     private readonly ILogger<ProvisioningController> _logger = logger;
+    private readonly IAuditLogger _audit = audit;
 
     public sealed record ProvisionTenantDto(string tenantId, string? displayName, string? region);
 
@@ -708,10 +711,29 @@ public sealed class ProvisioningController(
         ManualValidated:
         ;
 
-        var result = await _provisioner.ProvisionAsync(
-            new TenantProvisionRequest(input.tenantId, input.displayName, input.region),
-            ct
-        );
+        TenantProvisionResult result;
+        try
+        {
+            result = await _provisioner.ProvisionAsync(
+                new TenantProvisionRequest(input.tenantId, input.displayName, input.region),
+                ct
+            );
+        }
+        catch (Exception ex)
+        {
+            // Emit failure audit (redacted payload)
+            var evFail = new AuditEvent
+            {
+                Category = "Provisioning",
+                Action = "TenantProvision",
+                Subject = User?.Identity?.Name ?? "system",
+                Outcome = "Failure",
+                ReasonCode = ex.GetType().Name,
+                CorrelationId = HttpContext.TraceIdentifier
+            };
+            _audit.TryEnqueueRedacted(evFail, input, new[] { "tenantId", "displayName", "region" });
+            throw;
+        }
 
         _logger.LogInformation(
             "Provisioned tenant {Tenant} -> db={Db} created={Created}",
@@ -719,6 +741,17 @@ public sealed class ProvisioningController(
             result.Database,
             result.Created
         );
+
+        // Emit success audit (redacted payload)
+        var ev = new AuditEvent
+        {
+            Category = "Provisioning",
+            Action = "TenantProvision",
+            Subject = User?.Identity?.Name ?? "system",
+            Outcome = "Success",
+            CorrelationId = HttpContext.TraceIdentifier
+        };
+        _audit.TryEnqueueRedacted(ev, new { result.TenantId, result.Database, result.Created }, new[] { "TenantId", "Database", "Created" });
 
         return Ok(result);
     } // End of Method ProvisionTenant

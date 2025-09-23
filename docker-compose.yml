@@ -1,7 +1,7 @@
 services:
   postgres:
     image: tansu/citus-pgvector:local
-    container_name: tansudbpg
+    container_name: tansu-postgres
     restart: unless-stopped
     environment:
       POSTGRES_USER: ${POSTGRES_USER}
@@ -11,45 +11,164 @@ services:
       - ./dev/db-init:/docker-entrypoint-initdb.d:ro
     ports:
       - "5432:5432" # Host exposure for EfMigrationsIntegrationTests
+    networks:
+      - tansucloud-network
+
+  zookeeper:
+    image: bitnami/zookeeper:latest
+    container_name: signoz-zookeeper
+    restart: unless-stopped
+    environment:
+      - ZOO_SERVER_ID=1
+      - ALLOW_ANONYMOUS_LOGIN=yes
+      - ZOO_AUTOPURGE_INTERVAL=1
+      - ZOO_ENABLE_PROMETHEUS_METRICS=yes
+      - ZOO_4LW_COMMANDS_WHITELIST=ruok
     healthcheck:
-      test: ["CMD", "/bin/bash", "-lc", "pg_isready -U postgres -h 127.0.0.1 -p 5432"]
-      interval: 10s
-      timeout: 3s
-      retries: 10
-      start_period: 10s
+      # Use AdminServer HTTP endpoint for health probing to avoid 4lw TCP restrictions
+      test: ["CMD", "/bin/bash", "-lc", "wget -q -O - http://127.0.0.1:8080/commands/ruok | grep imok"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+    volumes:
+      - signoz-zookeeper-data:/bitnami/zookeeper
     networks:
       - tansucloud-network
 
-  otel-collector:
-    image: otel/opentelemetry-collector:latest
-    command: ["--config=/etc/otelcol/config.yaml"]
+  clickhouse:
+    image: clickhouse/clickhouse-server:latest
+    container_name: signoz-clickhouse
     restart: unless-stopped
+    environment:
+      CLICKHOUSE_DB: signoz
+      CLICKHOUSE_USER: admin
+      CLICKHOUSE_PASSWORD: admin
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "0.0.0.0:8123/ping"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
     volumes:
-      - ./dev/otel-collector-config.yaml:/etc/otelcol/config.yaml:ro
-    expose:
-      - "4317"
-      - "8889" # Prometheus scrape endpoint
-    networks:
-      - tansucloud-network
-
-  prometheus:
-    image: prom/prometheus:latest
-    container_name: tansu-prometheus
-    restart: unless-stopped
-    command:
-      - --config.file=/etc/prometheus/prometheus.yml
-    volumes:
-      - ./dev/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - signoz-clickhouse-data:/var/lib/clickhouse
+      - ./dev/clickhouse/cluster.xml:/etc/clickhouse-server/config.d/cluster.xml:ro
+      - ./dev/clickhouse/zookeeper.xml:/etc/clickhouse-server/config.d/zookeeper.xml:ro
     ports:
-      - "9090:9090"
+      - "8123:8123" # Expose ClickHouse HTTP interface for E2E tests
+    depends_on:
+      - zookeeper
+    networks:
+      - tansucloud-network
+
+  # SigNoz UI / query service (exposes the web UI)
+  signoz:
+    image: signoz/signoz:latest
+    container_name: signoz
+    restart: unless-stopped
+    environment:
+      - SIGNOZ_TELEMETRYSTORE_PROVIDER=clickhouse
+      - SIGNOZ_TELEMETRYSTORE_CLICKHOUSE_DSN=tcp://admin:admin@clickhouse:9000
+      # Enable distributed tables on the single-node cluster named "cluster"
+      - SIGNOZ_TELEMETRYSTORE_CLICKHOUSE_CLUSTER=cluster
+      - SIGNOZ_ALERTMANAGER_PROVIDER=signoz
+      - SIGNOZ_JWT_SECRET=dev-signoz-jwt-secret-change-me
+    user: "0:0"
+    # NOTE: SigNoz listens on 8080 internally. To avoid clashing with our Gateway's host mapping,
+    # we publish it on host port 3301 while keeping the container default port. Access: http://127.0.0.1:3301/
+    ports:
+      - "3301:8080"
     healthcheck:
-      test: ["CMD", "/bin/busybox", "wget", "-q", "-O", "-", "http://localhost:9090/-/ready"]
-      interval: 10s
+      test: ["CMD", "/bin/busybox", "wget", "-q", "-O", "-", "http://localhost:8080/"]
+      interval: 30s
       timeout: 5s
       retries: 10
-      start_period: 10s
+    depends_on:
+      - clickhouse
     networks:
       - tansucloud-network
+    volumes:
+      - signoz-data:/var/lib/signoz
+
+  # SigNoz OpenTelemetry collector (receives OTLP from all services)
+  signoz-otel-collector:
+    image: signoz/signoz-otel-collector:latest
+    container_name: signoz-otel-collector
+    restart: unless-stopped
+    command:
+      - --config=/etc/otel-collector-config.yaml
+    environment:
+      - OTEL_RESOURCE_ATTRIBUTES=host.name=signoz-host,os.type=linux
+      - LOW_CARDINAL_EXCEPTION_GROUPING=false
+    # Expose OTLP endpoints to the host for local tests and readiness checks
+    ports:
+      - "4317:4317" # OTLP gRPC
+      - "4318:4318" # OTLP HTTP
+    volumes:
+      - ./dev/signoz-otel-collector-config.yaml:/etc/otel-collector-config.yaml:ro
+    depends_on:
+      - signoz
+      - schema-migrator-sync
+    networks:
+      - tansucloud-network
+
+  # SigNoz ClickHouse schema migrators (create/update signoz_* databases)
+  schema-migrator-sync:
+    image: signoz/signoz-schema-migrator:latest
+    container_name: signoz-schema-migrator-sync
+    # In single-node dev, run all migrations once and exit successfully.
+    # Avoid --dev to prevent skipping squashed migrations in local runs.
+    command: ["sync", "--dsn=tcp://admin:admin@clickhouse:9000", "--up="]
+    restart: on-failure
+    environment:
+      # Ensure migrator creates distributed_* objects using the same cluster name
+      - SIGNOZ_TELEMETRYSTORE_CLICKHOUSE_CLUSTER=cluster
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+    networks:
+      - tansucloud-network
+
+  schema-migrator-async:
+    image: signoz/signoz-schema-migrator:latest
+    container_name: signoz-schema-migrator-async
+    # Background worker; in dev, it can stay running, but should not crash-loop.
+    # Avoid --dev to prevent skipping squashed migrations in local runs.
+    command: ["async", "--dsn=tcp://admin:admin@clickhouse:9000"]
+    restart: on-failure
+    environment:
+      # Ensure migrator creates distributed_* objects using the same cluster name
+      - SIGNOZ_TELEMETRYSTORE_CLICKHOUSE_CLUSTER=cluster
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+    networks:
+      - tansucloud-network
+
+  # Dev-only compatibility init for SigNoz traces API
+  # Ensures the view signoz_traces.distributed_top_level_operations exists, which
+  # some SigNoz query paths rely on for the Services page. Idempotent and safe.
+  clickhouse-compat-init:
+    image: clickhouse/clickhouse-client:latest
+    container_name: signoz-clickhouse-compat-init
+    restart: on-failure
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+      schema-migrator-sync:
+        condition: service_started
+    networks:
+      - tansucloud-network
+    entrypoint: ["bash","-lc"]
+    command:
+      - >-
+        clickhouse-client --host clickhouse --port 9000 --user admin --password admin
+        -q "CREATE VIEW IF NOT EXISTS signoz_traces.distributed_top_level_operations ON CLUSTER cluster AS
+        SELECT name, serviceName, toDateTime(timestamp) AS time
+        FROM signoz_traces.distributed_signoz_index_v3
+        WHERE (parent_span_id = '' OR length(parent_span_id) = 0);"
 
   redis:
     image: redis:latest
@@ -76,7 +195,7 @@ services:
       PGCAT_ADMIN_PASSWORD: ${PGCAT_ADMIN_PASSWORD}
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-      POSTGRES_HOST: tansudbpg
+      POSTGRES_HOST: postgres
     volumes:
       - ./dev/pgcat/pgcat.toml:/etc/pgcat/pgcat.toml:ro
     command: ["pgcat", "/etc/pgcat/pgcat.toml"]
@@ -84,7 +203,8 @@ services:
       - "6432"
       - "9930"
     healthcheck:
-      test: ["CMD", "/bin/sh", "-lc", "pgrep pgcat >/dev/null 2>&1"]
+      # Check that the pgcat process is running (avoid relying on pgrep availability)
+      test: ["CMD-SHELL", "cat /proc/1/cmdline | tr '\\0' ' ' | grep -qi pgcat"]
       interval: 10s
       timeout: 5s
       retries: 15
@@ -96,10 +216,11 @@ services:
     build:
       context: .
       dockerfile: Dev.PgcatConfigurator/Dockerfile
+    container_name: tansu-pgcat-config
     restart: unless-stopped
     environment:
-      PG_ADMIN: "Host=tansudbpg;Port=5432;Database=postgres;Username=${POSTGRES_USER};Password=${POSTGRES_PASSWORD}"
-      PG_HOST: tansudbpg
+      PG_ADMIN: "Host=postgres;Port=5432;Database=postgres;Username=${POSTGRES_USER};Password=${POSTGRES_PASSWORD}"
+      PG_HOST: postgres
       PG_USER: ${POSTGRES_USER}
       PG_PASSWORD: ${POSTGRES_PASSWORD}
       TENANT_DB_PREFIX: tansu_tenant_
@@ -117,6 +238,7 @@ services:
     build:
       context: .
       dockerfile: TansuCloud.Identity/Dockerfile
+    container_name: tansu-identity
     restart: unless-stopped
     environment:
       ASPNETCORE_ENVIRONMENT: Development
@@ -130,7 +252,7 @@ services:
       Oidc__Dashboard__ClientSecret: ${DASHBOARD_CLIENT_SECRET:-dev-secret}
       Oidc__Dashboard__PostLogoutRedirectUri: http://127.0.0.1:8080/dashboard/signout-callback-oidc
       Oidc__Dashboard__PostLogoutRedirectUriRoot: http://127.0.0.1:8080/signout-callback-oidc
-      OpenTelemetry__Otlp__Endpoint: http://otel-collector:4317
+      OpenTelemetry__Otlp__Endpoint: http://signoz-otel-collector:4317
       ConnectionStrings__Default: "Host=pgcat;Port=6432;Database=tansu_identity;Username=${POSTGRES_USER};Password=${POSTGRES_PASSWORD}"
       Cache__Redis: redis:6379
     healthcheck:
@@ -142,18 +264,20 @@ services:
     networks:
       - tansucloud-network
     depends_on:
-      - pgcat
+      pgcat:
+        condition: service_healthy
 
   dashboard:
     build:
       context: .
       dockerfile: TansuCloud.Dashboard/Dockerfile
     user: "0:0"
+    container_name: tansu-dashboard
     restart: unless-stopped
     environment:
       ASPNETCORE_ENVIRONMENT: Development
       PublicBaseUrl: http://127.0.0.1:8080
-      OpenTelemetry__Otlp__Endpoint: http://otel-collector:4317
+      OpenTelemetry__Otlp__Endpoint: http://signoz-otel-collector:4317
       Cache__Redis: redis:6379
       Oidc__Authority: http://127.0.0.1:8080/identity
       # Use in-cluster gateway for backchannel discovery; browser-facing Authority stays on 127.0.0.1
@@ -164,11 +288,13 @@ services:
       # Dev-only: bypass id_token signature to isolate env/test issues; disable in production
       DASHBOARD_BYPASS_IDTOKEN_SIGNATURE: "1"
       GatewayBaseUrl: http://gateway:8080
-      Prometheus__BaseUrl: http://prometheus:9090
+      # Prometheus has been removed in favor of SigNoz. Leave unset to disable legacy metrics proxy.
+      # Prometheus__BaseUrl: 
     volumes:
       - tansu-dashboard-keys:/keys
     depends_on:
-      - redis
+      redis:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "/bin/busybox", "wget", "-q", "-O", "-", "http://localhost:8080/health/ready"]
       interval: 10s
@@ -182,12 +308,13 @@ services:
     build:
       context: .
       dockerfile: TansuCloud.Database/Dockerfile
+    container_name: tansu-db
     restart: unless-stopped
     environment:
       ASPNETCORE_ENVIRONMENT: Development
       Oidc__Issuer: http://127.0.0.1:8080/identity/
       Oidc__MetadataAddress: http://gateway:8080/identity/.well-known/openid-configuration
-      OpenTelemetry__Otlp__Endpoint: http://otel-collector:4317
+      OpenTelemetry__Otlp__Endpoint: http://signoz-otel-collector:4317
       Outbox__RedisConnection: redis:6379
       Outbox__Channel: tansu.outbox
       Outbox__PollSeconds: 2
@@ -195,8 +322,8 @@ services:
       Outbox__MaxAttempts: 8
       Outbox__DispatchTenant: acme-dev
       Cache__Redis: redis:6379
-      Provisioning__AdminConnectionString: Host=tansudbpg;Port=5432;Database=postgres;Username=${POSTGRES_USER};Password=${POSTGRES_PASSWORD}
-      Provisioning__RuntimeConnectionString: Host=pgcat;Port=6432;Database=postgres;Username=${POSTGRES_USER};Password=${POSTGRES_PASSWORD}
+      Provisioning__AdminConnectionString: "Host=postgres;Port=5432;Database=postgres;Username=${POSTGRES_USER};Password=${POSTGRES_PASSWORD}"
+      Provisioning__RuntimeConnectionString: "Host=pgcat;Port=6432;Database=postgres;Username=${POSTGRES_USER};Password=${POSTGRES_PASSWORD}"
       Dev__ProvisionBypassKey: letmein
     healthcheck:
       test: ["CMD", "/bin/busybox", "wget", "-q", "-O", "-", "http://localhost:8080/health/ready"]
@@ -207,20 +334,24 @@ services:
     networks:
       - tansucloud-network
     depends_on:
-      - pgcat
-      - redis
+      pgcat:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
 
   storage:
     build:
       context: .
       dockerfile: TansuCloud.Storage/Dockerfile
     user: "0:0"
+    container_name: tansu-storage
     restart: unless-stopped
     environment:
       ASPNETCORE_ENVIRONMENT: Development
+      STORAGE_ENABLE_TEST_THROW: "1" # Enable dev-only /dev/throw endpoint for E2E
       Oidc__Issuer: http://127.0.0.1:8080/identity/
       Oidc__MetadataAddress: http://gateway:8080/identity/.well-known/openid-configuration
-      OpenTelemetry__Otlp__Endpoint: http://otel-collector:4317
+      OpenTelemetry__Otlp__Endpoint: http://signoz-otel-collector:4317
       Cache__Redis: redis:6379
       # Use a writable path for filesystem-backed storage inside the container
       Storage__RootPath: /data
@@ -238,11 +369,15 @@ services:
       - tansucloud-network
     volumes:
       - tansu-storagedata:/data
+    depends_on:
+      redis:
+        condition: service_healthy
 
   gateway:
     build:
       context: .
       dockerfile: TansuCloud.Gateway/Dockerfile
+    container_name: tansu-gateway
     restart: unless-stopped
     environment:
       ASPNETCORE_ENVIRONMENT: Development
@@ -250,7 +385,7 @@ services:
       Services__IdentityBaseUrl: http://identity:8080
       Services__DatabaseBaseUrl: http://db:8080
       Services__StorageBaseUrl: http://storage:8080
-      OpenTelemetry__Otlp__Endpoint: http://otel-collector:4317
+      OpenTelemetry__Otlp__Endpoint: http://signoz-otel-collector:4317
       Cache__Redis: redis:6379
       Dev__ProvisionBypassKey: letmein
     ports:
@@ -263,12 +398,18 @@ services:
       retries: 15
       start_period: 25s
     depends_on:
-      - postgres
-      - identity
-      - dashboard
-      - db
-      - storage
-      - otel-collector
+      postgres:
+        condition: service_started
+      identity:
+        condition: service_healthy
+      dashboard:
+        condition: service_healthy
+      db:
+        condition: service_healthy
+      storage:
+        condition: service_healthy
+      signoz-otel-collector:
+        condition: service_started
     networks:
       - tansucloud-network
 
@@ -284,4 +425,10 @@ volumes:
   tansu-storagedata:
     driver: local
   tansu-dashboard-keys:
+    driver: local
+  signoz-clickhouse-data:
+    driver: local
+  signoz-zookeeper-data:
+    driver: local
+  signoz-data:
     driver: local

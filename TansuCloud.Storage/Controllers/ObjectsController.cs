@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Caching.Hybrid;
 using Microsoft.Net.Http.Headers;
+using TansuCloud.Observability.Auditing;
 using TansuCloud.Storage.Services;
 
 namespace TansuCloud.Storage.Controllers;
@@ -17,6 +18,7 @@ public sealed class ObjectsController(
     IAntivirusScanner av,
     ILogger<ObjectsController> logger,
     ITenantCacheVersion versions,
+    IAuditLogger audit,
     Microsoft.Extensions.Caching.Hybrid.HybridCache? cache = null
 ) : ControllerBase
 {
@@ -215,6 +217,17 @@ public sealed class ObjectsController(
             _ = versions.Increment(tenant.TenantId);
         }
         catch { }
+        // Audit (Storage:ObjectPut)
+        audit.TryEnqueueRedacted(
+            new AuditEvent
+            {
+                Action = "ObjectPut",
+                Category = "Storage",
+                Outcome = "Success"
+            },
+            new { Bucket = bucket, Key = key, Length = head?.Length, ContentType = head?.ContentType },
+            new[] { "Bucket", "Key", "Length", "ContentType" }
+        );
         return Created(
             $"/api/objects/{bucket}/{key}",
             new
@@ -458,8 +471,20 @@ public sealed class ObjectsController(
                 _ = versions.Increment(tenant.TenantId);
             }
             catch { }
+            // Audit (Storage:ObjectDelete)
+            audit.TryEnqueueRedacted(
+                new AuditEvent { Action = "ObjectDelete", Category = "Storage", Outcome = "Success" },
+                new { Bucket = bucket, Key = key },
+                new[] { "Bucket", "Key" }
+            );
             return NoContent();
         }
+        // Audit failure (not found)
+        audit.TryEnqueueRedacted(
+            new AuditEvent { Action = "ObjectDelete", Category = "Storage", Outcome = "Failure", ReasonCode = "NotFound" },
+            new { Bucket = bucket, Key = key },
+            new[] { "Bucket", "Key" }
+        );
         return NotFound();
     }
 

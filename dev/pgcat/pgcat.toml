@@ -24,7 +24,7 @@ password = "postgres"
 pool_size = 10
 
 [pools.postgres.shards.0]
-servers = [["tansudbpg", 5432, "primary"]]
+servers = [["postgres", 5432, "primary"]]
 database = "postgres"
 
 [pools.tansu_identity]
@@ -39,7 +39,7 @@ password = "postgres"
 pool_size = 20
 
 [pools.tansu_identity.shards.0]
-servers = [["tansudbpg", 5432, "primary"]]
+servers = [["postgres", 5432, "primary"]]
 database = "tansu_identity"
 
 [pools.tansu_tenant_e2e_server_ank]
@@ -54,7 +54,7 @@ password = "postgres"
 pool_size = 20
 
 [pools.tansu_tenant_e2e_server_ank.shards.0]
-servers = [["tansudbpg", 5432, "primary"]]
+servers = [["postgres", 5432, "primary"]]
 database = "tansu_tenant_e2e_server_ank"
 
 [pools.tansu_tenant_nightly_server_ank]
@@ -69,36 +69,126 @@ password = "postgres"
 pool_size = 20
 
 [pools.tansu_tenant_nightly_server_ank.shards.0]
-servers = [["tansudbpg", 5432, "primary"]]
+servers = [["postgres", 5432, "primary"]]
 database = "tansu_tenant_nightly_server_ank"
 
-[pools.tansu_tenant_obs_smoke_1758284583]
+[pools.tansu_tenant_obs_smoke_1758527975]
 pool_mode = "transaction"
 query_parser_enabled = true
 primary_reads_enabled = true
 load_balancing_mode = "random"
 
-[pools.tansu_tenant_obs_smoke_1758284583.users.0]
+[pools.tansu_tenant_obs_smoke_1758527975.users.0]
 username = "postgres"
 password = "postgres"
 pool_size = 20
 
-[pools.tansu_tenant_obs_smoke_1758284583.shards.0]
-servers = [["tansudbpg", 5432, "primary"]]
-database = "tansu_tenant_obs_smoke_1758284583"
+[pools.tansu_tenant_obs_smoke_1758527975.shards.0]
+servers = [["postgres", 5432, "primary"]]
+database = "tansu_tenant_obs_smoke_1758527975"
 
-[pools.tansu_tenant_obs_smoke_1758284808]
+[pools.tansu_tenant_obs_smoke_1758529896]
 pool_mode = "transaction"
 query_parser_enabled = true
 primary_reads_enabled = true
 load_balancing_mode = "random"
 
-[pools.tansu_tenant_obs_smoke_1758284808.users.0]
+[pools.tansu_tenant_obs_smoke_1758529896.users.0]
 username = "postgres"
 password = "postgres"
 pool_size = 20
 
-[pools.tansu_tenant_obs_smoke_1758284808.shards.0]
-servers = [["tansudbpg", 5432, "primary"]]
-database = "tansu_tenant_obs_smoke_1758284808"
+[pools.tansu_tenant_obs_smoke_1758529896.shards.0]
+servers = [["postgres", 5432, "primary"]]
+database = "tansu_tenant_obs_smoke_1758529896"
+
+[pools.tansu_tenant_obs_smoke_1758534793]
+pool_mode = "transaction"
+query_parser_enabled = true
+primary_reads_enabled = true
+load_balancing_mode = "random"
+
+[pools.tansu_tenant_obs_smoke_1758534793.users.0]
+username = "postgres"
+password = "postgres"
+pool_size = 20
+
+[pools.tansu_tenant_obs_smoke_1758534793.shards.0]
+servers = [["postgres", 5432, "primary"]]
+database = "tansu_tenant_obs_smoke_1758534793"
+
+[pools.tansu_tenant_obs_smoke_1758536908]
+pool_mode = "transaction"
+query_parser_enabled = true
+primary_reads_enabled = true
+load_balancing_mode = "random"
+
+[pools.tansu_tenant_obs_smoke_1758536908.users.0]
+username = "postgres"
+password = "postgres"
+pool_size = 20
+
+[pools.tansu_tenant_obs_smoke_1758536908.shards.0]
+servers = [["postgres", 5432, "primary"]]
+database = "tansu_tenant_obs_smoke_1758536908"
+
+[pools.tansu_tenant_obs_smoke_1758537208]
+pool_mode = "transaction"
+query_parser_enabled = true
+primary_reads_enabled = true
+load_balancing_mode = "random"
+
+[pools.tansu_tenant_obs_smoke_1758537208.users.0]
+username = "postgres"
+password = "postgres"
+pool_size = 20
+
+[pools.tansu_tenant_obs_smoke_1758537208.shards.0]
+servers = [["postgres", 5432, "primary"]]
+database = "tansu_tenant_obs_smoke_1758537208"
+
+[pools.tansu_tenant_obs_smoke_1758542219]
+pool_mode = "transaction"
+query_parser_enabled = true
+primary_reads_enabled = true
+load_balancing_mode = "random"
+
+[pools.tansu_tenant_obs_smoke_1758542219.users.0]
+username = "postgres"
+password = "postgres"
+pool_size = 20
+
+[pools.tansu_tenant_obs_smoke_1758542219.shards.0]
+servers = [["postgres", 5432, "primary"]]
+database = "tansu_tenant_obs_smoke_1758542219"
+
+[pools.tansu_tenant_obs_smoke_1758542921]
+pool_mode = "transaction"
+query_parser_enabled = true
+primary_reads_enabled = true
+load_balancing_mode = "random"
+
+[pools.tansu_tenant_obs_smoke_1758542921.users.0]
+username = "postgres"
+password = "postgres"
+pool_size = 20
+
+[pools.tansu_tenant_obs_smoke_1758542921.shards.0]
+servers = [["postgres", 5432, "primary"]]
+database = "tansu_tenant_obs_smoke_1758542921"
+
+[pools.tansu_tenant_obs_smoke_1758549905]
+pool_mode = "transaction"
+query_parser_enabled = true
+primary_reads_enabled = true
+load_balancing_mode = "random"
+
+[pools.tansu_tenant_obs_smoke_1758549905.users.0]
+username = "postgres"
+password = "postgres"
+pool_size = 20
+
+[pools.tansu_tenant_obs_smoke_1758549905.shards.0]
+servers = [["postgres", 5432, "primary"]]
+database = "tansu_tenant_obs_smoke_1758549905"
 

@@ -5,6 +5,7 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Moq;
+using TansuCloud.Observability.Auditing;
 using TansuCloud.Storage.Controllers;
 using TansuCloud.Storage.Services;
 
@@ -32,12 +33,15 @@ public sealed class MultipartControllerTests
             }
         );
         var logger = Mock.Of<ILogger<MultipartController>>();
+        var audit = new Mock<IAuditLogger>(MockBehavior.Loose);
+        audit.Setup(a => a.TryEnqueue(It.IsAny<AuditEvent>())).Returns(true);
         return new MultipartController(
             mp.Object,
             tenant.Object,
             presign.Object,
             opts,
-            quotas.Object
+            quotas.Object,
+            audit.Object
         );
     }
 

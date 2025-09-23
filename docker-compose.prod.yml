@@ -1,31 +1,403 @@
+# Full production docker compose
+# - Includes all core app services (gateway, identity, dashboard, db, storage, postgres, redis, pgcat)
+# - Adds an optional "observability" profile (SigNoz + ClickHouse + OTEL collector)
+# - Default posture: internal-only for observability. Only the Gateway publishes a host port (80).
+#
+# Usage:
+# - Prod only:
+#     docker compose -f docker-compose.prod.yml up -d --build
+# - Prod + Observability (enable profile):
+#     docker compose -f docker-compose.prod.yml --profile observability up -d --build
+#
+# Notes:
+# - Replace example domains/secrets below to match your environment.
+# - For HTTPS in production, configure TLS at the gateway and uncomment the 443 mapping.
+# - Keep SigNoz internal-only; expose the UI only behind VPN/SSO if required.
 
 services:
   postgres:
-    ports: []
-  otel-collector:
-    expose:
-      - "4317"
-    ports: []
+    image: tansu/citus-pgvector:local
+    container_name: tansu-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - tansu-pgdata:/var/lib/postgresql/data
+      - ./dev/db-init:/docker-entrypoint-initdb.d:ro
+    networks:
+      - tansucloud-network
+
   redis:
-    ports: []
+    image: redis:latest
+    container_name: tansu-redis
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+    volumes:
+      - tansu-redisdata:/data
+    networks:
+      - tansucloud-network
+
   pgcat:
+    image: ghcr.io/postgresml/pgcat:latest
+    container_name: tansu-pgcat
+    restart: unless-stopped
+    environment:
+      PGCAT_ADMIN_USER: ${PGCAT_ADMIN_USER}
+      PGCAT_ADMIN_PASSWORD: ${PGCAT_ADMIN_PASSWORD}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_HOST: postgres
+    volumes:
+      - ./dev/pgcat/pgcat.toml:/etc/pgcat/pgcat.toml:ro
+    command: ["pgcat", "/etc/pgcat/pgcat.toml"]
     expose:
       - "6432"
       - "9930"
-    ports: []
+    healthcheck:
+      test: ["CMD-SHELL", "cat /proc/1/cmdline | tr '\\0' ' ' | grep -qi pgcat"]
+      interval: 10s
+      timeout: 5s
+      retries: 15
+      start_period: 20s
+    networks:
+      - tansucloud-network
+
+  pgcat-config:
+    build:
+      context: .
+      dockerfile: Dev.PgcatConfigurator/Dockerfile
+    container_name: tansu-pgcat-config
+    restart: unless-stopped
+    environment:
+      PG_ADMIN: "Host=postgres;Port=5432;Database=postgres;Username=${POSTGRES_USER};Password=${POSTGRES_PASSWORD}"
+      PG_HOST: postgres
+      PG_USER: ${POSTGRES_USER}
+      PG_PASSWORD: ${POSTGRES_PASSWORD}
+      TENANT_DB_PREFIX: tansu_tenant_
+      PGCAT_ADMIN_USER: ${PGCAT_ADMIN_USER}
+      PGCAT_ADMIN_PASSWORD: ${PGCAT_ADMIN_PASSWORD}
+      PGCAT_CONFIG: /out/pgcat.toml
+    volumes:
+      - ./dev/pgcat:/out
+    depends_on:
+      - pgcat
+    networks:
+      - tansucloud-network
+
+  identity:
+    build:
+      context: .
+      dockerfile: TansuCloud.Identity/Dockerfile
+    container_name: tansu-identity
+    restart: unless-stopped
+    environment:
+      ASPNETCORE_ENVIRONMENT: Production
+      # Production issuer visible to browsers
+      Oidc__Issuer: ${PUBLIC_BASE_URL:-https://apps.example.com}/identity/
+      # Optional OTLP exporter endpoint (set when using observability profile)
+      OpenTelemetry__Otlp__Endpoint: ${OTLP_ENDPOINT:-}
+      # Dashboard client credentials
+      Oidc__Dashboard__ClientSecret: ${DASHBOARD_CLIENT_SECRET}
+      # Optional: override redirect URIs if not derived automatically
+      # Oidc__RedirectUri: ${PUBLIC_BASE_URL}/dashboard/signin-oidc
+      # Oidc__PostLogoutRedirectUri: ${PUBLIC_BASE_URL}/dashboard/signout-callback-oidc
+      # Oidc__Dashboard__RedirectUri: ${PUBLIC_BASE_URL}/dashboard/signin-oidc
+      # Oidc__Dashboard__PostLogoutRedirectUri: ${PUBLIC_BASE_URL}/dashboard/signout-callback-oidc
+      ConnectionStrings__Default: "Host=pgcat;Port=6432;Database=tansu_identity;Username=${POSTGRES_USER};Password=${POSTGRES_PASSWORD}"
+      Cache__Redis: redis:6379
+    healthcheck:
+      test: ["CMD", "/bin/busybox", "wget", "-q", "-O", "-", "http://localhost:8080/health/ready"]
+      interval: 10s
+      timeout: 5s
+      retries: 15
+      start_period: 25s
+    depends_on:
+      pgcat:
+        condition: service_healthy
+    networks:
+      - tansucloud-network
+
+  dashboard:
+    build:
+      context: .
+      dockerfile: TansuCloud.Dashboard/Dockerfile
+    container_name: tansu-dashboard
+    restart: unless-stopped
+    environment:
+      ASPNETCORE_ENVIRONMENT: Production
+      PublicBaseUrl: ${PUBLIC_BASE_URL:-https://apps.example.com}
+      Oidc__Authority: ${PUBLIC_BASE_URL:-https://apps.example.com}/identity
+      # Backchannel discovery should use the same public origin in production
+      Oidc__MetadataAddress: ${PUBLIC_BASE_URL:-https://apps.example.com}/identity/.well-known/openid-configuration
+      Oidc__RequireHttpsMetadata: true
+      Oidc__ClientId: tansu-dashboard
+      Oidc__ClientSecret: ${DASHBOARD_CLIENT_SECRET}
+      # Optional OTLP exporter endpoint (set when using observability profile)
+      OpenTelemetry__Otlp__Endpoint: ${OTLP_ENDPOINT:-}
+      Cache__Redis: redis:6379
+      GatewayBaseUrl: http://gateway:8080
+    volumes:
+      - tansu-dashboard-keys:/keys
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "/bin/busybox", "wget", "-q", "-O", "-", "http://localhost:8080/health/ready"]
+      interval: 10s
+      timeout: 5s
+      retries: 15
+      start_period: 25s
+    networks:
+      - tansucloud-network
+
+  db:
+    build:
+      context: .
+      dockerfile: TansuCloud.Database/Dockerfile
+    container_name: tansu-db
+    restart: unless-stopped
+    environment:
+      ASPNETCORE_ENVIRONMENT: Production
+      Oidc__Issuer: ${PUBLIC_BASE_URL:-https://apps.example.com}/identity/
+      # In production, prefer discovery at the public origin (HTTPS)
+      Oidc__MetadataAddress: ${PUBLIC_BASE_URL:-https://apps.example.com}/identity/.well-known/openid-configuration
+      # Optional OTLP exporter endpoint (set when using observability profile)
+      OpenTelemetry__Otlp__Endpoint: ${OTLP_ENDPOINT:-}
+      Cache__Redis: redis:6379
+      Outbox__RedisConnection: redis:6379
+      Outbox__Channel: tansu.outbox
+      Outbox__PollSeconds: 5
+      Outbox__BatchSize: 200
+      Outbox__MaxAttempts: 8
+      Provisioning__AdminConnectionString: "Host=postgres;Port=5432;Database=postgres;Username=${POSTGRES_USER};Password=${POSTGRES_PASSWORD}"
+      Provisioning__RuntimeConnectionString: "Host=pgcat;Port=6432;Database=postgres;Username=${POSTGRES_USER};Password=${POSTGRES_PASSWORD}"
+    healthcheck:
+      test: ["CMD", "/bin/busybox", "wget", "-q", "-O", "-", "http://localhost:8080/health/ready"]
+      interval: 10s
+      timeout: 5s
+      retries: 15
+      start_period: 25s
+    depends_on:
+      pgcat:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - tansucloud-network
+
+  storage:
+    build:
+      context: .
+      dockerfile: TansuCloud.Storage/Dockerfile
+    container_name: tansu-storage
+    restart: unless-stopped
+    environment:
+      ASPNETCORE_ENVIRONMENT: Production
+      Oidc__Issuer: ${PUBLIC_BASE_URL:-https://apps.example.com}/identity/
+      # In production, prefer discovery at the public origin (HTTPS)
+      Oidc__MetadataAddress: ${PUBLIC_BASE_URL:-https://apps.example.com}/identity/.well-known/openid-configuration
+      # Optional OTLP exporter endpoint (set when using observability profile)
+      OpenTelemetry__Otlp__Endpoint: ${OTLP_ENDPOINT:-}
+      Cache__Redis: redis:6379
+      Storage__RootPath: /data
+      # Consider providing a strong presign secret via environment/secrets manager in real deployments
+      Storage__PresignSecret: ${STORAGE_PRESIGN_SECRET:-change-me}
+      Storage__MultipartMaxPartSizeBytes: 1048576
+    volumes:
+      - tansu-storagedata:/data
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "/bin/busybox", "wget", "-q", "-O", "-", "http://localhost:8080/health/ready"]
+      interval: 10s
+      timeout: 5s
+      retries: 15
+      start_period: 25s
+    networks:
+      - tansucloud-network
+
   gateway:
+    build:
+      context: .
+      dockerfile: TansuCloud.Gateway/Dockerfile
+    container_name: tansu-gateway
+    restart: unless-stopped
+    environment:
+      ASPNETCORE_ENVIRONMENT: Production
+      Services__DashboardBaseUrl: http://dashboard:8080
+      Services__IdentityBaseUrl: http://identity:8080
+      Services__DatabaseBaseUrl: http://db:8080
+      Services__StorageBaseUrl: http://storage:8080
+      # Optional OTLP exporter endpoint (set when using observability profile)
+      OpenTelemetry__Otlp__Endpoint: ${OTLP_ENDPOINT:-}
+      Cache__Redis: redis:6379
     ports:
       - "80:8080"
-      # - "443:8443" # enable when TLS configured
-  identity:
-    ports: []
-  dashboard:
-    ports: []
-  db:
-    ports: []
-  storage:
-    ports: []
+      # - "443:8443" # enable when TLS is configured for the gateway
+    healthcheck:
+      test: ["CMD", "/bin/busybox", "wget", "-q", "-O", "-", "http://localhost:8080/health/ready"]
+      interval: 10s
+      timeout: 5s
+      retries: 15
+      start_period: 25s
+    depends_on:
+      postgres:
+        condition: service_started
+      identity:
+        condition: service_healthy
+      dashboard:
+        condition: service_healthy
+      db:
+        condition: service_healthy
+      storage:
+        condition: service_healthy
+    networks:
+      - tansucloud-network
+
+  # =====================
+  # Observability (optional) — enable with: --profile observability
+  # =====================
+
+  zookeeper:
+    profiles: [observability]
+    image: bitnami/zookeeper:latest
+    container_name: signoz-zookeeper
+    restart: unless-stopped
+    environment:
+      - ZOO_SERVER_ID=1
+      - ALLOW_ANONYMOUS_LOGIN=yes
+      - ZOO_AUTOPURGE_INTERVAL=1
+      - ZOO_ENABLE_PROMETHEUS_METRICS=yes
+      - ZOO_4LW_COMMANDS_WHITELIST=ruok
+    healthcheck:
+      test: ["CMD", "/bin/bash", "-lc", "wget -q -O - http://127.0.0.1:8080/commands/ruok | grep imok"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+    volumes:
+      - signoz-zookeeper-data:/bitnami/zookeeper
+    networks:
+      - tansucloud-network
+
+  clickhouse:
+    profiles: [observability]
+    image: clickhouse/clickhouse-server:latest
+    container_name: signoz-clickhouse
+    restart: unless-stopped
+    environment:
+      CLICKHOUSE_DB: signoz
+      CLICKHOUSE_USER: admin
+      CLICKHOUSE_PASSWORD: admin
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "0.0.0.0:8123/ping"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+    volumes:
+      - signoz-clickhouse-data:/var/lib/clickhouse
+      - ./dev/clickhouse/cluster.xml:/etc/clickhouse-server/config.d/cluster.xml:ro
+      - ./dev/clickhouse/zookeeper.xml:/etc/clickhouse-server/config.d/zookeeper.xml:ro
+    networks:
+      - tansucloud-network
+    depends_on:
+      - zookeeper
+
+  signoz:
+    profiles: [observability]
+    image: signoz/signoz:latest
+    container_name: signoz
+    restart: unless-stopped
+    environment:
+      - SIGNOZ_TELEMETRYSTORE_PROVIDER=clickhouse
+      - SIGNOZ_TELEMETRYSTORE_CLICKHOUSE_DSN=tcp://admin:admin@clickhouse:9000
+      - SIGNOZ_TELEMETRYSTORE_CLICKHOUSE_CLUSTER=cluster
+      - SIGNOZ_ALERTMANAGER_PROVIDER=signoz
+      - SIGNOZ_JWT_SECRET=${SIGNOZ_JWT_SECRET:-change-me}
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+    volumes:
+      - signoz-data:/var/lib/signoz
+    networks:
+      - tansucloud-network
+
+  signoz-otel-collector:
+    profiles: [observability]
+    image: signoz/signoz-otel-collector:latest
+    container_name: signoz-otel-collector
+    restart: unless-stopped
+    command:
+      - --config=/etc/otel-collector-config.yaml
+    environment:
+      - OTEL_RESOURCE_ATTRIBUTES=host.name=signoz-host,os.type=linux
+      - LOW_CARDINAL_EXCEPTION_GROUPING=false
+    expose:
+      - "4317" # OTLP gRPC
+      - "4318" # OTLP HTTP
+    volumes:
+      - ./dev/signoz-otel-collector-config.yaml:/etc/otel-collector-config.yaml:ro
+    depends_on:
+      - signoz
+      - signoz-schema-migrator-sync
+    networks:
+      - tansucloud-network
+
+  signoz-schema-migrator-sync:
+    profiles: [observability]
+    image: signoz/signoz-schema-migrator:latest
+    container_name: signoz-schema-migrator-sync
+    command: ["sync", "--dsn=tcp://admin:admin@clickhouse:9000", "--up="]
+    restart: on-failure
+    environment:
+      - SIGNOZ_TELEMETRYSTORE_CLICKHOUSE_CLUSTER=cluster
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+    networks:
+      - tansucloud-network
+
+  signoz-schema-migrator-async:
+    profiles: [observability]
+    image: signoz/signoz-schema-migrator:latest
+    container_name: signoz-schema-migrator-async
+    command: ["async", "--dsn=tcp://admin:admin@clickhouse:9000"]
+    restart: on-failure
+    environment:
+      - SIGNOZ_TELEMETRYSTORE_CLICKHOUSE_CLUSTER=cluster
+    depends_on:
+      - signoz-schema-migrator-sync
+    networks:
+      - tansucloud-network
+
 
 networks:
   tansucloud-network:
     driver: bridge
+
+volumes:
+  tansu-pgdata:
+    driver: local
+  tansu-redisdata:
+    driver: local
+  tansu-storagedata:
+    driver: local
+  tansu-dashboard-keys:
+    driver: local
+  signoz-clickhouse-data:
+    driver: local
+  signoz-zookeeper-data:
+    driver: local
+  signoz-data:
+    driver: local

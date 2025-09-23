@@ -1,14 +1,18 @@
 // Tansu.Cloud Public Repository:    https://github.com/MusaGursoy/TansuCloud
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using TansuCloud.Observability.Auditing;
 using TansuCloud.Storage.Services;
 
 namespace TansuCloud.Storage.Controllers;
 
 [ApiController]
 [Route("api/buckets")]
-public sealed class BucketsController(IObjectStorage storage, ILogger<BucketsController> logger)
-    : ControllerBase
+public sealed class BucketsController(
+    IObjectStorage storage,
+    ILogger<BucketsController> logger,
+    IAuditLogger audit
+) : ControllerBase
 {
     [HttpGet]
     [Authorize(Policy = "storage.read")]
@@ -24,6 +28,12 @@ public sealed class BucketsController(IObjectStorage storage, ILogger<BucketsCon
     {
         await storage.CreateBucketAsync(bucket, ct);
         logger.LogInformation("Created bucket {Bucket}", bucket);
+        // Audit (Storage:BucketCreate)
+        audit.TryEnqueueRedacted(
+            new AuditEvent { Action = "BucketCreate", Category = "Storage", Outcome = "Success" },
+            new { Bucket = bucket },
+            new[] { "Bucket" }
+        );
         return Created($"/api/buckets/{bucket}", new { bucket });
     }
 
@@ -38,6 +48,12 @@ public sealed class BucketsController(IObjectStorage storage, ILogger<BucketsCon
                 detail: "Bucket not empty or not found"
             );
         logger.LogInformation("Deleted bucket {Bucket}", bucket);
+        // Audit (Storage:BucketDelete)
+        audit.TryEnqueueRedacted(
+            new AuditEvent { Action = "BucketDelete", Category = "Storage", Outcome = ok ? "Success" : "Failure", ReasonCode = ok ? null : "BucketNotEmptyOrNotFound" },
+            new { Bucket = bucket },
+            new[] { "Bucket" }
+        );
         return NoContent();
     }
 } // End of Class BucketsController

@@ -2,3 +2,4 @@
 using System.Runtime.CompilerServices;
 
 [assembly: InternalsVisibleTo("TansuCloud.E2E.Tests")]
+[assembly: InternalsVisibleTo("TansuCloud.Database.UnitTests")]

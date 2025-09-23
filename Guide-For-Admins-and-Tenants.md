@@ -29,6 +29,34 @@ Tansu.Cloud is a modern backend-as-a-service (BaaS) platform built on .NET, prov
 - Internal service networking
 - OpenTelemetry collector
 
+### 4.2 Running production with a single compose file
+
+We ship exactly two compose files:
+- `docker-compose.yml` — development stack (local conveniences, dev ports)
+- `docker-compose.prod.yml` — full production stack (gateway exposed) with an optional `observability` profile
+
+Run without observability (core services only):
+
+```powershell
+docker compose -f docker-compose.prod.yml up -d --build
+```
+
+Run with observability (SigNoz + ClickHouse + OTEL collector):
+
+```powershell
+docker compose -f docker-compose.prod.yml --profile observability up -d --build
+```
+
+Environment variables to set (in `.env` or CI variables):
+- `PUBLIC_BASE_URL` — required; e.g., `https://apps.example.com`
+- `DASHBOARD_CLIENT_SECRET` — required; strong secret for the dashboard OIDC client
+- `POSTGRES_USER`, `POSTGRES_PASSWORD`, `PGCAT_ADMIN_USER`, `PGCAT_ADMIN_PASSWORD` — required
+- `OTLP_ENDPOINT` — optional; when using observability, set to `http://signoz-otel-collector:4317` to emit telemetry
+
+Security notes:
+- The SigNoz UI is not published on the host in production. Access it internally or via a VPN/SSO-protected proxy.
+- Only the Gateway maps a public port by default (`80:8080`). Enable `443:8443` after you configure TLS.
+
 ### 4.1 Custom domain and secrets (.env)
 
 Set your public base URL and sensitive values via a `.env` file next to `docker-compose.yml`. Docker Compose will auto-load it and substitute values into service environments.
@@ -52,100 +80,159 @@ PGCAT_ADMIN_PASSWORD=change-me
 GATEWAY_CERT_PASSWORD=changeit
 ```
 
-1. What these influence
+### 8.2 SigNoz metrics & dashboards (Unified Observability)
 
-- PUBLIC_BASE_URL configures all OIDC and callback URLs exposed externally:
-  - Identity issuer: `${PUBLIC_BASE_URL}/identity/`
-  - Dashboard OIDC authority: `${PUBLIC_BASE_URL}/identity`
-  - Redirect URIs (dashboard behind gateway path):
-    - `${PUBLIC_BASE_URL}/dashboard/signin-oidc`
-    - `${PUBLIC_BASE_URL}/dashboard/signout-callback-oidc`
-  - Root variants (if you front the dashboard at the domain root as an alternative):
-    - `${PUBLIC_BASE_URL}/signin-oidc`
-    - `${PUBLIC_BASE_URL}/signout-callback-oidc`
-- DASHBOARD_CLIENT_SECRET is injected into the Dashboard container as its client secret.
-- `POSTGRES_*` and `PGCAT_*` configure the database and PgCat admin access used by services.
-- GATEWAY_CERT_PASSWORD is only required when HTTPS is enabled on the gateway with a PFX (see 5.x).
+We use SigNoz as the single UI for metrics, traces, and logs. In Docker Compose (dev), the SigNoz UI is available at:
 
-1. DNS and TLS
+- [http://127.0.0.1:3301/](http://127.0.0.1:3301/)
 
-- Point your domain (A/AAAA) to the gateway host.
-- Use a valid certificate (section 5) and set `PUBLIC_BASE_URL` to the HTTPS origin.
-- After the first start, confirm discovery at `${PUBLIC_BASE_URL}/identity/.well-known/openid-configuration`.
+All services export OTLP to the in-cluster SigNoz collector. Metrics, traces, and logs appear automatically as you drive traffic through the gateway.
 
-## 5. Certificates & TLS
+Quick start (dev)
 
-- Preparing a PFX certificate
-- Mounting certs via Compose (volumes)
-- Configuring Kestrel HTTPS in gateway (appsettings Kestrel:Endpoints)
-- Setting GATEWAY_CERT_PASSWORD
+1) Bring up infra and apps (VS Code tasks: "compose: up infra (pg + redis + pgcat)" then "compose: up apps").
+2) Drive some traffic: open `/storage/health/ready` and `/db/health/ready` a few times via the gateway.
+3) Open the SigNoz UI at [http://127.0.0.1:3301/](http://127.0.0.1:3301/) and explore:
+   - Metrics: Service graphs (requests/sec, error rate, latency percentiles)
+   - Traces: End-to-end spans per request
+   - Logs: Centralized structured logs across services
 
-### 5.1 Dev SSL (self‑signed)
+Legacy in-app charts (Prometheus proxy)
 
-Use the helper script to create a local, self‑signed PFX and wire it to the gateway:
+- The Dashboard previously proxied Prometheus and rendered curated charts at `/dashboard/admin/metrics`.
+- This proxy is now disabled by default. To temporarily enable for compatibility, set `DASHBOARD_ENABLE_PROM_PROXY=1` (or configuration key `Observability:EnablePrometheusProxy=true`).
+- When disabled, the page shows a link to open the SigNoz UI instead.
 
-1. Generate a dev certificate
+Notes
 
-- Script: `dev/make-dev-cert.ps1`
-- Output: `./certs/gateway.pfx` (you’ll be prompted for a password)
+- The in-app metrics HTTP endpoints under `/dashboard/api/metrics/*` remain available only when the legacy proxy is enabled. Prefer SigNoz for day-to-day operations.
 
-1. Point the gateway to the PFX
+### SigNoz readiness and troubleshooting (dev)
 
-- HTTPS is disabled by default. Enable it via Docker Compose by mounting the PFX, exposing 443, and setting Kestrel HTTPS endpoint via environment variables:
+Use this quick section to verify the dev SigNoz stack is ready before running observability E2Es.
 
-```yaml
-services:
-	gateway:
-		ports:
-			- "80:8080"
-			- "443:8443"            # enable HTTPS (container listens on 8443)
-		volumes:
-			- ./certs:/certs:ro      # contains gateway.pfx
-		environment:
-			- Kestrel__Endpoints__Https__Url=https://0.0.0.0:8443
-			- Kestrel__Endpoints__Https__Certificate__Path=/certs/gateway.pfx
-			- GATEWAY_CERT_PASSWORD=${GATEWAY_CERT_PASSWORD}
-```
+Readiness checks
+- OTLP gRPC (collector): 127.0.0.1:4317 reachable from apps and the host (our E2E will soft-skip if not)
+- ClickHouse HTTP: http://127.0.0.1:8123 reachable (used by tests to query spans/logs)
+- SigNoz UI: http://127.0.0.1:3301 opens without errors
 
-1. Provide the password
+Dev validation route
+- Trigger an intentional exception through the Gateway to Storage:
+	- GET http://127.0.0.1:8080/storage/dev/throw?message=hello
+	- In Development, this route is anonymous and logs an Error before throwing, ensuring both log and trace signals.
 
-- Set `GATEWAY_CERT_PASSWORD` via `.env` or shell; it’s read at startup and used as the PFX password. See 5.3 for examples.
+Tables of interest (ClickHouse)
+- Traces: signoz_traces.signoz_index_v3 (includes alias columns like serviceName)
+- Logs: signoz_logs.logs_v2 (resources_string/attributes_string maps)
 
-1. Browse
+Environment variables (defaults)
+- GATEWAY_BASE_URL=http://127.0.0.1:8080
+- CLICKHOUSE_HTTP=http://127.0.0.1:8123
+- CLICKHOUSE_USER=admin / CLICKHOUSE_PASSWORD=admin
+- OTLP_GRPC_HOST=127.0.0.1 / OTLP_GRPC_PORT=4317
 
-- Start compose; navigate to `https://localhost` (trust the self‑signed cert in your browser if prompted).
+Dev vs Prod port exposure
+- Development compose publishes OTLP ports from the collector to the host: 4317:4317 (gRPC) and 4318:4318 (HTTP). This allows local tests and tools to connect via 127.0.0.1.
+- Production compose keeps the collector internal-only under the optional `observability` profile (no host port mapping). Services send telemetry to `http://signoz-otel-collector:4317` inside the network.
 
-### 5.2 Real SSL (public CA)
+Production notes
+- Keep `/storage/dev/throw` strictly Development-only.
+- For production, add TLS, SSO/RBAC for the SigNoz UI, retention/backups/HA for ClickHouse, and appropriate sampling/PII scrubbing policies.
 
-1. Obtain a PFX for your domain
+#### SigNoz UI validation (quick checks)
 
-- Include the full chain (intermediate CAs) and set a strong password.
+Use these quick checks after `docker compose up` to confirm SigNoz is healthy:
 
-1. Mount and configure
+- Open http://127.0.0.1:3301/ and ensure the landing page loads without errors.
+- Navigate to Services → a service like `TansuCloud.Gateway` should appear under load; open it and see request rate, latency, and error charts.
+- Navigate to Traces → Explorer; run a search for the last 15 minutes. You should see spans from Gateway/Identity/Database/Storage under light traffic.
+- Navigate to Logs → Recent; filter by `service.name="TansuCloud.Gateway"` and confirm new entries appear while driving requests.
+- Navigate to Dashboards → Host (or Infrastructure) and verify CPU/Memory charts populate. This is powered by the dev-only hostmetrics receiver.
+- Optional sanity queries (via ClickHouse client inside the network):
+	- `SELECT count() FROM signoz_metrics.time_series_v4` → should be non-zero and increasing.
+	- `SHOW CREATE TABLE signoz_traces.signoz_index_v3` → contains `resource.service.name` alias and `resource_string_service$$name_exists`.
 
-- Place the PFX where Docker can mount it (e.g., `./certs/mydomain.pfx`).
-- Configure the HTTPS endpoint via environment variables. The password must be provided via `GATEWAY_CERT_PASSWORD` using a `.env` file or shell variable (see 5.3):
+Troubleshooting — SigNoz migrations and metrics tables
 
-```yaml
-services:
-	gateway:
-		ports:
-			- "80:8080"
-			- "443:8443"
-		volumes:
-			- ./certs:/certs:ro
-		environment:
-			- Kestrel__Endpoints__Https__Url=https://0.0.0.0:8443
-			- Kestrel__Endpoints__Https__Certificate__Path=/certs/mydomain.pfx
-			- GATEWAY_CERT_PASSWORD=${GATEWAY_CERT_PASSWORD}
-```
+- Symptom: SigNoz UI shows no metrics; ClickHouse `signoz_metrics` DB is missing v4 time-series tables like `time_series_v4`, `samples_v4`, or migrations report UNKNOWN_TABLE on `time_series_v4`.
+- Cause: When migrations run in certain dev modes, “squashed” base migrations may be skipped and later ALTERs (e.g., migration 1000+) fail because base tables weren’t created yet.
+– Fix (dev compose):
+  1) Drop the metrics DB to reset state across the single-node cluster: `DROP DATABASE IF EXISTS signoz_metrics ON CLUSTER cluster`.
+  2) Re-run the schema migrator once so squashed migrations materialize all v4 tables. In our compose, the `schema-migrator-sync` service runs automatically; to force a one-off run:
+    - `docker run --rm --network tansucloud_tansucloud-network signoz/signoz-schema-migrator:latest sync --dsn=tcp://admin:admin@clickhouse:9000`
+  3) Verify tables exist: `SHOW TABLES FROM signoz_metrics` should list `time_series_v4`, `time_series_v4_6hrs`, `time_series_v4_1day`, `time_series_v4_1week` and their distributed/materialized views, plus `samples_v4*`.
+  4) Send traffic (or wait for hostmetrics) and confirm new rows: `SELECT count() FROM signoz_metrics.time_series_v4` and `SELECT count() FROM signoz_metrics.samples_v4`.
 
-- Or re-add the Https endpoint in appsettings to pin the URL; still provide the password via `GATEWAY_CERT_PASSWORD` only (see 5.3).
+Troubleshooting — Services page 500 (distributed_top_level_operations missing)
 
-1. DNS and callbacks
+- Symptom: Services page shows "No data" and `POST /api/v1/services` returns 500.
+- Logs: SigNoz query service reports `Unknown table signoz_traces.distributed_top_level_operations`.
+- Cause: Older/squashed migrations combined with single-node cluster setups sometimes miss creating this distributed object.
 
-- Point your DNS (A/AAAA) to the gateway host.
-- Update OIDC redirect URIs and issuers to use your HTTPS host.
+Fix (dev compose)
+
+1) Validate base table exists and has recent spans:
+
+	- `SHOW TABLES FROM signoz_traces LIKE 'distributed_signoz_index_v3';`
+	- `SELECT count() FROM signoz_traces.distributed_signoz_index_v3 WHERE timestamp > now() - INTERVAL 15 MINUTE;`
+
+2) Ensure the compatibility view exists (exposed for SigNoz Services API):
+
+	- `SHOW TABLES FROM signoz_traces LIKE 'distributed_top_level_operations';`
+	- `DESCRIBE TABLE signoz_traces.distributed_top_level_operations;` (expect columns: `name`, `serviceName`, `time`)
+
+3) Our dev compose includes an init container `signoz-clickhouse-compat-init` that creates the view idempotently:
+
+	CREATE VIEW IF NOT EXISTS signoz_traces.distributed_top_level_operations ON CLUSTER cluster AS
+	SELECT name, serviceName, toDateTime(timestamp) AS time
+	FROM signoz_traces.distributed_signoz_index_v3
+	WHERE (parent_span_id = '' OR length(parent_span_id) = 0);
+
+Notes
+
+- This is a dev-only compatibility shim to unblock the Services page. In production, rely on SigNoz-managed migrations and ensure the ClickHouse cluster name is configured consistently so ON CLUSTER DDLs create distributed objects.
+
+ON CLUSTER caveats (single-node dev)
+
+- Our ClickHouse config defines a single-node cluster named `cluster` (see `dev/clickhouse/cluster.xml`). Migrations use `ON CLUSTER cluster` DDLs. This is safe in dev; do not change the cluster name unless you update the migrator/config accordingly.
+- If you run ad‑hoc ClickHouse clients from your host, ensure you execute against the container hostname `clickhouse` on the compose network and authenticate with `admin/admin`:
+  - Example: `docker run --rm --network tansucloud_tansucloud-network clickhouse/clickhouse-client:latest --host clickhouse --user admin --password admin --query "SHOW TABLES FROM signoz_metrics"`
+- If a previous failed migration set a row in `signoz_metrics.schema_migrations_v2` to `failed`, the migrator will retry once the base tables exist. You usually don’t need to edit migration rows manually.
+
+## Health endpoints and startup probes
+
+All core services implement standardized health endpoints and Compose startup gating for reliable boot order and troubleshooting.
+
+- Endpoints per service
+	- Liveness: GET /health/live → returns 200 when the service process is up. Only checks tagged "self" are evaluated (no external dependencies).
+	- Readiness: GET /health/ready → returns 200 when required dependencies (Redis, Postgres via PgCat) are reachable. Only checks tagged "ready" are evaluated.
+
+- Via Gateway
+	- Health endpoints are reachable through the Gateway under each service base path:
+		- /identity/health/{live|ready}
+		- /dashboard/health/{live|ready}
+		- /db/health/{live|ready}
+		- /storage/health/{live|ready}
+
+- Docker Compose gating
+	- identity waits for pgcat healthy
+	- db waits for pgcat and redis healthy
+	- storage waits for redis healthy
+	- dashboard waits for redis healthy
+	- gateway waits for identity, db, storage, and dashboard to be healthy
+	- PgCat healthcheck uses a CMD-SHELL form that checks /proc/1/cmdline to avoid image differences (busybox vs bash) and flakiness.
+
+Tips
+- Check container health quickly with: `docker inspect --format "{{json .State.Health}}" <container>`
+- Readiness may intentionally be Unhealthy while a dependency is down; liveness should remain Healthy so restarts aren’t masked by dependency outages.
+
+Collector configuration
+
+- The SigNoz OpenTelemetry Collector config is stored at `dev/signoz-otel-collector-config.yaml`. It enables:
+  - Receivers: `otlp` (gRPC+HTTP) and `hostmetrics` (cpu, load, memory, filesystem, network) every 15s.
+  - Exporters: `clickhousetraces` and `clickhouselogsexporter` with `use_new_schema: true`, and `signozclickhousemetrics` to `signoz_metrics`.
+  - Pipelines: traces, logs, and metrics wired to the above exporters.
+  No changes are required for local dev; metrics should appear automatically once v4 tables exist.
 
 1. Hardening (recommended)
 
@@ -242,7 +329,50 @@ Gateway login alias
 
 - Configuration sources (appsettings, environment, user secrets)
 - Sensitive values (client secrets, cert passwords)
+
+### 7.1 Audit logging configuration (Task 31 Phase 1)
+
+Audit logging is enabled in each service via the `Audit` configuration section. Defaults are safe for development; set explicit values in production.
+
+Keys (per service appsettings/environment)
+- `Audit:ConnectionString` — PostgreSQL connection string to the audit database (e.g., `Host=postgres;Port=5432;Database=tansu_audit;Username=postgres;Password=...`).
+- `Audit:Table` — Target table name, default `audit_events`.
+- `Audit:ChannelCapacity` — In-memory queue capacity for non-blocking writes, default `10000`.
+- `Audit:FullDropEnabled` — When the channel is full, drop new events instead of blocking request path, default `true`.
+- `Audit:MaxDetailsBytes` — Maximum serialized JSON size for `Details` payloads, default `16384` bytes. Larger payloads are truncated with a marker.
+- `Audit:ClientIpHashSalt` — Optional string; when set, client IPs are pseudonymized using HMAC-SHA256 with this salt.
+
+Operational notes
+- The background writer creates the `audit_events` table and indexes at startup if missing (dev-friendly). An EF migration will be introduced in a later phase for long-term governance.
+- Metrics are published under the `TansuCloud.Audit` meter: `audit_enqueued`, `audit_dropped`, and `audit_backlog`. Use SigNoz to observe ingestion health and backlog pressure.
+- The enqueue path is non-blocking; if the channel is saturated, events are dropped and `audit_dropped` increments. Size budgets on `Details` ensure inserts remain efficient.
 - Example environment variables and key paths
+
+### 7.2 Audit UI, Export, and Retention (Task 31 Phase 3)
+
+Admin Audit page
+- Navigate to `/dashboard/admin/audit` to view the central audit trail.
+- Use the filter panel to narrow by time range, tenant, subject, category, action, service, outcome, correlation id, and "Impersonation only".
+- Click a row to see details and correlation identifiers. A quick link to SigNoz is provided for deeper trace/log analysis.
+
+Export (admin-only)
+- CSV: `GET /db/api/audit/export/csv?startUtc=...&endUtc=...&tenantId=...&...`
+- JSON: `GET /db/api/audit/export/json?startUtc=...&endUtc=...&tenantId=...&...`
+- Access control: requires an access token with `admin.full` scope.
+- Limits: server enforces an upper bound of 10,000 rows per export. You can pass `limit=NNN` to request fewer rows.
+- The export action itself is audited with an allowlisted summary (kind, count, filters).
+
+Retention (Database service)
+- Configuration section: `AuditRetention`
+	- `Days` (int, default 180): rows older than `now - Days` are removed (or redacted if configured).
+	- `LegalHoldTenants` (string[]): tenants exempt from deletion/redaction.
+	- `RedactInsteadOfDelete` (bool, default false): when true, `details` is nulled and outcome/reason are marked instead of deleting rows.
+	- `Schedule` (TimeSpan, default 6:00:00): execution interval of the background job.
+- The retention worker emits an audit event with the number of affected rows and the cutoff.
+
+Notes
+- All audit Details are already redacted at write-time via the SDK; exports do not include raw PII.
+- In Development, non-admin users can still query their own tenant’s audit events via `/db/api/audit` when providing `X-Tansu-Tenant`.
 
 ## 8. Health & Monitoring
 

@@ -2,6 +2,7 @@
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Options;
+using TansuCloud.Observability.Auditing;
 using TansuCloud.Storage.Services;
 
 namespace TansuCloud.Storage.Controllers;
@@ -13,7 +14,8 @@ public sealed class MultipartController(
     ITenantContext tenant,
     IPresignService presign,
     IOptions<StorageOptions> options,
-    IQuotaService quotas
+    IQuotaService quotas,
+    IAuditLogger audit
 ) : ControllerBase
 {
     // POST /api/multipart/{bucket}/{*key}/initiate
@@ -42,6 +44,12 @@ public sealed class MultipartController(
             }
         }
         var res = await multipart.InitiateAsync(bucket, key, ct);
+        // Audit (Storage:MultipartInitiate)
+        audit.TryEnqueueRedacted(
+            new AuditEvent { Action = "MultipartInitiate", Category = "Storage", Outcome = "Success" },
+            new { Bucket = bucket, Key = key, UploadId = res.UploadId },
+            new[] { "Bucket", "Key", "UploadId" }
+        );
         return Ok(new { res.UploadId });
     }
 
@@ -134,6 +142,12 @@ public sealed class MultipartController(
                 new("bucket", bucket)
             );
         Response.Headers.ETag = part.ETag;
+        // Audit (Storage:MultipartUploadPart)
+        audit.TryEnqueueRedacted(
+            new AuditEvent { Action = "MultipartUploadPart", Category = "Storage", Outcome = "Success" },
+            new { Bucket = bucket, Key = key, UploadId = uploadId, PartNumber = part.PartNumber, Length = part.Length },
+            new[] { "Bucket", "Key", "UploadId", "PartNumber", "Length" }
+        );
         return Ok(
             new
             {
@@ -227,6 +241,12 @@ public sealed class MultipartController(
         }
         var etag = await multipart.CompleteAsync(bucket, key, uploadId, body.Parts, ct);
         Response.Headers.ETag = etag;
+        // Audit (Storage:MultipartComplete)
+        audit.TryEnqueueRedacted(
+            new AuditEvent { Action = "MultipartComplete", Category = "Storage", Outcome = "Success" },
+            new { Bucket = bucket, Key = key, UploadId = uploadId, Parts = body.Parts.Count },
+            new[] { "Bucket", "Key", "UploadId", "Parts" }
+        );
         return Ok(
             new
             {
@@ -269,6 +289,12 @@ public sealed class MultipartController(
             }
         }
         await multipart.AbortAsync(bucket, key, uploadId, ct);
+        // Audit (Storage:MultipartAbort)
+        audit.TryEnqueueRedacted(
+            new AuditEvent { Action = "MultipartAbort", Category = "Storage", Outcome = "Success" },
+            new { Bucket = bucket, Key = key, UploadId = uploadId },
+            new[] { "Bucket", "Key", "UploadId" }
+        );
         return NoContent();
     }
 

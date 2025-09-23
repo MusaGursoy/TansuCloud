@@ -6,6 +6,7 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Moq;
+using TansuCloud.Observability.Auditing;
 using TansuCloud.Storage.Controllers;
 using TansuCloud.Storage.Services;
 
@@ -50,6 +51,8 @@ public sealed class ObjectsControllerTests
         var logger = Mock.Of<ILogger<ObjectsController>>();
         var versions = new Mock<ITenantCacheVersion>();
         versions.Setup(v => v.Get(It.IsAny<string>())).Returns(0);
+        var audit = new Mock<IAuditLogger>(MockBehavior.Loose);
+        audit.Setup(a => a.TryEnqueue(It.IsAny<AuditEvent>())).Returns(true);
         return new ObjectsController(
             storage.Object,
             tenant.Object,
@@ -58,6 +61,7 @@ public sealed class ObjectsControllerTests
             av.Object,
             logger,
             versions.Object,
+            audit.Object,
             cache: null
         );
     }
@@ -105,6 +109,7 @@ public sealed class ObjectsControllerTests
             av.Object,
             logger,
             versions,
+            audit: new Mock<IAuditLogger>(MockBehavior.Loose) { }.Object,
             cache
         );
 
@@ -174,6 +179,7 @@ public sealed class ObjectsControllerTests
             av.Object,
             logger,
             versions,
+            audit: new Mock<IAuditLogger>(MockBehavior.Loose) { }.Object,
             cache
         );
 

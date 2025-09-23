@@ -7,6 +7,7 @@ using TansuCloud.Database.Services;
 using System.Text.Json;
 using Microsoft.Extensions.Caching.Hybrid;
 using TansuCloud.Database.Caching;
+using TansuCloud.Observability.Auditing;
 
 namespace TansuCloud.Database.Controllers;
 
@@ -17,7 +18,8 @@ public sealed class CollectionsController(
     ILogger<CollectionsController> logger,
     TansuCloud.Database.Outbox.IOutboxProducer outbox,
     Microsoft.Extensions.Caching.Hybrid.HybridCache? cache = null,
-    ITenantCacheVersion? versions = null
+    ITenantCacheVersion? versions = null,
+    IAuditLogger? audit = null
 ) : ControllerBase
 {
     private readonly ITenantDbContextFactory _factory = factory;
@@ -25,6 +27,7 @@ public sealed class CollectionsController(
     private readonly TansuCloud.Database.Outbox.IOutboxProducer _outbox = outbox;
     private readonly Microsoft.Extensions.Caching.Hybrid.HybridCache? _cache = cache;
     private readonly ITenantCacheVersion? _versions = versions;
+    private readonly IAuditLogger? _audit = audit;
 
     private string Tenant() => Request.Headers["X-Tansu-Tenant"].ToString();
     private string Key(params string[] parts)
@@ -163,7 +166,22 @@ public sealed class CollectionsController(
     )
     {
         if (string.IsNullOrWhiteSpace(input.name))
+        {
+            // Audit validation failure (allowlist: name)
+            _audit?.TryEnqueueRedacted(
+                new AuditEvent
+                {
+                    Category = "Database",
+                    Action = "CollectionCreate",
+                    Outcome = "Failure",
+                    ReasonCode = "ValidationError",
+                    Subject = HttpContext.User?.Identity?.Name ?? "system"
+                },
+                new { input.name },
+                new[] { nameof(input.name) }
+            );
             return Problem(title: "name is required", statusCode: StatusCodes.Status400BadRequest);
+        }
         await using var db = await _factory.CreateAsync(HttpContext, ct);
         var entity = new Collection
         {
@@ -183,6 +201,18 @@ public sealed class CollectionsController(
         catch { }
         await db.SaveChangesAsync(ct);
     try { _versions?.Increment(Tenant()); } catch { }
+        // Audit success
+        _audit?.TryEnqueueRedacted(
+            new AuditEvent
+            {
+                Category = "Database",
+                Action = "CollectionCreate",
+                Outcome = "Success",
+                Subject = HttpContext.User?.Identity?.Name ?? "system"
+            },
+            new { entity.Id, entity.Name },
+            new[] { nameof(entity.Id), nameof(entity.Name) }
+        );
         var dto = new CollectionDto(entity.Id, entity.Name, entity.CreatedAt);
         Response.Headers.ETag = ETagHelper.ComputeWeakETag(
             entity.Id.ToString(),
@@ -250,7 +280,21 @@ public sealed class CollectionsController(
     )
     {
         if (string.IsNullOrWhiteSpace(input.name))
+        {
+            _audit?.TryEnqueueRedacted(
+                new AuditEvent
+                {
+                    Category = "Database",
+                    Action = "CollectionUpdate",
+                    Outcome = "Failure",
+                    ReasonCode = "ValidationError",
+                    Subject = HttpContext.User?.Identity?.Name ?? "system"
+                },
+                new { id, input.name },
+                new[] { nameof(id), nameof(input.name) }
+            );
             return Problem(title: "name is required", statusCode: StatusCodes.Status400BadRequest);
+        }
         await using var db = await _factory.CreateAsync(HttpContext, ct);
         var e = await db.Collections.FirstOrDefaultAsync(x => x.Id == id, ct);
         if (e is null)
@@ -267,6 +311,19 @@ public sealed class CollectionsController(
         )
         {
             Response.Headers.ETag = currentEtag;
+            // Audit precondition failure
+            _audit?.TryEnqueueRedacted(
+                new AuditEvent
+                {
+                    Category = "Database",
+                    Action = "CollectionUpdate",
+                    Outcome = "Failure",
+                    ReasonCode = "PreconditionFailed",
+                    Subject = HttpContext.User?.Identity?.Name ?? "system"
+                },
+                new { id },
+                new[] { nameof(id) }
+            );
             return StatusCode(StatusCodes.Status412PreconditionFailed);
         }
     e.Name = input.name;
@@ -281,6 +338,18 @@ public sealed class CollectionsController(
         await db.SaveChangesAsync(ct);
     // Invalidate cache for tenant via tag
     try { _versions?.Increment(Tenant()); } catch { }
+        // Audit success
+        _audit?.TryEnqueueRedacted(
+            new AuditEvent
+            {
+                Category = "Database",
+                Action = "CollectionUpdate",
+                Outcome = "Success",
+                Subject = HttpContext.User?.Identity?.Name ?? "system"
+            },
+            new { e.Id, e.Name },
+            new[] { nameof(e.Id), nameof(e.Name) }
+        );
         Response.Headers.ETag = currentEtag;
         return Ok(new CollectionDto(e.Id, e.Name, e.CreatedAt));
     } // End of Method Update
@@ -305,6 +374,19 @@ public sealed class CollectionsController(
         )
         {
             Response.Headers.ETag = currentEtag;
+            // Audit precondition failure
+            _audit?.TryEnqueueRedacted(
+                new AuditEvent
+                {
+                    Category = "Database",
+                    Action = "CollectionDelete",
+                    Outcome = "Failure",
+                    ReasonCode = "PreconditionFailed",
+                    Subject = HttpContext.User?.Identity?.Name ?? "system"
+                },
+                new { id },
+                new[] { nameof(id) }
+            );
             return StatusCode(StatusCodes.Status412PreconditionFailed);
         }
     db.Collections.Remove(e);
@@ -322,6 +404,18 @@ public sealed class CollectionsController(
             _versions?.Increment(Tenant());
         }
         catch { }
+        // Audit success
+        _audit?.TryEnqueueRedacted(
+            new AuditEvent
+            {
+                Category = "Database",
+                Action = "CollectionDelete",
+                Outcome = "Success",
+                Subject = HttpContext.User?.Identity?.Name ?? "system"
+            },
+            new { e.Id },
+            new[] { nameof(e.Id) }
+        );
         return NoContent();
     } // End of Method Delete
 } // End of Class CollectionsController

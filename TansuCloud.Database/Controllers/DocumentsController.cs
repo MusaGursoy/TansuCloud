@@ -9,6 +9,7 @@ using Microsoft.Extensions.Primitives;
 using TansuCloud.Database.Caching;
 using TansuCloud.Database.EF;
 using TansuCloud.Database.Services;
+using TansuCloud.Observability.Auditing;
 
 namespace TansuCloud.Database.Controllers;
 
@@ -19,7 +20,8 @@ public sealed class DocumentsController(
     ILogger<DocumentsController> logger,
     TansuCloud.Database.Outbox.IOutboxProducer outbox,
     Microsoft.Extensions.Caching.Hybrid.HybridCache? cache = null,
-    ITenantCacheVersion? versions = null
+    ITenantCacheVersion? versions = null,
+    IAuditLogger? audit = null
 ) : ControllerBase
 {
     private readonly ITenantDbContextFactory _factory = factory;
@@ -27,6 +29,7 @@ public sealed class DocumentsController(
     private readonly TansuCloud.Database.Outbox.IOutboxProducer _outbox = outbox;
     private readonly Microsoft.Extensions.Caching.Hybrid.HybridCache? _cache = cache;
     private readonly ITenantCacheVersion? _versions = versions;
+    private readonly IAuditLogger? _audit = audit;
 
     private string Tenant() => Request.Headers["X-Tansu-Tenant"].ToString();
 
@@ -358,20 +361,48 @@ public sealed class DocumentsController(
             }
         }
         if (input.collectionId == Guid.Empty)
+        {
+            _audit?.TryEnqueueRedacted(
+                new AuditEvent
+                {
+                    Category = "Database",
+                    Action = "DocumentCreate",
+                    Outcome = "Failure",
+                    ReasonCode = "ValidationError",
+                    Subject = HttpContext.User?.Identity?.Name ?? "system"
+                },
+                new { input.collectionId },
+                new[] { nameof(input.collectionId) }
+            );
             return Problem(
                 title: "collectionId is required",
                 statusCode: StatusCodes.Status400BadRequest
             );
+        }
         await using var db = await _factory.CreateAsync(HttpContext, ct);
         // Ensure collection exists
         var exists = await db
             .Collections.AsNoTracking()
             .AnyAsync(c => c.Id == input.collectionId, ct);
         if (!exists)
+        {
+            _audit?.TryEnqueueRedacted(
+                new AuditEvent
+                {
+                    Category = "Database",
+                    Action = "DocumentCreate",
+                    Outcome = "Failure",
+                    ReasonCode = "CollectionNotFound",
+                    Subject = HttpContext.User?.Identity?.Name ?? "system"
+                },
+                new { input.collectionId },
+                new[] { nameof(input.collectionId) }
+            );
             return Problem(
                 title: "collection not found",
                 statusCode: StatusCodes.Status400BadRequest
             );
+        }
 
         var entity = new Document
         {
@@ -406,6 +437,18 @@ public sealed class DocumentsController(
             _versions?.Increment(Tenant());
         }
         catch { }
+        // Audit success
+        _audit?.TryEnqueueRedacted(
+            new AuditEvent
+            {
+                Category = "Database",
+                Action = "DocumentCreate",
+                Outcome = "Success",
+                Subject = HttpContext.User?.Identity?.Name ?? "system"
+            },
+            new { entity.Id, entity.CollectionId },
+            new[] { nameof(entity.Id), nameof(entity.CollectionId) }
+        );
 
         // Optional: upsert vector embedding if provided and column exists
         if (input.embedding is { Length: > 0 })
@@ -477,6 +520,18 @@ public sealed class DocumentsController(
         if (!StringValues.IsNullOrEmpty(ifm) && !AnyIfMatchMatches(ifm, currentEtag))
         {
             Response.Headers.ETag = currentEtag;
+            _audit?.TryEnqueueRedacted(
+                new AuditEvent
+                {
+                    Category = "Database",
+                    Action = "DocumentUpdate",
+                    Outcome = "Failure",
+                    ReasonCode = "PreconditionFailed",
+                    Subject = HttpContext.User?.Identity?.Name ?? "system"
+                },
+                new { id },
+                new[] { nameof(id) }
+            );
             return StatusCode(StatusCodes.Status412PreconditionFailed);
         }
         if (input.content.HasValue)
@@ -504,6 +559,18 @@ public sealed class DocumentsController(
             _versions?.Increment(Tenant());
         }
         catch { }
+        // Audit success
+        _audit?.TryEnqueueRedacted(
+            new AuditEvent
+            {
+                Category = "Database",
+                Action = "DocumentUpdate",
+                Outcome = "Success",
+                Subject = HttpContext.User?.Identity?.Name ?? "system"
+            },
+            new { e.Id, e.CollectionId },
+            new[] { nameof(e.Id), nameof(e.CollectionId) }
+        );
         if (input.embedding is { Length: > 0 })
         {
             try
@@ -557,6 +624,18 @@ public sealed class DocumentsController(
         if (!StringValues.IsNullOrEmpty(ifm) && !AnyIfMatchMatches(ifm, currentEtag))
         {
             Response.Headers.ETag = currentEtag;
+            _audit?.TryEnqueueRedacted(
+                new AuditEvent
+                {
+                    Category = "Database",
+                    Action = "DocumentDelete",
+                    Outcome = "Failure",
+                    ReasonCode = "PreconditionFailed",
+                    Subject = HttpContext.User?.Identity?.Name ?? "system"
+                },
+                new { id },
+                new[] { nameof(id) }
+            );
             return StatusCode(StatusCodes.Status412PreconditionFailed);
         }
         db.Documents.Remove(e);
@@ -580,6 +659,18 @@ public sealed class DocumentsController(
             _versions?.Increment(Tenant());
         }
         catch { }
+        // Audit success
+        _audit?.TryEnqueueRedacted(
+            new AuditEvent
+            {
+                Category = "Database",
+                Action = "DocumentDelete",
+                Outcome = "Success",
+                Subject = HttpContext.User?.Identity?.Name ?? "system"
+            },
+            new { e.Id, e.CollectionId },
+            new[] { nameof(e.Id), nameof(e.CollectionId) }
+        );
         return NoContent();
     } // End of Method Delete
 

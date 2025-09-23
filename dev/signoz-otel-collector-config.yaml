@@ -1,0 +1,57 @@
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+  hostmetrics:
+    collection_interval: 15s
+    scrapers:
+      cpu: {}
+      load: {}
+      memory: {}
+      filesystem: {}
+      network: {}
+
+extensions:
+  health_check:
+    endpoint: 0.0.0.0:13133
+  pprof:
+    endpoint: 0.0.0.0:1777
+
+exporters:
+  clickhousetraces:
+    datasource: tcp://admin:admin@clickhouse:9000/signoz_traces
+    low_cardinal_exception_grouping: ${env:LOW_CARDINAL_EXCEPTION_GROUPING}
+    use_new_schema: true
+  signozclickhousemetrics:
+    dsn: tcp://admin:admin@clickhouse:9000/signoz_metrics
+  clickhouselogsexporter:
+    dsn: tcp://admin:admin@clickhouse:9000/signoz_logs
+    timeout: 10s
+    use_new_schema: true
+
+processors:
+  batch: {}
+  resourcedetection:
+    detectors: [env, system]
+
+service:
+  telemetry:
+    logs:
+      encoding: json
+  extensions: [health_check, pprof]
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [resourcedetection, batch]
+      exporters: [clickhousetraces]
+    logs:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [clickhouselogsexporter]
+    metrics:
+      receivers: [otlp, hostmetrics]
+      processors: [batch]
+      exporters: [signozclickhousemetrics]

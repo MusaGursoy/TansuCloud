@@ -1,4 +1,7 @@
 {
     "chat.agent.maxRequests": 1000,
-    "chat.editing.autoAcceptDelay": 100
+    "chat.editing.autoAcceptDelay": 0,
+    "chat.agentSessionsViewLocation": "view",
+    "chat.agent.thinkingStyle": "expanded",
+    "chat.checkpoints.showFileChanges": true
 }

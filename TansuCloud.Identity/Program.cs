@@ -6,16 +6,18 @@ using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Caching.Hybrid;
 using Microsoft.Extensions.Caching.StackExchangeRedis;
+using Microsoft.Extensions.Diagnostics.HealthChecks;
+using Microsoft.AspNetCore.Diagnostics.HealthChecks;
 using Microsoft.Extensions.Options;
 using Microsoft.IdentityModel.Tokens;
 using OpenIddict.Abstractions;
 using OpenIddict.Server;
 using OpenIddict.Server.AspNetCore;
+using Microsoft.AspNetCore.Authentication.Cookies;
 using OpenTelemetry.Logs;
 using OpenTelemetry.Metrics;
 using OpenTelemetry.Resources;
 using OpenTelemetry.Trace;
-using Microsoft.Extensions.Diagnostics.HealthChecks;
 using TansuCloud.Identity.Data;
 using TansuCloud.Identity.Infrastructure;
 using TansuCloud.Identity.Infrastructure.External;
@@ -23,6 +25,7 @@ using TansuCloud.Identity.Infrastructure.Keys;
 using TansuCloud.Identity.Infrastructure.Options;
 using TansuCloud.Identity.Infrastructure.Security;
 using TansuCloud.Observability;
+using TansuCloud.Observability.Auditing;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -62,6 +65,7 @@ builder
         metrics.AddRuntimeInstrumentation();
         metrics.AddAspNetCoreInstrumentation();
         metrics.AddHttpClientInstrumentation();
+        metrics.AddMeter("TansuCloud.Audit");
         metrics.AddOtlpExporter(otlp =>
         {
             var endpoint = builder.Configuration["OpenTelemetry:Otlp:Endpoint"];
@@ -71,8 +75,10 @@ builder
             }
         });
     });
+
 // Observability core (Task 38)
 builder.Services.AddTansuObservabilityCore();
+builder.Services.AddTansuAudit(builder.Configuration);
 builder.Logging.AddOpenTelemetry(o =>
 {
     o.IncludeFormattedMessage = true;
@@ -86,7 +92,11 @@ builder.Logging.AddOpenTelemetry(o =>
         }
     });
 });
-builder.Services.AddHealthChecks();
+builder
+    .Services.AddHealthChecks()
+    // Self liveness check
+    .AddCheck("self", () => HealthCheckResult.Healthy(), tags: new[] { "self" });
+
 // Phase 0: health transition publisher for Info logs on status change
 builder.Services.AddSingleton<IHealthCheckPublisher, HealthTransitionPublisher>();
 builder.Services.Configure<HealthCheckPublisherOptions>(o =>
@@ -141,20 +151,23 @@ if (!string.IsNullOrWhiteSpace(redisConn) && !cacheDisabled)
     builder.Services.AddStackExchangeRedisCache(o => o.Configuration = redisConn);
     builder.Services.AddHybridCache();
 }
+
 // If Redis is configured, add a health check to surface readiness in compose/dev
 var cacheRedisForHealth = builder.Configuration["Cache:Redis"];
 if (!string.IsNullOrWhiteSpace(cacheRedisForHealth))
 {
-    builder.Services
-        .AddHealthChecks()
+    builder
+        .Services.AddHealthChecks()
         .AddCheck(
             "redis",
-            new TansuCloud.Identity.Infrastructure.RedisPingHealthCheck(cacheRedisForHealth)
+            new TansuCloud.Identity.Infrastructure.RedisPingHealthCheck(cacheRedisForHealth),
+            tags: new[] { "ready", "redis" }
         );
 }
 builder.Services.AddSingleton<IHttpContextAccessor, HttpContextAccessor>();
 builder.Services.AddScoped<ISecurityAuditLogger, SecurityAuditLogger>();
 builder.Services.AddSingleton<JwksRotationService>();
+builder.Services.AddHttpContextAccessor();
 builder.Services.AddSingleton<IHostedService>(sp => sp.GetRequiredService<JwksRotationService>());
 builder.Services.AddSingleton<IKeyRotationCoordinator>(sp =>
     sp.GetRequiredService<JwksRotationService>()
@@ -190,6 +203,47 @@ builder.Services.ConfigureApplicationCookie(options =>
     options.LoginPath = "/Identity/Account/Login";
     options.AccessDeniedPath = "/Identity/Account/AccessDenied";
     options.LogoutPath = "/Identity/Account/Logout";
+    // Emit audit events for sign-in/out via application cookie lifecycle (Auth category)
+    options.Events = new CookieAuthenticationEvents
+    {
+        OnSignedIn = context =>
+        {
+            try
+            {
+                var audit = context.HttpContext.RequestServices.GetRequiredService<IAuditLogger>();
+                var ev = new AuditEvent
+                {
+                    Category = "Auth",
+                    Action = "SignIn",
+                    Subject = context.Principal?.Identity?.Name ?? "unknown",
+                    Outcome = "Success",
+                    CorrelationId = context.HttpContext.TraceIdentifier
+                };
+                // Minimal allowlisted details
+                audit.TryEnqueueRedacted(ev, new { Path = context.Request?.Path.Value }, new[] { "Path" });
+            }
+            catch { /* never throw from auth events */ }
+            return Task.CompletedTask;
+        },
+        OnSigningOut = context =>
+        {
+            try
+            {
+                var audit = context.HttpContext.RequestServices.GetRequiredService<IAuditLogger>();
+                var ev = new AuditEvent
+                {
+                    Category = "Auth",
+                    Action = "SignOut",
+                    Subject = context.HttpContext.User?.Identity?.Name ?? "unknown",
+                    Outcome = "Success",
+                    CorrelationId = context.HttpContext.TraceIdentifier
+                };
+                audit.TryEnqueueRedacted(ev, new { Path = context.Request?.Path.Value }, new[] { "Path" });
+            }
+            catch { }
+            return Task.CompletedTask;
+        }
+    };
 });
 
 // OpenIddict
@@ -266,6 +320,18 @@ builder
             builder.UseScopedHandler<TokenClaimsHandler>().Build()
         );
 
+        // Audit successful sign-ins (token issuance) via OpenIddict ProcessSignIn
+        options.AddEventHandler<OpenIddictServerEvents.ProcessSignInContext>(builder =>
+            builder.UseScopedHandler<AuthAuditHandlers.ProcessSignInAuditHandler>().Build());
+
+        options.AddEventHandler<OpenIddictServerEvents.ApplyAuthorizationResponseContext>(builder =>
+            builder.UseScopedHandler<AuthAuditHandlers.ApplyAuthorizationResponseAuditHandler>().Build());
+
+        options.AddEventHandler<OpenIddictServerEvents.ApplyTokenResponseContext>(builder =>
+            builder.UseScopedHandler<AuthAuditHandlers.ApplyTokenResponseAuditHandler>().Build());
+
+        // Handlers above will emit audit entries for success/failure paths
+
         // Handle client_credentials grant by producing a ClaimsPrincipal for the client
         options.AddEventHandler<OpenIddictServerEvents.HandleTokenRequestContext>(builder =>
             builder.UseScopedHandler<ClientCredentialsHandler>().Build()
@@ -339,6 +405,7 @@ builder
 // HttpContextAccessor already registered above
 
 builder.Services.AddRazorPages();
+
 // Observability core (Task 38)
 builder.Services.AddTansuObservabilityCore();
 builder.Services.AddControllers();
@@ -349,7 +416,7 @@ builder.Services.AddHttpClient(
     "local",
     c =>
     {
-    c.BaseAddress = new Uri("http://127.0.0.1:5095");
+        c.BaseAddress = new Uri("http://127.0.0.1:5095");
     }
 );
 
@@ -397,6 +464,7 @@ app.UseForwardedHeaders(
 // with endpoint matching for OpenIddict (e.g., /connect/token).
 
 app.UseRouting();
+
 // Enrichment middleware
 app.UseMiddleware<RequestEnrichmentMiddleware>();
 app.UseStaticFiles();
@@ -408,31 +476,42 @@ app.MapControllers();
 app.MapRazorPages();
 
 // Health endpoints
-app.MapHealthChecks("/health/live").AllowAnonymous();
-app.MapHealthChecks("/health/ready").AllowAnonymous();
+app.MapHealthChecks(
+        "/health/live",
+        new HealthCheckOptions { Predicate = r => r.Tags.Contains("self") }
+    )
+    .AllowAnonymous();
+app.MapHealthChecks(
+        "/health/ready",
+        new HealthCheckOptions { Predicate = r => r.Tags.Contains("ready") }
+    )
+    .AllowAnonymous();
 
 // Dev-only: dynamic logging override shim to aid troubleshooting
 if (app.Environment.IsDevelopment())
 {
     app.MapPost(
-        "/dev/logging/overrides",
-        (IDynamicLogLevelOverride ovr, [AsParameters] LogOverrideRequest req) =>
-        {
-            if (string.IsNullOrWhiteSpace(req.Category))
-                return Results.Problem("Category is required", statusCode: 400);
-            if (req.TtlSeconds <= 0)
-                return Results.Problem("TtlSeconds must be > 0", statusCode: 400);
-            ovr.Set(req.Category!, req.Level, TimeSpan.FromSeconds(req.TtlSeconds));
-            return Results.Ok(new { ok = true });
-        }
-    ).AllowAnonymous();
+            "/dev/logging/overrides",
+            (IDynamicLogLevelOverride ovr, [AsParameters] LogOverrideRequest req) =>
+            {
+                if (string.IsNullOrWhiteSpace(req.Category))
+                    return Results.Problem("Category is required", statusCode: 400);
+                if (req.TtlSeconds <= 0)
+                    return Results.Problem("TtlSeconds must be > 0", statusCode: 400);
+                ovr.Set(req.Category!, req.Level, TimeSpan.FromSeconds(req.TtlSeconds));
+                return Results.Ok(new { ok = true });
+            }
+        )
+        .AllowAnonymous();
     app.MapGet(
-        "/dev/logging/overrides",
-        (IDynamicLogLevelOverride ovr) =>
-            Results.Json(
-                ovr.Snapshot().ToDictionary(k => k.Key, v => new { v.Value.Level, v.Value.Expires })
-            )
-    ).AllowAnonymous();
+            "/dev/logging/overrides",
+            (IDynamicLogLevelOverride ovr) =>
+                Results.Json(
+                    ovr.Snapshot()
+                        .ToDictionary(k => k.Key, v => new { v.Value.Level, v.Value.Expires })
+                )
+        )
+        .AllowAnonymous();
 }
 
 // Placeholder for a future JWKS rotation background job

@@ -8,9 +8,10 @@ using System.Text;
 using System.Threading.RateLimiting;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.OutputCaching;
-using Microsoft.Extensions.Diagnostics.HealthChecks;
 using Microsoft.Extensions.Caching.Hybrid;
 using Microsoft.Extensions.Caching.StackExchangeRedis;
+using Microsoft.AspNetCore.Diagnostics.HealthChecks;
+using Microsoft.Extensions.Diagnostics.HealthChecks;
 using Microsoft.IdentityModel.Tokens;
 using OpenTelemetry.Logs;
 using OpenTelemetry.Metrics;
@@ -18,6 +19,7 @@ using OpenTelemetry.Resources;
 using OpenTelemetry.Trace;
 using TansuCloud.Gateway.Services;
 using TansuCloud.Observability;
+using TansuCloud.Observability.Auditing;
 using Yarp.ReverseProxy.Configuration;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -94,6 +96,7 @@ builder
         metrics.AddHttpClientInstrumentation();
         // Export custom gateway proxy meter so Prometheus sees our series
         metrics.AddMeter("TansuCloud.Gateway.Proxy");
+        metrics.AddMeter("TansuCloud.Audit");
         metrics.AddOtlpExporter(otlp =>
         {
             var endpoint = builder.Configuration["OpenTelemetry:Otlp:Endpoint"];
@@ -106,6 +109,9 @@ builder
 
 // Shared observability core (Task 38): dynamic log level overrides, etc.
 builder.Services.AddTansuObservabilityCore();
+builder.Services.AddTansuAudit(builder.Configuration);
+// Required by HttpAuditLogger to enrich events from the current request
+builder.Services.AddHttpContextAccessor();
 
 // Wire OpenTelemetry logging exporter (structured logs as OTLP) in addition to console/aspnet defaults
 builder.Logging.AddOpenTelemetry(logging =>
@@ -123,7 +129,11 @@ builder.Logging.AddOpenTelemetry(logging =>
 });
 
 // Health checks
-builder.Services.AddHealthChecks();
+builder
+    .Services.AddHealthChecks()
+    // Self liveness check (no external dependencies)
+    .AddCheck("self", () => HealthCheckResult.Healthy(), tags: new[] { "self" });
+
 // Phase 0: publish health transitions (Info) for ops visibility
 builder.Services.AddSingleton<IHealthCheckPublisher, HealthTransitionPublisher>();
 builder.Services.Configure<HealthCheckPublisherOptions>(o =>
@@ -273,7 +283,11 @@ if (!string.IsNullOrWhiteSpace(redisConn) && !disableCache)
     // Health check for Redis
     builder
         .Services.AddHealthChecks()
-        .AddCheck("redis", new TansuCloud.Gateway.Services.RedisPingHealthCheck(redisConn));
+        .AddCheck(
+            "redis",
+            new TansuCloud.Gateway.Services.RedisPingHealthCheck(redisConn),
+            tags: new[] { "ready", "redis" }
+        );
 }
 
 // Gateway knobs: rate limit window for Retry-After, and static assets cache TTL
@@ -1368,6 +1382,11 @@ app.Use(
             path.StartsWithSegments("/db/health", StringComparison.OrdinalIgnoreCase)
             || path.StartsWithSegments("/storage/health", StringComparison.OrdinalIgnoreCase);
 
+        // Dev-only: allow anonymous access to Storage diagnostic throw endpoint to validate SigNoz E2E
+        var isStorageDevThrow =
+            app.Environment.IsDevelopment()
+            && path.StartsWithSegments("/storage/dev/throw", StringComparison.OrdinalIgnoreCase);
+
         // In Development, allow provisioning calls to pass without Authorization if a valid dev bypass key is present.
         var isProvisioningBypass = false;
         if (
@@ -1415,7 +1434,13 @@ app.Use(
             }
         }
 
-        if (requiresAuth && !isHealth && !isProvisioningBypass && !isPresignedStorage)
+        if (
+            requiresAuth
+            && !isHealth
+            && !isProvisioningBypass
+            && !isPresignedStorage
+            && !isStorageDevThrow
+        )
         {
             // Reject if no Authorization header present
             if (!context.Request.Headers.ContainsKey("Authorization"))
@@ -1484,8 +1509,16 @@ app.Use(
 app.MapGet("/", () => "TansuCloud Gateway is running");
 
 // Health endpoints
-app.MapHealthChecks("/health/live").AllowAnonymous();
-app.MapHealthChecks("/health/ready").AllowAnonymous();
+app.MapHealthChecks(
+        "/health/live",
+        new HealthCheckOptions { Predicate = r => r.Tags.Contains("self") }
+    )
+    .AllowAnonymous();
+app.MapHealthChecks(
+        "/health/ready",
+        new HealthCheckOptions { Predicate = r => r.Tags.Contains("ready") }
+    )
+    .AllowAnonymous();
 
 // Enable authentication/authorization (required for admin API JWT validation)
 app.UseAuthentication();
@@ -1517,12 +1550,27 @@ adminGroup
             HttpContext http,
             RateLimitConfigDto body,
             ILoggerFactory loggerFactory,
-            IConfiguration cfg
+            IConfiguration cfg,
+            IAuditLogger audit
         ) =>
         {
             // Basic validation with ProblemDetails-style response
             if (body is null)
             {
+                try
+                {
+                    var ev = new TansuCloud.Observability.Auditing.AuditEvent
+                    {
+                        Category = "Admin",
+                        Action = "RateLimitUpdate",
+                        Outcome = "Failure",
+                        ReasonCode = "InvalidBody",
+                        Subject = http.User?.Identity?.Name ?? "anonymous",
+                        CorrelationId = http.TraceIdentifier
+                    };
+                    audit.TryEnqueueRedacted(ev, new { Path = http.Request?.Path.Value }, new[] { "Path" });
+                }
+                catch { }
                 return Results.Problem(
                     title: "Invalid body",
                     detail: "Request body is required.",
@@ -1558,6 +1606,20 @@ adminGroup
             }
             if (errors.Count > 0)
             {
+                try
+                {
+                    var ev = new TansuCloud.Observability.Auditing.AuditEvent
+                    {
+                        Category = "Admin",
+                        Action = "RateLimitUpdate",
+                        Outcome = "Failure",
+                        ReasonCode = "ValidationError",
+                        Subject = http.User?.Identity?.Name ?? "anonymous",
+                        CorrelationId = http.TraceIdentifier
+                    };
+                    audit.TryEnqueueRedacted(ev, new { Errors = errors }, new[] { "Errors" });
+                }
+                catch { }
                 return Results.ValidationProblem(
                     errors.GroupBy(e => "rateLimits").ToDictionary(g => g.Key, g => g.ToArray()),
                     statusCode: StatusCodes.Status400BadRequest,
@@ -1574,6 +1636,20 @@ adminGroup
                     || csrf != expectedCsrf
                 )
                 {
+                    try
+                    {
+                        var ev = new TansuCloud.Observability.Auditing.AuditEvent
+                        {
+                            Category = "Admin",
+                            Action = "RateLimitUpdate",
+                            Outcome = "Failure",
+                            ReasonCode = "Unauthorized",
+                            Subject = http.User?.Identity?.Name ?? "anonymous",
+                            CorrelationId = http.TraceIdentifier
+                        };
+                        audit.TryEnqueueRedacted(ev, new { Path = http.Request?.Path.Value }, new[] { "Path" });
+                    }
+                    catch { }
                     return Results.Problem(
                         title: "Unauthorized",
                         detail: "Missing or invalid X-Tansu-Csrf.",
@@ -1637,6 +1713,30 @@ adminGroup
                     after.Defaults?.QueueLimit,
                     string.Join(",", changedRoutes)
                 );
+
+                // Audit success event (allowlisted details)
+                try
+                {
+                    var ev = new TansuCloud.Observability.Auditing.AuditEvent
+                    {
+                        Category = "Admin",
+                        Action = "RateLimitUpdate",
+                        Outcome = "Success",
+                        Subject = http.User?.Identity?.Name ?? "anonymous",
+                        CorrelationId = http.TraceIdentifier
+                    };
+                    audit.TryEnqueueRedacted(
+                        ev,
+                        new
+                        {
+                            BeforeWindow = before.WindowSeconds,
+                            AfterWindow = after.WindowSeconds,
+                            ChangedRoutes = changedRoutes
+                        },
+                        new[] { "BeforeWindow", "AfterWindow", "ChangedRoutes" }
+                    );
+                }
+                catch { }
             }
             catch { }
 
@@ -1648,36 +1748,94 @@ adminGroup
 // Phase 0: dynamic log level override shim (Development only)
 if (app.Environment.IsDevelopment())
 {
-    adminGroup.MapPost(
-        "/logging/overrides",
-        (IDynamicLogLevelOverride ovr, [AsParameters] LogOverrideRequest req) =>
-        {
-            if (string.IsNullOrWhiteSpace(req.Category))
-                return Results.Problem("Category is required", statusCode: 400);
-            if (req.TtlSeconds <= 0)
-                return Results.Problem("TtlSeconds must be > 0", statusCode: 400);
-            ovr.Set(req.Category!, req.Level, TimeSpan.FromSeconds(req.TtlSeconds));
-            return Results.Ok(new { ok = true });
-        }
-    ).WithDisplayName("Admin: Set log level override (dev)");
+    adminGroup
+        .MapPost(
+            "/logging/overrides",
+            (HttpContext http, IDynamicLogLevelOverride ovr, [AsParameters] LogOverrideRequest req, IAuditLogger audit) =>
+            {
+                if (string.IsNullOrWhiteSpace(req.Category))
+                {
+                    try
+                    {
+                        var ev = new TansuCloud.Observability.Auditing.AuditEvent
+                        {
+                            Category = "Admin",
+                            Action = "LogLevelOverride",
+                            Outcome = "Failure",
+                            ReasonCode = "ValidationError",
+                            Subject = http.User?.Identity?.Name ?? "anonymous",
+                            CorrelationId = http.TraceIdentifier
+                        };
+                        audit.TryEnqueueRedacted(ev, new { Error = "CategoryRequired" }, new[] { "Error" });
+                    }
+                    catch { }
+                    return Results.Problem("Category is required", statusCode: 400);
+                }
+                if (req.TtlSeconds <= 0)
+                {
+                    try
+                    {
+                        var ev = new TansuCloud.Observability.Auditing.AuditEvent
+                        {
+                            Category = "Admin",
+                            Action = "LogLevelOverride",
+                            Outcome = "Failure",
+                            ReasonCode = "ValidationError",
+                            Subject = http.User?.Identity?.Name ?? "anonymous",
+                            CorrelationId = http.TraceIdentifier
+                        };
+                        audit.TryEnqueueRedacted(ev, new { Error = "TtlSecondsInvalid" }, new[] { "Error" });
+                    }
+                    catch { }
+                    return Results.Problem("TtlSeconds must be > 0", statusCode: 400);
+                }
+                ovr.Set(req.Category!, req.Level, TimeSpan.FromSeconds(req.TtlSeconds));
 
-    adminGroup.MapGet(
-        "/logging/overrides",
-        (IDynamicLogLevelOverride ovr) =>
-            Results.Json(
-                ovr.Snapshot().ToDictionary(k => k.Key, v => new { v.Value.Level, v.Value.Expires })
-            )
-    ).WithDisplayName("Admin: Get log level overrides (dev)");
+                // Audit success
+                try
+                {
+                    var ev = new TansuCloud.Observability.Auditing.AuditEvent
+                    {
+                        Category = "Admin",
+                        Action = "LogLevelOverride",
+                        Outcome = "Success",
+                        Subject = http.User?.Identity?.Name ?? "anonymous",
+                        CorrelationId = http.TraceIdentifier
+                    };
+                    audit.TryEnqueueRedacted(
+                        ev,
+                        new { req.Category, Level = req.Level.ToString(), req.TtlSeconds },
+                        new[] { "Category", "Level", "TtlSeconds" }
+                    );
+                }
+                catch { }
+                return Results.Ok(new { ok = true });
+            }
+        )
+        .WithDisplayName("Admin: Set log level override (dev)");
+
+    adminGroup
+        .MapGet(
+            "/logging/overrides",
+            (IDynamicLogLevelOverride ovr) =>
+                Results.Json(
+                    ovr.Snapshot()
+                        .ToDictionary(k => k.Key, v => new { v.Value.Level, v.Value.Expires })
+                )
+        )
+        .WithDisplayName("Admin: Get log level overrides (dev)");
 
     // Rate limit summary snapshot for dashboard read-only card
-    adminGroup.MapGet(
-        "/rate-limits/summary",
-        (RateLimitRejectionAggregator agg) =>
-        {
-            var snap = agg.GetLastSnapshot();
-            return snap is null ? Results.NoContent() : Results.Json(snap);
-        }
-    ).WithDisplayName("Admin: Get rate limit summary (dev)");
+    adminGroup
+        .MapGet(
+            "/rate-limits/summary",
+            (RateLimitRejectionAggregator agg) =>
+            {
+                var snap = agg.GetLastSnapshot();
+                return snap is null ? Results.NoContent() : Results.Json(snap);
+            }
+        )
+        .WithDisplayName("Admin: Get rate limit summary (dev)");
 }
 
 // Diagnostic middleware: log Identity token proxy 5xx to help deflake tests in Dev

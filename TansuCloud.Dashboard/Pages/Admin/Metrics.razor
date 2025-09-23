@@ -2,10 +2,25 @@
 @attribute [Microsoft.AspNetCore.Authorization.Authorize(Policy = "AdminOnly")]
 @using TansuCloud.Dashboard.Observability
 @inject IPrometheusQueryService Prom
+@inject Microsoft.Extensions.Configuration.IConfiguration Config
 
 <h1 data-testid="metrics-title">Metrics</h1>
 
+@code {
+    private bool ProxyEnabled =>
+        string.Equals(Environment.GetEnvironmentVariable("DASHBOARD_ENABLE_PROM_PROXY"), "1", StringComparison.OrdinalIgnoreCase)
+        || Config.GetValue("Observability:EnablePrometheusProxy", false);
+}
+
 <div class="filters" data-testid="metrics-filters">
+    @if (!ProxyEnabled)
+    {
+        <div class="alert alert-info" role="alert">
+            Metrics dashboards have moved to SigNoz. Open the SigNoz UI to explore metrics, traces, and logs.
+            <br />
+            <a class="btn btn-sm btn-outline-primary mt-2" href="http://127.0.0.1:3301/" target="_blank" rel="noopener">Open SigNoz UI</a>
+        </div>
+    }
     <label>Chart:
     <select @bind="chartId" data-testid="metrics-chart-select">
             <option value="storage.cache.hitratio">Storage cache hit ratio</option>
@@ -46,14 +61,21 @@
             <option value="60">1h</option>
         </select>
     </label>
-    <button class="btn btn-primary" data-testid="metrics-refresh" @onclick="LoadAsync">Refresh</button>
+    @if (ProxyEnabled)
+    {
+        <button class="btn btn-primary" data-testid="metrics-refresh" @onclick="LoadAsync">Refresh</button>
+    }
     @if (loading) { <span>Loading…</span> }
     @if (!string.IsNullOrEmpty(error)) { <span class="text-danger">@error</span> }
  </div>
 
 <h3>@GetChartTitle(chartId)</h3>
 <div>
-    @if (series.Count == 0 && !loading)
+    @if (!ProxyEnabled)
+    {
+        <p>Legacy in-app charts are disabled. Please use SigNoz for observability.</p>
+    }
+    else if (series.Count == 0 && !loading)
     {
         <p>No data.</p>
     }
@@ -336,7 +358,10 @@
 
     protected override async Task OnInitializedAsync()
     {
-        await LoadAsync();
+        if (ProxyEnabled)
+        {
+            await LoadAsync();
+        }
     }
 
     private async Task LoadAsync()

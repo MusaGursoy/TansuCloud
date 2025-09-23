@@ -3,6 +3,8 @@ using System.Net;
 using System.Net.Http;
 using FluentAssertions;
 using Microsoft.AspNetCore.Mvc.Testing;
+using Microsoft.AspNetCore.Hosting;
+using Microsoft.Extensions.Hosting;
 
 namespace TansuCloud.Database.UnitTests;
 

@@ -1,13 +1,14 @@
 // Tansu.Cloud Public Repository:    https://github.com/MusaGursoy/TansuCloud
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using TansuCloud.Observability.Auditing;
 using TansuCloud.Storage.Services;
 
 namespace TansuCloud.Storage.Controllers;
 
 [ApiController]
 [Route("api/presign")]
-public sealed class PresignController(IPresignService presign, ITenantContext tenant)
+public sealed class PresignController(IPresignService presign, ITenantContext tenant, IAuditLogger audit)
     : ControllerBase
 {
     public sealed record PresignRequest(
@@ -48,6 +49,12 @@ public sealed class PresignController(IPresignService presign, ITenantContext te
             query = query.Add("ct", req.ContentType);
         var url =
             $"/storage/api/objects/{Uri.EscapeDataString(req.Bucket)}/{Uri.EscapeDataString(req.Key)}{query}";
+        // Audit (Storage:PresignCreate)
+        audit.TryEnqueueRedacted(
+            new AuditEvent { Action = "PresignCreate", Category = "Storage", Outcome = "Success" },
+            new { Method = method, Bucket = req.Bucket, Key = req.Key, MaxBytes = req.MaxBytes, ContentType = req.ContentType },
+            new[] { "Method", "Bucket", "Key", "MaxBytes", "ContentType" }
+        );
         return Ok(new { url, expires = exp });
     }
 
@@ -92,6 +99,12 @@ public sealed class PresignController(IPresignService presign, ITenantContext te
             query = query.Add("q", req.Quality.Value.ToString());
 
         var url = $"/storage/api/transform/{Uri.EscapeDataString(req.Bucket)}/{Uri.EscapeDataString(req.Key)}{query}";
+        // Audit (Storage:PresignTransform)
+        audit.TryEnqueueRedacted(
+            new AuditEvent { Action = "PresignTransform", Category = "Storage", Outcome = "Success" },
+            new { Bucket = req.Bucket, Key = req.Key, Width = req.Width, Height = req.Height, Format = req.Format, Quality = req.Quality },
+            new[] { "Bucket", "Key", "Width", "Height", "Format", "Quality" }
+        );
         return Ok(new { url, expires = exp });
     }
 } // End of Class PresignController

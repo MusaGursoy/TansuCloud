@@ -12,6 +12,7 @@ using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.Diagnostics.HealthChecks;
+using Microsoft.AspNetCore.Diagnostics.HealthChecks;
 using Microsoft.IdentityModel.Protocols; // For ConfigurationManager
 using Microsoft.IdentityModel.Protocols.OpenIdConnect; // For OpenIdConnectConfigurationRetriever
 using Microsoft.IdentityModel.Tokens;
@@ -25,6 +26,7 @@ using TansuCloud.Dashboard.Hosting;
 using TansuCloud.Dashboard.Observability;
 using TansuCloud.Dashboard.Observability.Logging;
 using TansuCloud.Observability;
+using TansuCloud.Observability.Auditing;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -91,6 +93,7 @@ builder
         metrics.AddRuntimeInstrumentation();
         metrics.AddAspNetCoreInstrumentation();
         metrics.AddHttpClientInstrumentation();
+        metrics.AddMeter("TansuCloud.Audit");
         metrics.AddOtlpExporter(otlp =>
         {
             var endpoint = builder.Configuration["OpenTelemetry:Otlp:Endpoint"];
@@ -100,8 +103,10 @@ builder
             }
         });
     });
+
 // Observability core (Task 38)
 builder.Services.AddTansuObservabilityCore();
+builder.Services.AddTansuAudit(builder.Configuration);
 builder.Logging.AddOpenTelemetry(o =>
 {
     o.IncludeFormattedMessage = true;
@@ -123,7 +128,10 @@ builder.Logging.AddFilter("OIDC-Callback", LogLevel.Information);
 // Ensure custom diagnostics for metrics auth probe and ticket events are emitted
 builder.Logging.AddFilter("MetricsAuthDiag", LogLevel.Information);
 builder.Logging.AddFilter("OIDC-Ticket", LogLevel.Information);
-builder.Services.AddHealthChecks();
+builder
+    .Services.AddHealthChecks()
+    .AddCheck("self", () => HealthCheckResult.Healthy(), tags: new[] { "self" });
+
 // Phase 0: publish health transitions
 builder.Services.AddSingleton<IHealthCheckPublisher, HealthTransitionPublisher>();
 builder.Services.Configure<HealthCheckPublisherOptions>(o =>
@@ -151,10 +159,25 @@ builder.Services.AddSignalR(o =>
 });
 builder.Services.AddHttpContextAccessor();
 
-// Observability: Prometheus options + HTTP client and query service
+// Observability: Legacy Prometheus proxy (temporary; disabled by default). Use SigNoz UI instead.
 builder.Services.Configure<PrometheusOptions>(builder.Configuration.GetSection("Prometheus"));
-builder.Services.AddHttpClient("prometheus");
-builder.Services.AddSingleton<IPrometheusQueryService, PrometheusQueryService>();
+var enablePromProxy =
+    string.Equals(
+        Environment.GetEnvironmentVariable("DASHBOARD_ENABLE_PROM_PROXY"),
+        "1",
+        StringComparison.OrdinalIgnoreCase
+    ) || builder.Configuration.GetValue("Observability:EnablePrometheusProxy", false);
+if (enablePromProxy)
+{
+    builder.Services.AddHttpClient("prometheus");
+    builder.Services.AddSingleton<IPrometheusQueryService, PrometheusQueryService>();
+    Console.WriteLine("[Observability] Legacy Prometheus proxy ENABLED (dev/compat)");
+}
+else
+{
+    builder.Services.AddSingleton<IPrometheusQueryService, NoopPrometheusQueryService>();
+    Console.WriteLine("[Observability] Prometheus proxy DISABLED. Use SigNoz UI for metrics.");
+}
 
 // Log capture and reporting: options, buffer, provider, runtime switch, reporter, background service
 builder.Services.Configure<LoggingReportOptions>(builder.Configuration.GetSection("LoggingReport"));
@@ -1481,13 +1504,15 @@ builder.Services.AddSingleton(sp =>
 );
 
 var app = builder.Build();
+
 // Startup diagnostic: log OIDC metadata source choice (Task 38)
 try
 {
     var log = app.Services.GetRequiredService<ILoggerFactory>().CreateLogger("OIDC-Config");
     var authority = builder.Configuration["Oidc:Authority"] ?? "http://127.0.0.1:8080/identity";
     var configuredMd = builder.Configuration["Oidc:MetadataAddress"];
-    string effectiveMd = configuredMd ?? ($"{authority!.TrimEnd('/')}/.well-known/openid-configuration");
+    string effectiveMd =
+        configuredMd ?? ($"{authority!.TrimEnd('/')}/.well-known/openid-configuration");
     var src = string.IsNullOrWhiteSpace(configuredMd) ? "authority-derived" : "explicit-config";
     log.LogOidcMetadataChoice(src, authority.TrimEnd('/'), effectiveMd);
 }
@@ -1865,31 +1890,94 @@ app.MapStaticAssets().AllowAnonymous();
 // API endpoints (map BEFORE Razor components so Blazor's catch-all doesn't shadow /api/*)
 // --------------------
 // Health endpoints
-app.MapHealthChecks("/health/live").AllowAnonymous();
-app.MapHealthChecks("/health/ready").AllowAnonymous();
+app.MapHealthChecks(
+        "/health/live",
+        new HealthCheckOptions { Predicate = r => r.Tags.Contains("self") }
+    )
+    .AllowAnonymous();
+app.MapHealthChecks(
+        "/health/ready",
+        new HealthCheckOptions { Predicate = r => r.Tags.Contains("ready") }
+    )
+    .AllowAnonymous();
 
 // Dev-only: expose dynamic logging override shim for Dashboard logs too
 if (app.Environment.IsDevelopment())
 {
     app.MapPost(
-        "/dev/logging/overrides",
-        (IDynamicLogLevelOverride ovr, [AsParameters] LogOverrideRequest req) =>
-        {
-            if (string.IsNullOrWhiteSpace(req.Category))
-                return Results.Problem("Category is required", statusCode: 400);
-            if (req.TtlSeconds <= 0)
-                return Results.Problem("TtlSeconds must be > 0", statusCode: 400);
-            ovr.Set(req.Category!, req.Level, TimeSpan.FromSeconds(req.TtlSeconds));
-            return Results.Ok(new { ok = true });
-        }
-    ).AllowAnonymous();
+            "/dev/logging/overrides",
+            (HttpContext http, IDynamicLogLevelOverride ovr, [AsParameters] LogOverrideRequest req, IAuditLogger audit) =>
+            {
+                if (string.IsNullOrWhiteSpace(req.Category))
+                {
+                    try
+                    {
+                        var ev = new TansuCloud.Observability.Auditing.AuditEvent
+                        {
+                            Category = "Admin",
+                            Action = "LogLevelOverride",
+                            Outcome = "Failure",
+                            ReasonCode = "ValidationError",
+                            Subject = http.User?.Identity?.Name ?? "anonymous",
+                            CorrelationId = http.TraceIdentifier
+                        };
+                        audit.TryEnqueueRedacted(ev, new { Error = "CategoryRequired" }, new[] { "Error" });
+                    }
+                    catch { }
+                    return Results.Problem("Category is required", statusCode: 400);
+                }
+                if (req.TtlSeconds <= 0)
+                {
+                    try
+                    {
+                        var ev = new TansuCloud.Observability.Auditing.AuditEvent
+                        {
+                            Category = "Admin",
+                            Action = "LogLevelOverride",
+                            Outcome = "Failure",
+                            ReasonCode = "ValidationError",
+                            Subject = http.User?.Identity?.Name ?? "anonymous",
+                            CorrelationId = http.TraceIdentifier
+                        };
+                        audit.TryEnqueueRedacted(ev, new { Error = "TtlSecondsInvalid" }, new[] { "Error" });
+                    }
+                    catch { }
+                    return Results.Problem("TtlSeconds must be > 0", statusCode: 400);
+                }
+                ovr.Set(req.Category!, req.Level, TimeSpan.FromSeconds(req.TtlSeconds));
+
+                // Audit success
+                try
+                {
+                    var ev = new TansuCloud.Observability.Auditing.AuditEvent
+                    {
+                        Category = "Admin",
+                        Action = "LogLevelOverride",
+                        Outcome = "Success",
+                        Subject = http.User?.Identity?.Name ?? "anonymous",
+                        CorrelationId = http.TraceIdentifier
+                    };
+                    audit.TryEnqueueRedacted(
+                        ev,
+                        new { req.Category, Level = req.Level.ToString(), req.TtlSeconds },
+                        new[] { "Category", "Level", "TtlSeconds" }
+                    );
+                }
+                catch { }
+
+                return Results.Ok(new { ok = true });
+            }
+        )
+        .AllowAnonymous();
     app.MapGet(
-        "/dev/logging/overrides",
-        (IDynamicLogLevelOverride ovr) =>
-            Results.Json(
-                ovr.Snapshot().ToDictionary(k => k.Key, v => new { v.Value.Level, v.Value.Expires })
-            )
-    ).AllowAnonymous();
+            "/dev/logging/overrides",
+            (IDynamicLogLevelOverride ovr) =>
+                Results.Json(
+                    ovr.Snapshot()
+                        .ToDictionary(k => k.Key, v => new { v.Value.Level, v.Value.Expires })
+                )
+        )
+        .AllowAnonymous();
 }
 
 // Admin-only metrics API (allowlisted)
@@ -1906,12 +1994,28 @@ app.MapGet(
             Microsoft.Extensions.Options.IOptionsMonitor<TansuCloud.Dashboard.Observability.Logging.LogReportingOptions> monitor,
             Microsoft.Extensions.Options.IOptionsMonitor<LoggingReportOptions> capture,
             ILogReportingRuntimeSwitch runtime,
-            ILogBuffer buffer
+            ILogBuffer buffer,
+            HttpContext http,
+            IAuditLogger audit
         ) =>
         {
             var opts = monitor.CurrentValue;
             var captureOpts = capture.CurrentValue;
             var effective = (opts.Enabled && runtime.Enabled);
+            // Audit read of status (admin)
+            try
+            {
+                var ev = new TansuCloud.Observability.Auditing.AuditEvent
+                {
+                    Category = "Admin",
+                    Action = "LogReportingStatusRead",
+                    Outcome = "Success",
+                    Subject = http.User?.Identity?.Name ?? "anonymous",
+                    CorrelationId = http.TraceIdentifier
+                };
+                audit.TryEnqueueRedacted(ev, new { Effective = effective }, new[] { "Effective" });
+            }
+            catch { }
             return Results.Json(
                 new
                 {
@@ -1941,9 +2045,23 @@ app.MapGet(
 
 app.MapPost(
         "/api/admin/log-reporting/toggle",
-        ([FromBody] TansuCloud.Dashboard.ToggleRequest body, ILogReportingRuntimeSwitch runtime) =>
+        ([FromBody] TansuCloud.Dashboard.ToggleRequest body, ILogReportingRuntimeSwitch runtime, HttpContext http, IAuditLogger audit) =>
         {
             runtime.Enabled = body.Enabled;
+            // Audit toggle
+            try
+            {
+                var ev = new TansuCloud.Observability.Auditing.AuditEvent
+                {
+                    Category = "Admin",
+                    Action = "LogReportingToggle",
+                    Outcome = "Success",
+                    Subject = http.User?.Identity?.Name ?? "anonymous",
+                    CorrelationId = http.TraceIdentifier
+                };
+                audit.TryEnqueueRedacted(ev, new { body.Enabled }, new[] { "Enabled" });
+            }
+            catch { }
             return Results.NoContent();
         }
     )
@@ -1952,7 +2070,7 @@ app.MapPost(
 // Admin API: recent logs snapshot (paged basic)
 app.MapGet(
         "/api/admin/logs/recent",
-        (ILogBuffer buffer, int? take, string? level, string? categoryContains, int? skip) =>
+        (ILogBuffer buffer, int? take, string? level, string? categoryContains, int? skip, HttpContext http, IAuditLogger audit) =>
         {
             var items = buffer.Snapshot().AsEnumerable();
             if (!string.IsNullOrWhiteSpace(level))
@@ -1973,6 +2091,24 @@ app.MapGet(
             var t = Math.Max(1, take ?? 200);
             var s = Math.Max(0, skip ?? 0);
             var list = items.Skip(s).Take(t).ToList();
+            // Audit read (admin)
+            try
+            {
+                var ev = new TansuCloud.Observability.Auditing.AuditEvent
+                {
+                    Category = "Admin",
+                    Action = "LogsRecentRead",
+                    Outcome = "Success",
+                    Subject = http.User?.Identity?.Name ?? "anonymous",
+                    CorrelationId = http.TraceIdentifier
+                };
+                audit.TryEnqueueRedacted(
+                    ev,
+                    new { Take = t, Skip = s, Level = level ?? string.Empty, CategoryContains = categoryContains ?? string.Empty },
+                    new[] { "Take", "Skip", "Level", "CategoryContains" }
+                );
+            }
+            catch { }
             return Results.Json(list);
         }
     )
@@ -1987,6 +2123,8 @@ app.MapGet(
             int? rangeMinutes,
             int? stepSeconds,
             IPrometheusQueryService svc,
+            HttpContext http,
+            IAuditLogger audit,
             CancellationToken ct
         ) =>
         {
@@ -2003,6 +2141,24 @@ app.MapGet(
             var data = await svc.QueryRangeAsync(chartId, tenant, service, range, step, ct);
             object payload =
                 (object?)data ?? new { resultType = "matrix", result = Array.Empty<object>() };
+            // Audit metrics range read
+            try
+            {
+                var ev = new TansuCloud.Observability.Auditing.AuditEvent
+                {
+                    Category = "Admin",
+                    Action = "MetricsRangeQuery",
+                    Outcome = "Success",
+                    Subject = http.User?.Identity?.Name ?? "anonymous",
+                    CorrelationId = http.TraceIdentifier
+                };
+                audit.TryEnqueueRedacted(
+                    ev,
+                    new { ChartId = chartId, Tenant = tenant ?? string.Empty, Service = service ?? string.Empty, RangeMinutes = rangeMinutes, StepSeconds = stepSeconds },
+                    new[] { "ChartId", "Tenant", "Service", "RangeMinutes", "StepSeconds" }
+                );
+            }
+            catch { }
             return Results.Json(payload);
         }
     )
@@ -2016,6 +2172,8 @@ app.MapGet(
             string? service,
             DateTimeOffset? at,
             IPrometheusQueryService svc,
+            HttpContext http,
+            IAuditLogger audit,
             CancellationToken ct
         ) =>
         {
@@ -2028,6 +2186,24 @@ app.MapGet(
             var data = await svc.QueryInstantAsync(chartId, tenant, service, at, ct);
             object payload =
                 (object?)data ?? new { resultType = "vector", result = Array.Empty<object>() };
+            // Audit metrics instant read
+            try
+            {
+                var ev = new TansuCloud.Observability.Auditing.AuditEvent
+                {
+                    Category = "Admin",
+                    Action = "MetricsInstantQuery",
+                    Outcome = "Success",
+                    Subject = http.User?.Identity?.Name ?? "anonymous",
+                    CorrelationId = http.TraceIdentifier
+                };
+                audit.TryEnqueueRedacted(
+                    ev,
+                    new { ChartId = chartId, Tenant = tenant ?? string.Empty, Service = service ?? string.Empty, At = at },
+                    new[] { "ChartId", "Tenant", "Service", "At" }
+                );
+            }
+            catch { }
             return Results.Json(payload);
         }
     )
@@ -2122,14 +2298,6 @@ public sealed record LogOverrideRequest(string Category, LogLevel Level, int Ttl
 // Support types (kept at end to avoid interfering with top-level statements above)
 namespace TansuCloud.Dashboard
 {
-    public sealed record MetricsRangeRequest(
-        string ChartId,
-        string? Tenant,
-        string? Service,
-        TimeSpan? Range,
-        TimeSpan? Step
-    );
-
     // Deterministic static configuration manager to avoid races once discovery & JWKS are loaded at startup.
     sealed class StaticConfigurationManager<T> : IConfigurationManager<T>
         where T : class
