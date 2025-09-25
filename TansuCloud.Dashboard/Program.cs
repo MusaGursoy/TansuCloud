@@ -1,5 +1,7 @@
 // Tansu.Cloud Public Repository:    https://github.com/MusaGursoy/TansuCloud
+using System.Collections.Generic;
 using System.IdentityModel.Tokens.Jwt; // For token inspection logging
+using System.Linq;
 using System.Net.Http;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Authentication;
@@ -7,12 +9,12 @@ using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.AspNetCore.Authentication.OpenIdConnect;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.DataProtection;
+using Microsoft.AspNetCore.Diagnostics.HealthChecks;
 using Microsoft.AspNetCore.Http.Connections;
 using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.Diagnostics.HealthChecks;
-using Microsoft.AspNetCore.Diagnostics.HealthChecks;
 using Microsoft.IdentityModel.Protocols; // For ConfigurationManager
 using Microsoft.IdentityModel.Protocols.OpenIdConnect; // For OpenIdConnectConfigurationRetriever
 using Microsoft.IdentityModel.Tokens;
@@ -29,6 +31,28 @@ using TansuCloud.Observability;
 using TansuCloud.Observability.Auditing;
 
 var builder = WebApplication.CreateBuilder(args);
+
+static IReadOnlyList<SecurityKey> DeduplicateSigningKeys(IEnumerable<SecurityKey> keys)
+{
+    var result = new List<SecurityKey>();
+    var seen = new HashSet<string>(StringComparer.Ordinal);
+
+    foreach (var key in keys)
+    {
+        if (key is null)
+        {
+            continue;
+        }
+
+        var kid = key.KeyId;
+        if (kid is null || seen.Add(kid))
+        {
+            result.Add(key);
+        }
+    }
+
+    return result;
+}
 
 // Resolve the public base URL (what browsers should see). Prefer explicit PublicBaseUrl, then GatewayBaseUrl, then localhost.
 var publicBaseUrl =
@@ -159,25 +183,10 @@ builder.Services.AddSignalR(o =>
 });
 builder.Services.AddHttpContextAccessor();
 
-// Observability: Legacy Prometheus proxy (temporary; disabled by default). Use SigNoz UI instead.
-builder.Services.Configure<PrometheusOptions>(builder.Configuration.GetSection("Prometheus"));
-var enablePromProxy =
-    string.Equals(
-        Environment.GetEnvironmentVariable("DASHBOARD_ENABLE_PROM_PROXY"),
-        "1",
-        StringComparison.OrdinalIgnoreCase
-    ) || builder.Configuration.GetValue("Observability:EnablePrometheusProxy", false);
-if (enablePromProxy)
-{
-    builder.Services.AddHttpClient("prometheus");
-    builder.Services.AddSingleton<IPrometheusQueryService, PrometheusQueryService>();
-    Console.WriteLine("[Observability] Legacy Prometheus proxy ENABLED (dev/compat)");
-}
-else
-{
-    builder.Services.AddSingleton<IPrometheusQueryService, NoopPrometheusQueryService>();
-    Console.WriteLine("[Observability] Prometheus proxy DISABLED. Use SigNoz UI for metrics.");
-}
+// Observability: Metrics flow through SigNoz; legacy in-app Prometheus proxy removed.
+Console.WriteLine(
+    "[Observability] SigNoz now provides metrics, traces, and logs. In-app Prometheus proxy disabled."
+);
 
 // Log capture and reporting: options, buffer, provider, runtime switch, reporter, background service
 builder.Services.Configure<LoggingReportOptions>(builder.Configuration.GetSection("LoggingReport"));
@@ -1642,22 +1651,26 @@ app.Use(
                     catch { }
                     var jwksJson = await http.GetStringAsync(jwksUrl, context.RequestAborted);
                     var jwks = new JsonWebKeySet(jwksJson);
-                    foreach (var k in jwks.GetSigningKeys())
+                    var dedupedKeys = DeduplicateSigningKeys(jwks.GetSigningKeys());
+                    opts.Configuration.SigningKeys.Clear();
+                    foreach (var key in dedupedKeys)
                     {
-                        opts.Configuration.SigningKeys.Add(k);
+                        opts.Configuration.SigningKeys.Add(key);
                     }
+                    opts.TokenValidationParameters.IssuerSigningKeys = dedupedKeys;
                 }
-                // Inject into TokenValidationParameters if empty
-                if (
-                    opts.Configuration?.SigningKeys.Count > 0
-                    && (
-                        opts.TokenValidationParameters.IssuerSigningKeys == null
-                        || !opts.TokenValidationParameters.IssuerSigningKeys.Any()
-                    )
-                )
+                else if (opts.Configuration?.SigningKeys.Count > 0)
                 {
-                    opts.TokenValidationParameters.IssuerSigningKeys =
-                        opts.Configuration.SigningKeys.ToList();
+                    var dedupedKeys = DeduplicateSigningKeys(opts.Configuration.SigningKeys);
+                    if (dedupedKeys.Count != opts.Configuration.SigningKeys.Count)
+                    {
+                        opts.Configuration.SigningKeys.Clear();
+                        foreach (var key in dedupedKeys)
+                        {
+                            opts.Configuration.SigningKeys.Add(key);
+                        }
+                    }
+                    opts.TokenValidationParameters.IssuerSigningKeys = dedupedKeys;
                 }
                 // Console diagnostics (bypass logging filters)
                 Console.WriteLine(
@@ -1713,19 +1726,26 @@ app.Use(
                     catch { }
                     var jwksJson = await http.GetStringAsync(jwksUrl, context.RequestAborted);
                     var jwks = new JsonWebKeySet(jwksJson);
-                    foreach (var k in jwks.GetSigningKeys())
-                        opts.Configuration.SigningKeys.Add(k);
-                    if (
-                        opts.Configuration.SigningKeys.Count > 0
-                        && (
-                            opts.TokenValidationParameters.IssuerSigningKeys == null
-                            || !opts.TokenValidationParameters.IssuerSigningKeys.Any()
-                        )
-                    )
+                    var dedupedKeys = DeduplicateSigningKeys(jwks.GetSigningKeys());
+                    opts.Configuration.SigningKeys.Clear();
+                    foreach (var key in dedupedKeys)
                     {
-                        opts.TokenValidationParameters.IssuerSigningKeys =
-                            opts.Configuration.SigningKeys.ToList();
+                        opts.Configuration.SigningKeys.Add(key);
                     }
+                    opts.TokenValidationParameters.IssuerSigningKeys = dedupedKeys;
+                }
+                else if (opts.Configuration?.SigningKeys.Count > 0)
+                {
+                    var dedupedKeys = DeduplicateSigningKeys(opts.Configuration.SigningKeys);
+                    if (dedupedKeys.Count != opts.Configuration.SigningKeys.Count)
+                    {
+                        opts.Configuration.SigningKeys.Clear();
+                        foreach (var key in dedupedKeys)
+                        {
+                            opts.Configuration.SigningKeys.Add(key);
+                        }
+                    }
+                    opts.TokenValidationParameters.IssuerSigningKeys = dedupedKeys;
                 }
             }
             catch { }
@@ -1906,7 +1926,12 @@ if (app.Environment.IsDevelopment())
 {
     app.MapPost(
             "/dev/logging/overrides",
-            (HttpContext http, IDynamicLogLevelOverride ovr, [AsParameters] LogOverrideRequest req, IAuditLogger audit) =>
+            (
+                HttpContext http,
+                IDynamicLogLevelOverride ovr,
+                [AsParameters] LogOverrideRequest req,
+                IAuditLogger audit
+            ) =>
             {
                 if (string.IsNullOrWhiteSpace(req.Category))
                 {
@@ -1921,7 +1946,11 @@ if (app.Environment.IsDevelopment())
                             Subject = http.User?.Identity?.Name ?? "anonymous",
                             CorrelationId = http.TraceIdentifier
                         };
-                        audit.TryEnqueueRedacted(ev, new { Error = "CategoryRequired" }, new[] { "Error" });
+                        audit.TryEnqueueRedacted(
+                            ev,
+                            new { Error = "CategoryRequired" },
+                            new[] { "Error" }
+                        );
                     }
                     catch { }
                     return Results.Problem("Category is required", statusCode: 400);
@@ -1939,7 +1968,11 @@ if (app.Environment.IsDevelopment())
                             Subject = http.User?.Identity?.Name ?? "anonymous",
                             CorrelationId = http.TraceIdentifier
                         };
-                        audit.TryEnqueueRedacted(ev, new { Error = "TtlSecondsInvalid" }, new[] { "Error" });
+                        audit.TryEnqueueRedacted(
+                            ev,
+                            new { Error = "TtlSecondsInvalid" },
+                            new[] { "Error" }
+                        );
                     }
                     catch { }
                     return Results.Problem("TtlSeconds must be > 0", statusCode: 400);
@@ -1959,7 +1992,12 @@ if (app.Environment.IsDevelopment())
                     };
                     audit.TryEnqueueRedacted(
                         ev,
-                        new { req.Category, Level = req.Level.ToString(), req.TtlSeconds },
+                        new
+                        {
+                            req.Category,
+                            Level = req.Level.ToString(),
+                            req.TtlSeconds
+                        },
                         new[] { "Category", "Level", "TtlSeconds" }
                     );
                 }
@@ -1980,12 +2018,7 @@ if (app.Environment.IsDevelopment())
         .AllowAnonymous();
 }
 
-// Admin-only metrics API (allowlisted)
-app.MapGet(
-        "/api/metrics/catalog",
-        () => Results.Json(TansuCloud.Dashboard.Observability.ChartCatalog.All)
-    )
-    .RequireAuthorization("AdminOnly");
+// Admin-only metrics endpoints removed: SigNoz now provides metrics dashboards.
 
 // Admin-only log reporting status/toggle API
 app.MapGet(
@@ -2045,7 +2078,12 @@ app.MapGet(
 
 app.MapPost(
         "/api/admin/log-reporting/toggle",
-        ([FromBody] TansuCloud.Dashboard.ToggleRequest body, ILogReportingRuntimeSwitch runtime, HttpContext http, IAuditLogger audit) =>
+        (
+            [FromBody] TansuCloud.Dashboard.ToggleRequest body,
+            ILogReportingRuntimeSwitch runtime,
+            HttpContext http,
+            IAuditLogger audit
+        ) =>
         {
             runtime.Enabled = body.Enabled;
             // Audit toggle
@@ -2070,7 +2108,15 @@ app.MapPost(
 // Admin API: recent logs snapshot (paged basic)
 app.MapGet(
         "/api/admin/logs/recent",
-        (ILogBuffer buffer, int? take, string? level, string? categoryContains, int? skip, HttpContext http, IAuditLogger audit) =>
+        (
+            ILogBuffer buffer,
+            int? take,
+            string? level,
+            string? categoryContains,
+            int? skip,
+            HttpContext http,
+            IAuditLogger audit
+        ) =>
         {
             var items = buffer.Snapshot().AsEnumerable();
             if (!string.IsNullOrWhiteSpace(level))
@@ -2104,107 +2150,18 @@ app.MapGet(
                 };
                 audit.TryEnqueueRedacted(
                     ev,
-                    new { Take = t, Skip = s, Level = level ?? string.Empty, CategoryContains = categoryContains ?? string.Empty },
+                    new
+                    {
+                        Take = t,
+                        Skip = s,
+                        Level = level ?? string.Empty,
+                        CategoryContains = categoryContains ?? string.Empty
+                    },
                     new[] { "Take", "Skip", "Level", "CategoryContains" }
                 );
             }
             catch { }
             return Results.Json(list);
-        }
-    )
-    .RequireAuthorization("AdminOnly");
-
-app.MapGet(
-        "/api/metrics/range",
-        async (
-            string chartId,
-            string? tenant,
-            string? service,
-            int? rangeMinutes,
-            int? stepSeconds,
-            IPrometheusQueryService svc,
-            HttpContext http,
-            IAuditLogger audit,
-            CancellationToken ct
-        ) =>
-        {
-            if (
-                !TansuCloud.Dashboard.Observability.ChartCatalog.All.Any(c =>
-                    string.Equals(c.Id, chartId, StringComparison.Ordinal)
-                )
-            )
-                return Results.BadRequest(new { error = "unknown_chart_id" });
-            TimeSpan? range = rangeMinutes.HasValue
-                ? TimeSpan.FromMinutes(rangeMinutes.Value)
-                : null;
-            TimeSpan? step = stepSeconds.HasValue ? TimeSpan.FromSeconds(stepSeconds.Value) : null;
-            var data = await svc.QueryRangeAsync(chartId, tenant, service, range, step, ct);
-            object payload =
-                (object?)data ?? new { resultType = "matrix", result = Array.Empty<object>() };
-            // Audit metrics range read
-            try
-            {
-                var ev = new TansuCloud.Observability.Auditing.AuditEvent
-                {
-                    Category = "Admin",
-                    Action = "MetricsRangeQuery",
-                    Outcome = "Success",
-                    Subject = http.User?.Identity?.Name ?? "anonymous",
-                    CorrelationId = http.TraceIdentifier
-                };
-                audit.TryEnqueueRedacted(
-                    ev,
-                    new { ChartId = chartId, Tenant = tenant ?? string.Empty, Service = service ?? string.Empty, RangeMinutes = rangeMinutes, StepSeconds = stepSeconds },
-                    new[] { "ChartId", "Tenant", "Service", "RangeMinutes", "StepSeconds" }
-                );
-            }
-            catch { }
-            return Results.Json(payload);
-        }
-    )
-    .RequireAuthorization("AdminOnly");
-
-app.MapGet(
-        "/api/metrics/instant",
-        async (
-            string chartId,
-            string? tenant,
-            string? service,
-            DateTimeOffset? at,
-            IPrometheusQueryService svc,
-            HttpContext http,
-            IAuditLogger audit,
-            CancellationToken ct
-        ) =>
-        {
-            if (
-                !TansuCloud.Dashboard.Observability.ChartCatalog.All.Any(c =>
-                    string.Equals(c.Id, chartId, StringComparison.Ordinal)
-                )
-            )
-                return Results.BadRequest(new { error = "unknown_chart_id" });
-            var data = await svc.QueryInstantAsync(chartId, tenant, service, at, ct);
-            object payload =
-                (object?)data ?? new { resultType = "vector", result = Array.Empty<object>() };
-            // Audit metrics instant read
-            try
-            {
-                var ev = new TansuCloud.Observability.Auditing.AuditEvent
-                {
-                    Category = "Admin",
-                    Action = "MetricsInstantQuery",
-                    Outcome = "Success",
-                    Subject = http.User?.Identity?.Name ?? "anonymous",
-                    CorrelationId = http.TraceIdentifier
-                };
-                audit.TryEnqueueRedacted(
-                    ev,
-                    new { ChartId = chartId, Tenant = tenant ?? string.Empty, Service = service ?? string.Empty, At = at },
-                    new[] { "ChartId", "Tenant", "Service", "At" }
-                );
-            }
-            catch { }
-            return Results.Json(payload);
         }
     )
     .RequireAuthorization("AdminOnly");

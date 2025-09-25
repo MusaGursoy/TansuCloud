@@ -41,43 +41,45 @@ Run without observability (core services only):
 docker compose -f docker-compose.prod.yml up -d --build
 ```
 
-Run with observability (SigNoz + ClickHouse + OTEL collector):
-
-```powershell
-docker compose -f docker-compose.prod.yml --profile observability up -d --build
+```yaml
+services:
+  gateway:
+    image: tansucloud-gateway
+    ports:
+      - "80:8080"    # HTTP
+      - "443:8443"   # HTTPS (container listens on 8443)
+    volumes:
+      - ./certs:/certs:ro
+    environment:
+      - Kestrel__Endpoints__Https__Url=https://0.0.0.0:8443
+      - Kestrel__Endpoints__Https__Certificate__Path=/certs/gateway.pfx
+      - GATEWAY_CERT_PASSWORD=${GATEWAY_CERT_PASSWORD}
+    depends_on:
+      identity:
+        condition: service_healthy
+      dashboard:
+        condition: service_healthy
+      db:
+        condition: service_started
+    # Optional: forward TLS from gateway to downstream services
+    extra_hosts:
+      - "identity:127.0.0.1"
+    command: >-
+      dotnet TansuCloud.Gateway.dll
+      --urls "http://0.0.0.0:8080;https://0.0.0.0:8443"
+      --config gateway.prod.json
+  dashboard:
+    environment:
+      - ASPNETCORE_URLS=http://0.0.0.0:5000
+      - DASHBOARD_PUBLIC_BASE_URL=https://apps.example.com/dashboard
+  identity:
+    environment:
+      - ASPNETCORE_URLS=http://0.0.0.0:5000
+      - ASPNETCORE_FORWARDEDHEADERS_ENABLED=true
+  # … other services …
 ```
 
-Environment variables to set (in `.env` or CI variables):
-- `PUBLIC_BASE_URL` — required; e.g., `https://apps.example.com`
-- `DASHBOARD_CLIENT_SECRET` — required; strong secret for the dashboard OIDC client
-- `POSTGRES_USER`, `POSTGRES_PASSWORD`, `PGCAT_ADMIN_USER`, `PGCAT_ADMIN_PASSWORD` — required
-- `OTLP_ENDPOINT` — optional; when using observability, set to `http://signoz-otel-collector:4317` to emit telemetry
-
-Security notes:
-- The SigNoz UI is not published on the host in production. Access it internally or via a VPN/SSO-protected proxy.
-- Only the Gateway maps a public port by default (`80:8080`). Enable `443:8443` after you configure TLS.
-
-### 4.1 Custom domain and secrets (.env)
-
-Set your public base URL and sensitive values via a `.env` file next to `docker-compose.yml`. Docker Compose will auto-load it and substitute values into service environments.
-
-1. Create `.env` with your domain and secrets
-
-```env
-# Public HTTPS base URL of your gateway (include scheme; no trailing slash)
-PUBLIC_BASE_URL=https://your-domain
-
-# Dashboard OIDC confidential client secret (used by the Dashboard to obtain tokens)
-DASHBOARD_CLIENT_SECRET=replace-with-strong-secret
-
-# Postgres and PgCat credentials used by the stack
-POSTGRES_USER=postgres
-POSTGRES_PASSWORD=change-me
-PGCAT_ADMIN_USER=admin
-PGCAT_ADMIN_PASSWORD=change-me
-
-# If you enable TLS on the gateway (see section 5), set the PFX password
-GATEWAY_CERT_PASSWORD=changeit
+Ensure X-Forwarded-Proto and X-Forwarded-Prefix headers are preserved when TLS terminates upstream to avoid OIDC issuer mismatches or cookie scope issues.
 ```
 
 ### 8.2 SigNoz metrics & dashboards (Unified Observability)
@@ -99,43 +101,48 @@ Quick start (dev)
 
 Legacy in-app charts (Prometheus proxy)
 
-- The Dashboard previously proxied Prometheus and rendered curated charts at `/dashboard/admin/metrics`.
-- This proxy is now disabled by default. To temporarily enable for compatibility, set `DASHBOARD_ENABLE_PROM_PROXY=1` (or configuration key `Observability:EnablePrometheusProxy=true`).
-- When disabled, the page shows a link to open the SigNoz UI instead.
+- The Dashboard used to proxy Prometheus and render curated charts at `/dashboard/admin/metrics`.
+- That implementation has been fully removed. The Metrics page now only links to SigNoz.
 
 Notes
 
-- The in-app metrics HTTP endpoints under `/dashboard/api/metrics/*` remain available only when the legacy proxy is enabled. Prefer SigNoz for day-to-day operations.
+- The legacy endpoints under `/dashboard/api/metrics/*` no longer exist. All observability workflows should run through SigNoz.
 
 ### SigNoz readiness and troubleshooting (dev)
 
 Use this quick section to verify the dev SigNoz stack is ready before running observability E2Es.
 
 Readiness checks
-- OTLP gRPC (collector): 127.0.0.1:4317 reachable from apps and the host (our E2E will soft-skip if not)
-- ClickHouse HTTP: http://127.0.0.1:8123 reachable (used by tests to query spans/logs)
-- SigNoz UI: http://127.0.0.1:3301 opens without errors
+
+- OTLP gRPC (collector): `<http://127.0.0.1:4317>` reachable from apps and the host (our E2E will soft-skip if not)
+- ClickHouse HTTP: `<http://127.0.0.1:8123>` reachable (used by tests to query spans/logs)
+- SigNoz UI: `<http://127.0.0.1:3301>` opens without errors
 
 Dev validation route
+
 - Trigger an intentional exception through the Gateway to Storage:
-	- GET http://127.0.0.1:8080/storage/dev/throw?message=hello
-	- In Development, this route is anonymous and logs an Error before throwing, ensuring both log and trace signals.
+  - `GET http://127.0.0.1:8080/storage/dev/throw?message=hello`
+  - In Development, this route is anonymous and logs an Error before throwing, ensuring both log and trace signals.
 
 Tables of interest (ClickHouse)
-- Traces: signoz_traces.signoz_index_v3 (includes alias columns like serviceName)
-- Logs: signoz_logs.logs_v2 (resources_string/attributes_string maps)
+
+- Traces: `signoz_traces.signoz_index_v3` (includes alias columns like `serviceName`)
+- Logs: `signoz_logs.logs_v2` (`resources_string` / `attributes_string` maps)
 
 Environment variables (defaults)
-- GATEWAY_BASE_URL=http://127.0.0.1:8080
-- CLICKHOUSE_HTTP=http://127.0.0.1:8123
-- CLICKHOUSE_USER=admin / CLICKHOUSE_PASSWORD=admin
-- OTLP_GRPC_HOST=127.0.0.1 / OTLP_GRPC_PORT=4317
+
+- `GATEWAY_BASE_URL=http://127.0.0.1:8080`
+- `CLICKHOUSE_HTTP=http://127.0.0.1:8123`
+- `CLICKHOUSE_USER=admin` / `CLICKHOUSE_PASSWORD=admin`
+- `OTLP_GRPC_HOST=127.0.0.1` / `OTLP_GRPC_PORT=4317`
 
 Dev vs Prod port exposure
-- Development compose publishes OTLP ports from the collector to the host: 4317:4317 (gRPC) and 4318:4318 (HTTP). This allows local tests and tools to connect via 127.0.0.1.
+
+- Development compose publishes OTLP ports from the collector to the host: `4317:4317` (gRPC) and `4318:4318` (HTTP). This allows local tests and tools to connect via `127.0.0.1`.
 - Production compose keeps the collector internal-only under the optional `observability` profile (no host port mapping). Services send telemetry to `http://signoz-otel-collector:4317` inside the network.
 
 Production notes
+
 - Keep `/storage/dev/throw` strictly Development-only.
 - For production, add TLS, SSO/RBAC for the SigNoz UI, retention/backups/HA for ClickHouse, and appropriate sampling/PII scrubbing policies.
 
@@ -143,25 +150,25 @@ Production notes
 
 Use these quick checks after `docker compose up` to confirm SigNoz is healthy:
 
-- Open http://127.0.0.1:3301/ and ensure the landing page loads without errors.
+- Open `<http://127.0.0.1:3301/>` and ensure the landing page loads without errors.
 - Navigate to Services → a service like `TansuCloud.Gateway` should appear under load; open it and see request rate, latency, and error charts.
 - Navigate to Traces → Explorer; run a search for the last 15 minutes. You should see spans from Gateway/Identity/Database/Storage under light traffic.
 - Navigate to Logs → Recent; filter by `service.name="TansuCloud.Gateway"` and confirm new entries appear while driving requests.
 - Navigate to Dashboards → Host (or Infrastructure) and verify CPU/Memory charts populate. This is powered by the dev-only hostmetrics receiver.
 - Optional sanity queries (via ClickHouse client inside the network):
-	- `SELECT count() FROM signoz_metrics.time_series_v4` → should be non-zero and increasing.
-	- `SHOW CREATE TABLE signoz_traces.signoz_index_v3` → contains `resource.service.name` alias and `resource_string_service$$name_exists`.
+  - `SELECT count() FROM signoz_metrics.time_series_v4` → should be non-zero and increasing.
+  - `SHOW CREATE TABLE signoz_traces.signoz_index_v3` → contains `resource.service.name` alias and `resource_string_service$$name_exists`.
 
 Troubleshooting — SigNoz migrations and metrics tables
 
-- Symptom: SigNoz UI shows no metrics; ClickHouse `signoz_metrics` DB is missing v4 time-series tables like `time_series_v4`, `samples_v4`, or migrations report UNKNOWN_TABLE on `time_series_v4`.
+- Symptom: SigNoz UI shows no metrics; ClickHouse `signoz_metrics` DB is missing v4 time-series tables like `time_series_v4`, `samples_v4`, or migrations report `UNKNOWN_TABLE` on `time_series_v4`.
 - Cause: When migrations run in certain dev modes, “squashed” base migrations may be skipped and later ALTERs (e.g., migration 1000+) fail because base tables weren’t created yet.
-– Fix (dev compose):
-  1) Drop the metrics DB to reset state across the single-node cluster: `DROP DATABASE IF EXISTS signoz_metrics ON CLUSTER cluster`.
-  2) Re-run the schema migrator once so squashed migrations materialize all v4 tables. In our compose, the `schema-migrator-sync` service runs automatically; to force a one-off run:
-    - `docker run --rm --network tansucloud_tansucloud-network signoz/signoz-schema-migrator:latest sync --dsn=tcp://admin:admin@clickhouse:9000`
-  3) Verify tables exist: `SHOW TABLES FROM signoz_metrics` should list `time_series_v4`, `time_series_v4_6hrs`, `time_series_v4_1day`, `time_series_v4_1week` and their distributed/materialized views, plus `samples_v4*`.
-  4) Send traffic (or wait for hostmetrics) and confirm new rows: `SELECT count() FROM signoz_metrics.time_series_v4` and `SELECT count() FROM signoz_metrics.samples_v4`.
+- Fix (dev compose):
+  1. Drop the metrics DB to reset state across the single-node cluster: `DROP DATABASE IF EXISTS signoz_metrics ON CLUSTER cluster`.
+  2. Re-run the schema migrator once so squashed migrations materialize all v4 tables. In our compose, the `schema-migrator-sync` service runs automatically; to force a one-off run:
+      - `docker run --rm --network tansucloud_tansucloud-network signoz/signoz-schema-migrator:latest sync --dsn=tcp://admin:admin@clickhouse:9000`
+  3. Verify tables exist: `SHOW TABLES FROM signoz_metrics` should list `time_series_v4`, `time_series_v4_6hrs`, `time_series_v4_1day`, `time_series_v4_1week` and their distributed/materialized views, plus `samples_v4*`.
+  4. Send traffic (or wait for hostmetrics) and confirm new rows: `SELECT count() FROM signoz_metrics.time_series_v4` and `SELECT count() FROM signoz_metrics.samples_v4`.
 
 Troubleshooting — Services page 500 (distributed_top_level_operations missing)
 
@@ -171,22 +178,24 @@ Troubleshooting — Services page 500 (distributed_top_level_operations missing)
 
 Fix (dev compose)
 
-1) Validate base table exists and has recent spans:
+1. Validate base table exists and has recent spans:
 
-	- `SHOW TABLES FROM signoz_traces LIKE 'distributed_signoz_index_v3';`
-	- `SELECT count() FROM signoz_traces.distributed_signoz_index_v3 WHERE timestamp > now() - INTERVAL 15 MINUTE;`
+    - `SHOW TABLES FROM signoz_traces LIKE 'distributed_signoz_index_v3';`
+    - `SELECT count() FROM signoz_traces.distributed_signoz_index_v3 WHERE timestamp > now() - INTERVAL 15 MINUTE;`
 
-2) Ensure the compatibility view exists (exposed for SigNoz Services API):
+1. Ensure the compatibility view exists (exposed for SigNoz Services API):
 
-	- `SHOW TABLES FROM signoz_traces LIKE 'distributed_top_level_operations';`
-	- `DESCRIBE TABLE signoz_traces.distributed_top_level_operations;` (expect columns: `name`, `serviceName`, `time`)
+    - `SHOW TABLES FROM signoz_traces LIKE 'distributed_top_level_operations';`
+    - `DESCRIBE TABLE signoz_traces.distributed_top_level_operations;` (expect columns: `name`, `serviceName`, `time`)
 
-3) Our dev compose includes an init container `signoz-clickhouse-compat-init` that creates the view idempotently:
+1. Our dev compose includes an init container `signoz-clickhouse-compat-init` that creates the view idempotently:
 
-	CREATE VIEW IF NOT EXISTS signoz_traces.distributed_top_level_operations ON CLUSTER cluster AS
-	SELECT name, serviceName, toDateTime(timestamp) AS time
-	FROM signoz_traces.distributed_signoz_index_v3
-	WHERE (parent_span_id = '' OR length(parent_span_id) = 0);
+    ```sql
+    CREATE VIEW IF NOT EXISTS signoz_traces.distributed_top_level_operations ON CLUSTER cluster AS
+    SELECT name, serviceName, toDateTime(timestamp) AS time
+    FROM signoz_traces.distributed_signoz_index_v3
+    WHERE (parent_span_id = '' OR length(parent_span_id) = 0);
+    ```
 
 Notes
 
@@ -204,27 +213,59 @@ ON CLUSTER caveats (single-node dev)
 All core services implement standardized health endpoints and Compose startup gating for reliable boot order and troubleshooting.
 
 - Endpoints per service
-	- Liveness: GET /health/live → returns 200 when the service process is up. Only checks tagged "self" are evaluated (no external dependencies).
-	- Readiness: GET /health/ready → returns 200 when required dependencies (Redis, Postgres via PgCat) are reachable. Only checks tagged "ready" are evaluated.
+  - Liveness: `GET /health/live` → returns 200 when the service process is up. Only checks tagged "self" are evaluated (no external dependencies).
+  - Readiness: `GET /health/ready` → returns 200 when required dependencies (Redis, Postgres via PgCat) are reachable. Only checks tagged "ready" are evaluated.
 
 - Via Gateway
-	- Health endpoints are reachable through the Gateway under each service base path:
-		- /identity/health/{live|ready}
-		- /dashboard/health/{live|ready}
-		- /db/health/{live|ready}
-		- /storage/health/{live|ready}
+  - Health endpoints are reachable through the Gateway under each service base path:
+    - `/identity/health/{live|ready}`
+    - `/dashboard/health/{live|ready}`
+    - `/db/health/{live|ready}`
+    - `/storage/health/{live|ready}`
 
 - Docker Compose gating
-	- identity waits for pgcat healthy
-	- db waits for pgcat and redis healthy
-	- storage waits for redis healthy
-	- dashboard waits for redis healthy
-	- gateway waits for identity, db, storage, and dashboard to be healthy
-	- PgCat healthcheck uses a CMD-SHELL form that checks /proc/1/cmdline to avoid image differences (busybox vs bash) and flakiness.
+  - identity waits for pgcat healthy
+  - db waits for pgcat and redis healthy
+  - storage waits for redis healthy
+  - dashboard waits for redis healthy
+  - gateway waits for identity, db, storage, and dashboard to be healthy
+  - PgCat healthcheck uses a CMD-SHELL form that checks `/proc/1/cmdline` to avoid image differences (busybox vs bash) and flakiness.
 
 Tips
 - Check container health quickly with: `docker inspect --format "{{json .State.Health}}" <container>`
 - Readiness may intentionally be Unhealthy while a dependency is down; liveness should remain Healthy so restarts aren’t masked by dependency outages.
+
+### Quick curl examples (via Gateway)
+
+Check gateway’s own readiness
+
+```bash
+curl -fsS http://127.0.0.1:8080/health/ready | jq .
+```
+
+Check service liveness/readiness through gateway base paths
+
+```bash
+# Identity
+curl -fsS http://127.0.0.1:8080/identity/health/live | jq .
+curl -fsS http://127.0.0.1:8080/identity/health/ready | jq .
+
+# Database API
+curl -fsS http://127.0.0.1:8080/db/health/live | jq .
+curl -fsS http://127.0.0.1:8080/db/health/ready | jq .
+
+# Storage API
+curl -fsS http://127.0.0.1:8080/storage/health/live | jq .
+curl -fsS http://127.0.0.1:8080/storage/health/ready | jq .
+
+# Dashboard
+curl -fsS http://127.0.0.1:8080/dashboard/health/live | jq .
+curl -fsS http://127.0.0.1:8080/dashboard/health/ready | jq .
+```
+
+Notes
+- Replace 127.0.0.1:8080 with your PublicBaseUrl host/port in other environments.
+- jq is optional; omit it if not installed.
 
 Collector configuration
 
@@ -254,9 +295,9 @@ GATEWAY_CERT_PASSWORD=changeit
 
 ```yaml
 environment:
-	- Kestrel__Endpoints__Https__Url=https://0.0.0.0:8443
-	- Kestrel__Endpoints__Https__Certificate__Path=/certs/gateway.pfx
-	- GATEWAY_CERT_PASSWORD=${GATEWAY_CERT_PASSWORD}
+  - Kestrel__Endpoints__Https__Url=https://0.0.0.0:8443
+  - Kestrel__Endpoints__Https__Certificate__Path=/certs/gateway.pfx
+  - GATEWAY_CERT_PASSWORD=${GATEWAY_CERT_PASSWORD}
 ```
 
 Docker Compose will automatically load `.env` and substitute the value.
@@ -290,9 +331,9 @@ Notes
 
 - Admin-only pages are available after OIDC login with a user in the Admin role (or an access token with the `admin.full` scope).
 - To edit Gateway rate limits in development:
-	- Navigate to `/dashboard/admin/rate-limits`.
-	- Click “Load current”, adjust Window seconds and Default/Route permit/queue limits, and save. Changes apply immediately at the Gateway.
-	- In environments where CSRF is enabled, the Dashboard attaches `X-Tansu-Csrf` when the `DASHBOARD_CSRF` environment variable is set.
+  - Navigate to `/dashboard/admin/rate-limits`.
+  - Click “Load current”, adjust Window seconds and Default/Route permit/queue limits, and save. Changes apply immediately at the Gateway.
+  - In environments where CSRF is enabled, the Dashboard attaches `X-Tansu-Csrf` when the `DASHBOARD_CSRF` environment variable is set.
 - In CI/dev E2Es, Identity discovery readiness is checked at `/identity/.well-known/openid-configuration` to avoid flakiness. If discovery is unavailable and strict mode is disabled, UI tests may skip.
 
 - Identity issuer and discovery under /identity
@@ -302,14 +343,14 @@ Notes
 Recommended settings
 
 - In production, set `PUBLIC_BASE_URL` to your HTTPS origin in `.env`. The compose file maps this to:
-	- Identity Issuer: `${PUBLIC_BASE_URL}/identity/`
-	- Dashboard Authority/Metadata: `${PUBLIC_BASE_URL}/identity`
-	- Dashboard Redirect URIs:
-		- `${PUBLIC_BASE_URL}/dashboard/signin-oidc`
-		- `${PUBLIC_BASE_URL}/dashboard/signout-callback-oidc`
-	- Optional root variants for alternative routing:
-		- `${PUBLIC_BASE_URL}/signin-oidc`
-		- `${PUBLIC_BASE_URL}/signout-callback-oidc`
+  - Identity Issuer: `${PUBLIC_BASE_URL}/identity/`
+  - Dashboard Authority/Metadata: `${PUBLIC_BASE_URL}/identity`
+  - Dashboard Redirect URIs:
+    - `${PUBLIC_BASE_URL}/dashboard/signin-oidc`
+    - `${PUBLIC_BASE_URL}/dashboard/signout-callback-oidc`
+  - Optional root variants for alternative routing:
+    - `${PUBLIC_BASE_URL}/signin-oidc`
+    - `${PUBLIC_BASE_URL}/signout-callback-oidc`
 - Set the Dashboard confidential client secret via `DASHBOARD_CLIENT_SECRET` in `.env`.
 - Ensure reverse proxy forwarding headers are correct at the gateway; Identity relies on them for issuer/redirects.
 
@@ -324,6 +365,69 @@ Scopes (summary)
 Gateway login alias
 
 - For convenience, the gateway exposes a login alias at `/login` that redirects to the Identity login UI under `/identity`. This helps operators and testers quickly reach the sign-in form.
+
+### 6.2 Domains & TLS (Admin)
+
+Manage custom domains and TLS certificates centrally from the Dashboard or via the Gateway Admin API.
+
+Admin UI (canonical)
+- Navigate to `/dashboard/admin/domains`.
+- Actions available:
+  - List current domain bindings and certificate metadata.
+  - Add/Replace a binding using either:
+    - PFX upload (optionally with password), or
+    - PEM paste (certificate + private key; optional chain PEM for intermediates).
+  - Rotate a binding: provide a new PFX or PEM pair. The API returns both the current and previous certificate metadata to verify rotation.
+  - Delete a binding.
+- The UI shows non-secret metadata only (subject, issuer, thumbprint, validity window, hostname match). Secrets are never persisted.
+- Chain visibility: the table surfaces chain presence/count and whether the provided chain links to the leaf (linked/validated).
+- Rotate UX: the page requires confirmation and, after success, displays both the new and previous thumbprints and expirations inline.
+
+Admin API endpoints (under `/admin/api`) — Development vs. Production
+- Development: endpoints may be open for local testing.
+- Non-Development: protected by the `AdminOnly` policy (Admin role or `admin.full` scope); send a valid access token.
+ - CSRF: when enabled at the Gateway, send `X-Tansu-Csrf: <token>` with state‑changing calls (POST/DELETE). The Dashboard attaches this header automatically when configured.
+ - Audit: all mutations emit structured audit events (`DomainBind`, `DomainBindPem`, `DomainRotate`, `DomainUnbind`).
+
+Endpoints
+- List bindings
+  - GET `/admin/api/domains`
+  - 200 OK → `[{ host, subject, issuer, thumbprint, notBefore, notAfter, hasPrivateKey, hostnameMatches, chainProvided, chainValidated, chainCount }]`
+
+- Bind or replace using PFX
+  - POST `/admin/api/domains`
+  - Body (JSON): `{ "host": "example.com", "pfxBase64": "...", "pfxPassword": "optional" }`
+  - Response: Certificate metadata for the active binding.
+
+- Bind or replace using PEM
+  - POST `/admin/api/domains/pem`
+  - Body (JSON): `{ "host": "example.com", "certPem": "-----BEGIN CERTIFICATE-----...", "keyPem": "-----BEGIN PRIVATE KEY-----...", "chainPem": "-----BEGIN CERTIFICATE-----..." }`
+  - `chainPem` is optional — supply intermediate(s) to complete the chain. Multiple PEM blocks are supported.
+  - Response: Certificate metadata for the active binding.
+
+- Rotate (returns previous/current)
+  - POST `/admin/api/domains/rotate`
+  - Body (JSON):
+    - PFX form: `{ "host": "example.com", "pfxBase64": "...", "pfxPassword": "optional" }`
+    - PEM form: `{ "host": "example.com", "certPem": "...", "keyPem": "...", "chainPem": "optional" }`
+  - Response: `{ current: <metadata>, previous: <metadata or null> }`
+
+- Delete a binding
+  - DELETE `/admin/api/domains/{host}`
+  - 204 No Content when removed; 404 Not Found when missing (idempotent).
+
+Validation and behavior
+- Certificates are validated on upload (parsable, has private key, not before/after sanity, hostname match against SAN/CN).
+- Metadata includes a `hostnameMatches` flag to highlight mismatches (e.g., host doesn’t appear in SANs).
+- Only non-secret metadata is stored in-memory to drive UI and auditing; certificate materials are not persisted.
+
+CSRF protection
+- When the Gateway is configured with a CSRF secret (`Gateway:Admin:Csrf`), POST endpoints require header `X-Tansu-Csrf`.
+- The Dashboard admin UI provides an optional CSRF field on the Domains page. You can also set `DASHBOARD_CSRF` in the Dashboard environment to attach this header automatically.
+
+Auditing
+- Admin actions (bind, rotate, delete) create audit entries in the `Gateway.Admin` channel with non-secret summaries (host, thumbprint, validity window, hostname match).
+- In development without Postgres, audit writes may log transient connection errors; this does not affect the admin operation itself.
 
 ## 7. Configuration & Secrets
 
@@ -364,10 +468,10 @@ Export (admin-only)
 
 Retention (Database service)
 - Configuration section: `AuditRetention`
-	- `Days` (int, default 180): rows older than `now - Days` are removed (or redacted if configured).
-	- `LegalHoldTenants` (string[]): tenants exempt from deletion/redaction.
-	- `RedactInsteadOfDelete` (bool, default false): when true, `details` is nulled and outcome/reason are marked instead of deleting rows.
-	- `Schedule` (TimeSpan, default 6:00:00): execution interval of the background job.
+  - `Days` (int, default 180): rows older than `now - Days` are removed (or redacted if configured).
+  - `LegalHoldTenants` (string[]): tenants exempt from deletion/redaction.
+  - `RedactInsteadOfDelete` (bool, default false): when true, `details` is nulled and outcome/reason are marked instead of deleting rows.
+  - `Schedule` (TimeSpan, default 6:00:00): execution interval of the background job.
 - The retention worker emits an audit event with the number of affected rows and the cutoff.
 
 Notes
@@ -387,13 +491,13 @@ Notes
 - Redis connectivity is covered by custom health checks ("redis" tag) that ping the configured endpoint; readiness will report degraded when Redis is unreachable.
 - Gateway OutputCache: Anonymous responses may be cached briefly (default TTL 15s, configurable via `Gateway:OutputCache:DefaultTtlSeconds`). Requests with `Authorization` are not cached at the Gateway.
 - Cache keys are tenant-scoped and versioned: `t:{tenant}:v{version}:{service}:{resource}:...`.
-	- Database and Storage invalidate via outbox events (see Task 12 and Task 15). Storage also bumps the tenant cache version on local PUT/DELETE for immediate invalidation.
-	- Storage bumps a per-tenant version on PUT/DELETE to invalidate list/head entries.
+  - Database and Storage invalidate via outbox events (see Task 12 and Task 15). Storage also bumps the tenant cache version on local PUT/DELETE for immediate invalidation.
+  - Storage bumps a per-tenant version on PUT/DELETE to invalidate list/head entries.
 - Metrics: the Storage service exposes counters via the `tansu.storage` meter:
-	- `tansu_storage_cache_attempts_total`
-	- `tansu_storage_cache_hits_total`
-	- `tansu_storage_cache_misses_total`
-	Each counter includes an `op` tag (list/head). Exporters can aggregate/graph these for hit ratio.
+  - `tansu_storage_cache_attempts_total`
+  - `tansu_storage_cache_hits_total`
+  - `tansu_storage_cache_misses_total`
+  Each counter includes an `op` tag (list/head). Exporters can aggregate/graph these for hit ratio.
 
 Troubleshooting tips
 
@@ -424,17 +528,17 @@ What leaves your deployment (defaults)
 Configuration (Dashboard)
 
 - App settings section: `LogReporting` (binds to options in code).
-	- `Enabled` (bool, default true): master switch for periodic reports.
-	- `ReportIntervalMinutes` (int, default 60): how often to send.
-	- `MainServerUrl` (string): base URL of your main server; reports POST to `<MainServerUrl>/api/logs/report`.
-	- `ApiKey` (string, optional): bearer token for the report request.
-	- `SeverityThreshold` (string, default `Warning`): minimum level to consider.
-	- `QueryWindowMinutes` (int, default 60): time window to include.
-	- `MaxItems` (int, default 2000): cap per report.
-	- `HttpTimeoutSeconds` (int, default 30): outbound HTTP timeout.
-	- `WarningSamplingPercent` (int, default 10): sampling for non-allowlisted warnings.
-	- `AllowedWarningCategories` (string[], defaults include `OIDC-`, `Tansu.Gateway`, `Tansu.Storage`, `Tansu.Database`, `Tansu.Identity`).
-	- `HttpLatencyP95Ms` (int, default 500), `DbDurationP95Ms` (int, default 300), `ErrorRatePercent` (int, default 1) for aggregated perf events.
+  - `Enabled` (bool, default true): master switch for periodic reports.
+  - `ReportIntervalMinutes` (int, default 60): how often to send.
+  - `MainServerUrl` (string): base URL of your main server; reports POST to `<MainServerUrl>/api/logs/report`.
+  - `ApiKey` (string, optional): bearer token for the report request.
+  - `SeverityThreshold` (string, default `Warning`): minimum level to consider.
+  - `QueryWindowMinutes` (int, default 60): time window to include.
+  - `MaxItems` (int, default 2000): cap per report.
+  - `HttpTimeoutSeconds` (int, default 30): outbound HTTP timeout.
+  - `WarningSamplingPercent` (int, default 10): sampling for non-allowlisted warnings.
+  - `AllowedWarningCategories` (string[], defaults include `OIDC-`, `Tansu.Gateway`, `Tansu.Storage`, `Tansu.Database`, `Tansu.Identity`).
+  - `HttpLatencyP95Ms` (int, default 500), `DbDurationP95Ms` (int, default 300), `ErrorRatePercent` (int, default 1) for aggregated perf events.
 
 Runtime toggle
 
@@ -472,17 +576,17 @@ Output caching (gateway)
   - Selected query parameters depending on route
 - TTL: Default 15s (configurable via `Gateway:OutputCache:DefaultTtlSeconds`). Suitable for anonymous/static responses; tune per environment.
 - Authorization-aware:
-	- Requests with an `Authorization` header are not cached at the gateway to avoid serving private data from cache.
+  - Requests with an `Authorization` header are not cached at the gateway to avoid serving private data from cache.
 
 OutputCache policy matrix
 
 - Base policy (anonymous responses only)
-	- TTL: `Gateway:OutputCache:DefaultTtlSeconds` (default 15 seconds)
-	- Vary: `Host`, `X-Tansu-Tenant`, `Accept`, `Accept-Encoding`
+  - TTL: `Gateway:OutputCache:DefaultTtlSeconds` (default 15 seconds)
+  - Vary: `Host`, `X-Tansu-Tenant`, `Accept`, `Accept-Encoding`
 - PublicStaticLong (static assets)
-	- Routes: `/_framework/*`, `/dashboard/_framework/*`, `/_content/*`, `/dashboard/_content/*`, `/_blazor/*`, `/dashboard/_blazor/*`, `/favicon.ico`, `/app.css`, `/app.{hash}.css`, `/TansuCloud.Dashboard.styles.css`, `/TansuCloud.Dashboard.{hash}.styles.css`, and Identity/Dashboard assets addressed under `/lib/*`, `/css/*`, `/js/*`.
-	- TTL: `Gateway:OutputCache:StaticTtlSeconds` (default 300 seconds)
-	- Vary: `Host`, `Accept-Encoding`
+  - Routes: `/_framework/*`, `/dashboard/_framework/*`, `/_content/*`, `/dashboard/_content/*`, `/_blazor/*`, `/dashboard/_blazor/*`, `/favicon.ico`, `/app.css`, `/app.{hash}.css`, `/TansuCloud.Dashboard.styles.css`, `/TansuCloud.Dashboard.{hash}.styles.css`, and Identity/Dashboard assets addressed under `/lib/*`, `/css/*`, `/js/*`.
+  - TTL: `Gateway:OutputCache:StaticTtlSeconds` (default 300 seconds)
+  - Vary: `Host`, `Accept-Encoding`
 
 Notes
 
@@ -493,8 +597,8 @@ Global rate limits
 
 - Fixed window (default 10s, configurable via `Gateway:RateLimits:WindowSeconds`) with per-route-family limits; Identity has no queue.
 - Partitioning to balance fairness and privacy:
-	- Public (no `Authorization`): partition by tenant + client IP.
-	- Authenticated: partition by tenant + hash(Authorization token) — hashed to avoid any sensitive value leakage.
+  - Public (no `Authorization`): partition by tenant + client IP.
+  - Authenticated: partition by tenant + hash(Authorization token) — hashed to avoid any sensitive value leakage.
 - 429 responses include `Retry-After` equal to the configured window seconds to hint clients when to retry.
 
 Configuration knobs (gateway)
@@ -502,10 +606,10 @@ Configuration knobs (gateway)
 - `Gateway:RateLimits:WindowSeconds` — fixed window length in seconds (default 10). Also controls the `Retry-After` header value.
 - `Gateway:RateLimits:Defaults:PermitLimit` and `Gateway:RateLimits:Defaults:QueueLimit` — fallback limits (default 100/100).
 - `Gateway:RateLimits:Routes:{prefix}:PermitLimit` and `...:QueueLimit` — per route-family overrides. Built-in defaults:
-	- `db` PermitLimit=200, QueueLimit=PermitLimit
-	- `storage` PermitLimit=150, QueueLimit=PermitLimit
-	- `identity` PermitLimit=600, QueueLimit=0 (no queue to avoid auth timeouts)
-	- `dashboard` PermitLimit=300, QueueLimit=PermitLimit
+  - `db` PermitLimit=200, QueueLimit=PermitLimit
+  - `storage` PermitLimit=150, QueueLimit=PermitLimit
+  - `identity` PermitLimit=600, QueueLimit=0 (no queue to avoid auth timeouts)
+  - `dashboard` PermitLimit=300, QueueLimit=PermitLimit
 - `Gateway:OutputCache:DefaultTtlSeconds` — base anonymous cache TTL (default 15s)
 - `Gateway:OutputCache:StaticTtlSeconds` — static asset policy TTL (default 300s)
 
@@ -566,11 +670,11 @@ This platform ships with lightweight health checks and end-to-end (E2E) tests th
   - In VS Code, Run Task… → "Run all E2E tests"; or run tests from your IDE/test explorer.
   - Tip: you can run focused suites via provided VS Code tasks (e.g., "Run health E2E tests").
 - Notes:
-	- Tests accept development HTTPS certificates; no extra trust steps needed for local runs.
-	- The provisioning test obtains an access token using the dashboard client (scopes: `db.write admin.full`) and calls the Database provisioning API twice, asserting idempotency.
-	- Playwright browsers: to avoid long installs during test runs, preinstall browsers once:
-		- Option A (recommended): run `pwsh -NoProfile -File tests/TansuCloud.E2E.Tests/playwright.ps1` once; the script is idempotent and skips if already installed.
-		- Option B: set `PLAYWRIGHT_SKIP_INSTALL=1` to skip installs in environments where browsers are pre-baked (e.g., CI agents).
+  - Tests accept development HTTPS certificates; no extra trust steps needed for local runs.
+  - The provisioning test obtains an access token using the dashboard client (scopes: `db.write admin.full`) and calls the Database provisioning API twice, asserting idempotency.
+  - Playwright browsers: to avoid long installs during test runs, preinstall browsers once:
+    - Option A (recommended): run `pwsh -NoProfile -File tests/TansuCloud.E2E.Tests/playwright.ps1` once; the script is idempotent and skips if already installed.
+    - Option B: set `PLAYWRIGHT_SKIP_INSTALL=1` to skip installs in environments where browsers are pre-baked (e.g., CI agents).
 
 ### 13.2.1 Redis-dependent outbox test gating
 
@@ -591,7 +695,7 @@ Example skip output when not configured:
 
 ```
 Full dispatcher loop publishes to Redis and marks dispatched (E2E) [SKIP]
-	REDIS_URL not set; Redis-dependent test skipped
+  REDIS_URL not set; Redis-dependent test skipped
 ```
 
 Rationale:
@@ -601,100 +705,28 @@ Rationale:
 
 If you routinely run with Redis, consider adding a VS Code test task that sets `REDIS_URL` inline so the attribute no longer skips the test.
 
-### 8.2 Metrics dashboard (Prometheus)
+### 8.2 Observability dashboards (SigNoz)
 
-The Dashboard exposes an admin-only Metrics page under `/dashboard/admin/metrics`. It renders native charts by proxying queries to Prometheus from the backend service (Prometheus is never accessed directly by the browser).
+The Dashboard still hosts an admin-only entry point at `/dashboard/admin/metrics`, but it now serves as a hand-off to SigNoz instead of rendering native charts. Operators should open the SigNoz UI (Compose default: `http://127.0.0.1:3301/`) for metrics, traces, and logs across all services.
 
 Key points
 
-- Internal-only: The Dashboard backend calls Prometheus at an internal URL. In Docker Compose, the default is the Prometheus service at `http://prometheus:9090`. If you wire the OpenTelemetry Collector’s Prometheus exporter instead, use `http://otel-collector:8889`. The browser never receives PromQL or Prometheus URLs.
-- Allowlist: Only predefined charts/queries are allowed. Arbitrary PromQL from the UI is rejected.
-- Tenant scoping: When a tenant is selected or implied via gateway header `X-Tansu-Tenant`, the backend injects label filters (e.g., `tenant="{id}"`) and ignores cross-tenant overrides for non-admin users. Admins may override tenant for cross-tenant views when the header is not set.
-- Rate limiting and caching: The backend clamps time ranges and steps and applies a small in-memory cache (~10s) to reduce load.
-
-Available charts (initial set)
-
-- Overview
-	- Requests per second by service
-	- Error rate (4xx/5xx) by service
-	- Latency p95 by service
-- Storage
-	- Ingress bytes/sec by tenant
-	- Egress bytes/sec by tenant
-	- Responses by status (2xx/4xx/5xx)
-	- Latency p95 by operation
-	- Cache hit ratio (by service/operation)
-- Database
-	- Outbox dispatched/retried/deadlettered rate (aggregated)
-- Gateway
-  - Proxy requests per second by route
-  - Status distribution (2xx/4xx/5xx)
-  - Latency p95 by route
-
-Metric sources and names
-
-- Storage service
-  - Requests: tansu_storage_requests_total (labels include service, op, tenant).
-  - Responses: tansu_storage_responses_total (labels include status, op, tenant).
-  - Latency histogram: tansu_storage_request_duration_ms_milliseconds_bucket
-    - Note: the OpenTelemetry Prometheus exporter appends the unit to histogram names (…_milliseconds_bucket/_count/_sum). Charts compute p95 via histogram_quantile over buckets.
-  - Cache hit ratio: tansu_storage_cache_attempts_total and tansu_storage_cache_hits_total.
-  - Tenant scoping: yes (tenant label is injected when selected/implied).
-- Database service (Outbox)
-  - Counters: outbox_dispatched_total, outbox_retried_total, outbox_deadlettered_total.
-  - Origin: Meter "TansuCloud.Database.Outbox"; series are aggregated across labels.
-  - Tenant scoping: no (metrics are global; no tenant label).
-- Gateway service (reverse proxy)
-  - Requests: tansu_gateway_proxy_requests_total (labels include route, status).
-  - Latency histogram: tansu_gateway_proxy_request_duration_ms_milliseconds_bucket (labels include route, status, le).
-  - Tenant scoping: no (gateway charts ignore tenant filter).
-- Prometheus endpoint used by the Dashboard backend (Compose default): `http://prometheus:9090` (or `http://otel-collector:8889` if using the collector exporter)
-
-Troubleshooting
-
-- Empty charts: Ensure Prometheus (or the OTEL Collector exporter) is reachable from the Dashboard container. In Compose, exec into the Dashboard and curl `http://prometheus:9090/-/ready`. Also make sure there is traffic during the selected time window (e.g., call `/storage/health/ready` repeatedly through the gateway).
-- Permission denied or missing data: Confirm you’re signed in as an admin for cross-tenant views. Non-admins are restricted to the tenant implied by the gateway.
-- NaN/Infinity: The UI guards most divisions by zero; widen the time range or generate load so rates/histograms have samples.
-
-Configuration
-
-- Prometheus base URL, timeouts, default ranges, and caps are configured in the Dashboard via `PrometheusOptions` (appsettings/environment). In Docker Compose, the default is `http://prometheus:9090`; alternatively, use the OTEL collector exporter at `http://otel-collector:8889`.
-
-Admin metrics HTTP API
-
-- The Dashboard exposes admin-only endpoints that proxy Prometheus with an allowlist and tenant/RBAC enforcement:
-		- `GET /api/metrics/catalog` — returns allowlisted chart definitions (id, title, category, requiresTenant, acceptsService, unit).
-		- `GET /api/metrics/range?chartId=...&tenant=...&service=...&rangeMinutes=...&stepSeconds=...` — returns matrix data for the time window (range clamped by MaxRangeMinutes; step clamped by MaxStepSeconds). 400 for unknown chartId.
-		- `GET /api/metrics/instant?chartId=...&tenant=...&service=...&at=...` — returns vector data at an instant (RFC3339 `at`; defaults to now). 400 for unknown chartId.
-- RBAC and tenant scoping:
-		- Endpoints require Admin role or admin.full scope.
-		- Tenant precedence: gateway-provided `X-Tanzu-Tenant` overrides non-admin requests; admin may pass `tenant` when header is absent.
-- Resilience and caching knobs (PrometheusOptions): `TimeoutSeconds`, `DefaultRangeMinutes`, `MaxRangeMinutes`, `MaxStepSeconds`, `CacheTtlSeconds`, `RetryCount`, and `RetryBaseDelayMs`.
-
-Examples (development)
-
-- Catalog
-	- http://127.0.0.1:8080/dashboard/api/metrics/catalog
-- Range (1–5 minutes typical for smoke)
-	- http://127.0.0.1:8080/dashboard/api/metrics/range?chartId=storage.http.rps&rangeMinutes=5&stepSeconds=30
-- Instant
-	- http://127.0.0.1:8080/dashboard/api/metrics/instant?chartId=gateway.http.rps.byroute
-
-Notes
-
-- Responses mirror Prometheus HTTP API shapes: `{ status, data: { resultType, result } }`.
-- The Metrics UI under `/dashboard/admin/metrics` surfaces curated charts including:
-	- Overview: RPS, Errors, Latency p95/p50 by service
-	- Storage: HTTP RPS/Errors, Latency p95/p50, Status, Ingress/Egress, Cache hit ratio
-	- Gateway: HTTP RPS by route, Status, Latency p95 by route
-	- Database: Outbox counters; HTTP RPS and HTTP 5xx errors
-- Screenshot walkthroughs will be added in a later iteration.
+- All services export OTLP to the local SigNoz collector (`signoz-otel-collector:4317`). No Prometheus instance is required for dev or prod parity.
+- The Metrics page in the Dashboard provides a short checklist and direct link to SigNoz. There is no longer an in-app Prometheus proxy or metrics API surface (`/dashboard/api/metrics/*` has been removed).
+- SigNoz organizes dashboards under **Metrics → Dashboards**. Start with the "TansuCloud Overview" space to inspect service RPS, error rates, latency, database outbox throughput, and gateway fan-out.
+- Traces and logs stream to the same SigNoz instance. Use the built-in Explorer for request drill-downs and click-through from distributed traces to spanning logs.
 
 Quick dev smoke
 
-1) Bring up Compose infra and apps (VS Code tasks: "compose: up infra (pg + redis + pgcat)" then "compose: up apps").
-2) Generate some traffic via the gateway, e.g., hit `/storage/health/ready` and `/db/health/ready` a few dozen times.
-3) Visit `/dashboard/admin/metrics`, sign in (dev creds in this guide), and select Storage HTTP RPS or Gateway RPS by route; you should see non-zero series and sparklines.
+1. Bring up Compose infra and apps (VS Code tasks: `compose: up infra (pg + redis + pgcat)` then `compose: up apps`).
+2. Generate traffic via the gateway (e.g., ping `/storage/health/ready` and `/db/health/ready`).
+3. Visit `http://127.0.0.1:3301/` and open the "TansuCloud Overview" dashboard. You should see new time-series points within ~1 minute.
+
+Troubleshooting
+
+- If dashboards are empty, ensure the `signoz-otel-collector` container is healthy and the OTLP endpoint matches `http://signoz-otel-collector:4317` in each service’s configuration.
+- For long-running sessions, periodically compact ClickHouse storage (`docker compose exec clickhouse /usr/bin/clickhouse-client --query "SYSTEM FLUSH LOGS"`).
+- Authentication: the dev environment seeds SigNoz with the credentials in this guide; in production integrate with your SSO before exposing the UI.
 
 ### 13.6 Storage API v1 quick reference
 
@@ -804,25 +836,25 @@ Base path via gateway: `/db/api`. This API provisions a tenant database, applies
 Base path via gateway: `/db/api` (tenant required via `X-Tansu-Tenant` header). Auth scopes: `db.read` for reads, `db.write` for writes (in Development, `admin.full` implies both).
 
 - Collections
-	- `GET /collections` — list with pagination; supports weak ETag on the collection set.
-	- `GET /collections/{id}` — get by id; weak ETag; `If-None-Match` → 304.
-	- `POST /collections` — create.
-	- `PUT /collections/{id}` — update; `If-Match` required for conditional update; 412 on mismatch.
-	- `DELETE /collections/{id}` — delete; `If-Match` supported; 412 on mismatch.
+  - `GET /collections` — list with pagination; supports weak ETag on the collection set.
+  - `GET /collections/{id}` — get by id; weak ETag; `If-None-Match` → 304.
+  - `POST /collections` — create.
+  - `PUT /collections/{id}` — update; `If-Match` required for conditional update; 412 on mismatch.
+  - `DELETE /collections/{id}` — delete; `If-Match` supported; 412 on mismatch.
 
 - Documents
-	- `GET /documents` — list with filters/sort and pagination.
-		- Query: `collectionId` (Guid?), `createdAfter`|`createdBefore` (RFC3339), `sortBy` in `id|collectionId|createdAt`, `sortDir` in `asc|desc`, `page` (>=1), `pageSize` (1..500).
-		- Weak ETag on the result; `If-None-Match` → 304.
-	- `GET /documents/{id}` — get by id; weak ETag; `If-None-Match` → 304.
-	- `POST /documents` — create; body includes `collectionId`, optional `embedding` (float[1536]) and `content` (JSON object). JSON payloads are stored as `jsonb`.
-	- `PUT /documents/{id}` — update; supports `If-Match`; 412 on mismatch.
-	- `DELETE /documents/{id}` — delete; supports `If-Match`; 412 on mismatch.
+  - `GET /documents` — list with filters/sort and pagination.
+    - Query: `collectionId` (Guid?), `createdAfter`|`createdBefore` (RFC3339), `sortBy` in `id|collectionId|createdAt`, `sortDir` in `asc|desc`, `page` (>=1), `pageSize` (1..500).
+    - Weak ETag on the result; `If-None-Match` → 304.
+  - `GET /documents/{id}` — get by id; weak ETag; `If-None-Match` → 304.
+  - `POST /documents` — create; body includes `collectionId`, optional `embedding` (float[1536]) and `content` (JSON object). JSON payloads are stored as `jsonb`.
+  - `PUT /documents/{id}` — update; supports `If-Match`; 412 on mismatch.
+  - `DELETE /documents/{id}` — delete; supports `If-Match`; 412 on mismatch.
 
 - Vector search (pgvector)
-	- `POST /documents/search/vector` — KNN within a collection. Body: `collectionId` (Guid), `embedding` (float[1536]), `limit` (default 10).
-	- `POST /documents/search/vector-global` — ANN across collections with a two-step per-collection cap.
-	- Indexing: HNSW indexes are created by migrations when `vector` extension is available; otherwise sequential scan is used.
+  - `POST /documents/search/vector` — KNN within a collection. Body: `collectionId` (Guid), `embedding` (float[1536]), `limit` (default 10).
+  - `POST /documents/search/vector-global` — ANN across collections with a two-step per-collection cap.
+  - Indexing: HNSW indexes are created by migrations when `vector` extension is available; otherwise sequential scan is used.
 
 ETags and conditional requests
 - Lists and items return weak ETags. If the ETag you send in `If-None-Match` matches, you’ll get `304 Not Modified`.
@@ -835,23 +867,23 @@ Development diagnostics
 
 - CI workflow file: `.github/workflows/e2e.yml`.
 - What it does:
-	- Provisions a PostgreSQL service (localhost:5432) for the Database service.
-	- Builds the solution, launches services in the background, waits for the gateway to become ready, then runs the E2E test project.
-	- Publishes TRX test results as an artifact.
+  - Provisions a PostgreSQL service (localhost:5432) for the Database service.
+  - Builds the solution, launches services in the background, waits for the gateway to become ready, then runs the E2E test project.
+  - Publishes TRX test results as an artifact.
 - When it runs:
-	- On pushes and pull requests targeting `master`.
+  - On pushes and pull requests targeting `master`.
 
 ### 13.4 Troubleshooting test failures
 
 - Gateway not ready:
-	- Confirm `http://localhost:8080/health/ready` (or your configured HTTPS URL) returns 200. If not, inspect gateway logs and dependent service health endpoints (see 13.1).
+  - Confirm `http://localhost:8080/health/ready` (or your configured HTTPS URL) returns 200. If not, inspect gateway logs and dependent service health endpoints (see 13.1).
 - Database provisioning failures:
-	- Ensure PostgreSQL is reachable at `localhost:5432` and credentials match dev settings.
-	- Verify the `Provisioning` options in `TansuCloud.Database` (AdminConnectionString, extensions) align with your environment.
+  - Ensure PostgreSQL is reachable at `localhost:5432` and credentials match dev settings.
+  - Verify the `Provisioning` options in `TansuCloud.Database` (AdminConnectionString, extensions) align with your environment.
 - Certificate issues:
-	- Local tests ignore TLS validation by design. For browser access, trust the dev cert or enable TLS on the gateway as described in section 5.
+  - Local tests ignore TLS validation by design. For browser access, trust the dev cert or enable TLS on the gateway as described in section 5.
 - Identity/token issues:
-	- Check `/.well-known/openid-configuration` via gateway under `/identity` and verify `/identity/connect/token` is reachable.
+  - Check `/.well-known/openid-configuration` via gateway under `/identity` and verify `/identity/connect/token` is reachable.
 
 ## 14. ML Management (Preview)
 
@@ -866,19 +898,19 @@ Storage model artifact conventions
 
 - Suggested object layout: models/{modelName}/{version}/...
 - Tag artifacts with these metadata keys when uploading:
-	- x-tansu-model-name — model identifier (e.g., recommender-v1)
-	- x-tansu-model-version — semantic version or build/build-id (e.g., 1.0.0)
-	- x-tansu-framework — model runtime/format (ml.net, onnx, pytorch)
-	- x-tansu-checksum — sha256 of content
-	- x-tansu-created-at — ISO 8601 timestamp
-	- x-tansu-source — pipeline/job id or URL
+  - x-tansu-model-name — model identifier (e.g., recommender-v1)
+  - x-tansu-model-version — semantic version or build/build-id (e.g., 1.0.0)
+  - x-tansu-framework — model runtime/format (ml.net, onnx, pytorch)
+  - x-tansu-checksum — sha256 of content
+  - x-tansu-created-at — ISO 8601 timestamp
+  - x-tansu-source — pipeline/job id or URL
 
 Gateway metrics placeholders (for future wiring)
 
 - Metrics defined but not emitted by default:
-	- ml_recommendations_served (counter, items)
-	- ml_inference_latency_ms (histogram, ms)
-	- ml_recommendation_coverage_pct (observable gauge, percent)
+  - ml_recommendations_served (counter, items)
+  - ml_inference_latency_ms (histogram, ms)
+  - ml_recommendation_coverage_pct (observable gauge, percent)
 
 What you can do now
 
@@ -901,26 +933,26 @@ Next steps (when Task 34 starts)
 
 ```yaml
 services:
-	gateway:
-		image: tansucloud-gateway
-		ports:
-			- "80:8080"    # HTTP
-			- "443:8443"   # HTTPS (container listens on 8443)
-		volumes:
-			- ./certs:/certs:ro
-		environment:
-			- Kestrel__Endpoints__Https__Url=https://0.0.0.0:8443
-			- Kestrel__Endpoints__Https__Certificate__Path=/certs/gateway.pfx
-			- GATEWAY_CERT_PASSWORD=${GATEWAY_CERT_PASSWORD}
-		depends_on:
-			identity:
-				condition: service_healthy
-			dashboard:
-				condition: service_healthy
-			db:
-				condition: service_healthy
-			storage:
-				condition: service_healthy
+  gateway:
+    image: tansucloud-gateway
+    ports:
+      - "80:8080"    # HTTP
+      - "443:8443"   # HTTPS (container listens on 8443)
+    volumes:
+      - ./certs:/certs:ro
+    environment:
+      - Kestrel__Endpoints__Https__Url=https://0.0.0.0:8443
+      - Kestrel__Endpoints__Https__Certificate__Path=/certs/gateway.pfx
+      - GATEWAY_CERT_PASSWORD=${GATEWAY_CERT_PASSWORD}
+    depends_on:
+      identity:
+        condition: service_healthy
+      dashboard:
+        condition: service_healthy
+      db:
+        condition: service_healthy
+      storage:
+        condition: service_healthy
 ```
 
 Place your `gateway.pfx` under `./certs` and set `GATEWAY_CERT_PASSWORD` in your shell or a `.env` file.
@@ -977,21 +1009,21 @@ Outbox configuration (Database service)
 
 - Outbox is disabled unless a Redis connection is provided.
 - Keys (env or appsettings):
-	- `Outbox:RedisConnection` (e.g., `redis:6379` in compose)
-	- `Outbox:Channel` (default `tansu.outbox`)
-	- `Outbox:PollSeconds` (default `2`)
-	- `Outbox:BatchSize` (default `100`)
-	- `Outbox:MaxAttempts` (default `8`)
+  - `Outbox:RedisConnection` (e.g., `redis:6379` in compose)
+  - `Outbox:Channel` (default `tansu.outbox`)
+  - `Outbox:PollSeconds` (default `2`)
+  - `Outbox:BatchSize` (default `100`)
+  - `Outbox:MaxAttempts` (default `8`)
 
 Idempotency for write requests
 
 - Clients may send an `Idempotency-Key` header on write operations (e.g., create document). The Database service records the key and will return the original outcome on safe retries.
 - Use a strong, unique value per logical operation. Expire/rotate keys as needed on the client side.
-	- The key is stored in `outbox_events.idempotency_key` with a partial unique index to prevent duplicates (when not null). The server may retain keys for operational analysis; clients should not reuse keys across unrelated requests.
+  - The key is stored in `outbox_events.idempotency_key` with a partial unique index to prevent duplicates (when not null). The server may retain keys for operational analysis; clients should not reuse keys across unrelated requests.
 
 Operations
 
 - Health: Redis container exposes `PING` in health checks; verify container is healthy before DB starts processing Outbox.
 - Observability: Outbox worker logs dispatched, retried, and dead-lettered events. Metrics are exported via OpenTelemetry when configured.
 - Failure handling: After max attempts, events transition to a dead-letter state; operators should inspect and decide to replay or ignore.
-	- Redis channel: events are published to the configured channel (default `tansu.outbox`) as JSON envelopes including `{ tenant, collectionId?, documentId?, op }`. Consumers should treat the payload as a contract subject to additive changes.
+  - Redis channel: events are published to the configured channel (default `tansu.outbox`) as JSON envelopes including `{ tenant, collectionId?, documentId?, op }`. Consumers should treat the payload as a contract subject to additive changes.

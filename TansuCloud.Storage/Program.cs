@@ -1,12 +1,12 @@
 // Tansu.Cloud Public Repository:    https://github.com/MusaGursoy/TansuCloud
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Diagnostics.HealthChecks;
 using Microsoft.AspNetCore.ResponseCompression;
 using Microsoft.Extensions.Caching.Hybrid;
 using Microsoft.Extensions.Caching.StackExchangeRedis;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Diagnostics.HealthChecks;
-using Microsoft.AspNetCore.Diagnostics.HealthChecks;
 using Microsoft.IdentityModel.Protocols;
 using Microsoft.IdentityModel.Protocols.OpenIdConnect;
 using Microsoft.IdentityModel.Tokens;
@@ -635,11 +635,13 @@ if (app.Environment.IsDevelopment())
                 // Emit a log before throwing so log ingestion can be asserted
                 try
                 {
-                    var logger = ctx.RequestServices
-                        .GetRequiredService<ILoggerFactory>()
+                    var logger = ctx
+                        .RequestServices.GetRequiredService<ILoggerFactory>()
                         .CreateLogger("DevThrow");
-                    logger.LogError("Dev throw triggered: {Message}",
-                        string.IsNullOrWhiteSpace(msg) ? "Intentional test exception" : msg);
+                    logger.LogError(
+                        "Dev throw triggered: {Message}",
+                        string.IsNullOrWhiteSpace(msg) ? "Intentional test exception" : msg
+                    );
                 }
                 catch { }
                 throw new InvalidOperationException(
@@ -647,7 +649,8 @@ if (app.Environment.IsDevelopment())
                 );
             }
         )
-        .WithName("DevThrow").AllowAnonymous();
+        .WithName("DevThrow")
+        .AllowAnonymous();
 }
 
 // Health endpoints

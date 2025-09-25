@@ -1,4 +1,246 @@
 @page "/admin/routes"
+@layout TansuCloud.Dashboard.Pages.Admin.AdminLayout
+@using System.Text.Json
+@inject HttpClient Http
 
-<h3>YARP Routes (Coming soon)</h3>
-<p class="text-muted">This section will allow editing reverse proxy routes at runtime.</p>
+<h2>YARP Routes</h2>
+
+<div class="mb-3">
+	<div class="d-flex align-items-center gap-2">
+		<button class="btn btn-sm btn-outline-secondary" @onclick="LoadAsync">Refresh</button>
+		<button class="btn btn-sm btn-primary" @onclick="ApplyAsync" disabled="@(!_canApply)">Apply</button>
+		<button class="btn btn-sm btn-warning" @onclick="RollbackAsync">Rollback</button>
+		<button class="btn btn-sm btn-outline-info" @onclick="CheckHealthAsync">Check health</button>
+		<div class="ms-3 text-muted">@_summaryText</div>
+	</div>
+	<div class="mt-2 d-flex align-items-center gap-2">
+		<label class="col-form-label">Admin CSRF (if configured)</label>
+		<input class="form-control" style="max-width: 280px;" @bind="_csrf" placeholder="X-Tansu-Csrf value" />
+		@if (!string.IsNullOrEmpty(_msg))
+		{
+			<span class="ms-2">@_msg</span>
+		}
+	</div>
+	@if (!string.IsNullOrEmpty(_err))
+	{
+		<div class="text-danger mt-2">@_err</div>
+	}
+	@if (!string.IsNullOrEmpty(_warn))
+	{
+		<div class="text-warning mt-2">@_warn</div>
+	}
+	@if (!string.IsNullOrEmpty(_ok))
+	{
+		<div class="text-success mt-2">@_ok</div>
+	}
+    
+</div>
+
+<div class="row g-3">
+	<div class="col-12 col-xl-6">
+		<div class="card p-3 h-100">
+			<h5 class="mb-2">Routes JSON</h5>
+			<textarea class="form-control" rows="24" @bind="_routesJson" placeholder="Enter routes as a JSON array"></textarea>
+		</div>
+	</div>
+	<div class="col-12 col-xl-6">
+		<div class="card p-3 h-100">
+			<h5 class="mb-2">Clusters JSON</h5>
+			<textarea class="form-control" rows="24" @bind="_clustersJson" placeholder="Enter clusters as a JSON array"></textarea>
+		</div>
+	</div>
+</div>
+
+<div class="row g-3 mt-2">
+	<div class="col-12">
+		<div class="card p-3">
+			<h5 class="mb-2">Cluster health (GET /admin/api/routes/health)</h5>
+			<textarea class="form-control" rows="10" readonly value="@_healthJson"></textarea>
+		</div>
+	</div>
+</div>
+
+@code {
+	private string? _routesJson;
+	private string? _clustersJson;
+	private string? _csrf;
+	private string? _err;
+	private string? _warn;
+	private string? _ok;
+	private string? _msg;
+	private string? _healthJson;
+
+	private bool _canApply => IsValidJsonArray(_routesJson) && IsValidJsonArray(_clustersJson);
+	private string _summaryText => BuildSummaryText();
+
+	protected override async Task OnInitializedAsync()
+	{
+		await LoadAsync();
+	}
+
+	private async Task LoadAsync()
+	{
+		_err = _warn = _ok = _msg = null;
+		try
+		{
+			var res = await Http.GetAsync("/admin/api/routes");
+			res.EnsureSuccessStatusCode();
+			var json = await res.Content.ReadAsStringAsync();
+			using var doc = JsonDocument.Parse(json);
+			// Expecting { routes: [...], clusters: [...] }
+			var hasRoutes = doc.RootElement.TryGetProperty("routes", out var routesEl);
+			var hasClusters = doc.RootElement.TryGetProperty("clusters", out var clustersEl);
+			if (!hasRoutes || !hasClusters)
+			{
+				_warn = "Unexpected payload shape from server";
+			}
+			_routesJson = hasRoutes ? ToIndentedJson(routesEl) : "[]";
+			_clustersJson = hasClusters ? ToIndentedJson(clustersEl) : "[]";
+		}
+		catch (Exception ex)
+		{
+			_err = ex.Message;
+		}
+	}
+
+	private async Task CheckHealthAsync()
+	{
+		_err = _warn = _ok = _msg = null;
+		try
+		{
+			var res = await Http.GetAsync("/admin/api/routes/health");
+			if (res.IsSuccessStatusCode)
+			{
+				var json = await res.Content.ReadAsStringAsync();
+				using var doc = JsonDocument.Parse(json);
+				_healthJson = ToIndentedJson(doc.RootElement);
+				_ok = "Health checked";
+			}
+			else
+			{
+				_err = $"Health check failed: {(int)res.StatusCode} {res.ReasonPhrase}";
+				_healthJson = await res.Content.ReadAsStringAsync();
+			}
+		}
+		catch (Exception ex)
+		{
+			_err = ex.Message;
+		}
+	}
+
+	private async Task ApplyAsync()
+	{
+		_err = _warn = _ok = _msg = null;
+		if (!_canApply)
+		{
+			_warn = "Routes and Clusters must both be valid JSON arrays";
+			return;
+		}
+		try
+		{
+			var body = $"{{\"routes\":{_routesJson},\"clusters\":{_clustersJson}}}";
+			using var req = new HttpRequestMessage(HttpMethod.Post, "/admin/api/routes")
+			{
+				Content = new StringContent(body, System.Text.Encoding.UTF8, "application/json")
+			};
+			if (!string.IsNullOrWhiteSpace(_csrf)) req.Headers.Add("X-Tansu-Csrf", _csrf);
+			var res = await Http.SendAsync(req);
+			if (res.IsSuccessStatusCode)
+			{
+				_ok = "Applied";
+				// Display returned snapshot (authoritative server shape)
+				var json = await res.Content.ReadAsStringAsync();
+				using var doc = JsonDocument.Parse(json);
+				_routesJson = ToIndentedJson(doc.RootElement.GetProperty("routes"));
+				_clustersJson = ToIndentedJson(doc.RootElement.GetProperty("clusters"));
+			}
+			else
+			{
+				_err = $"Apply failed: {(int)res.StatusCode} {res.ReasonPhrase}";
+				var details = await res.Content.ReadAsStringAsync();
+				if (!string.IsNullOrWhiteSpace(details))
+				{
+					_msg = details;
+				}
+			}
+		}
+		catch (Exception ex)
+		{
+			_err = ex.Message;
+		}
+	}
+
+	private async Task RollbackAsync()
+	{
+		_err = _warn = _ok = _msg = null;
+		try
+		{
+			using var req = new HttpRequestMessage(HttpMethod.Post, "/admin/api/routes/rollback");
+			if (!string.IsNullOrWhiteSpace(_csrf)) req.Headers.Add("X-Tansu-Csrf", _csrf);
+			var res = await Http.SendAsync(req);
+			if (res.IsSuccessStatusCode)
+			{
+				_ok = "Rolled back";
+				var json = await res.Content.ReadAsStringAsync();
+				using var doc = JsonDocument.Parse(json);
+				_routesJson = ToIndentedJson(doc.RootElement.GetProperty("routes"));
+				_clustersJson = ToIndentedJson(doc.RootElement.GetProperty("clusters"));
+			}
+			else
+			{
+				_err = $"Rollback failed: {(int)res.StatusCode} {res.ReasonPhrase}";
+				_msg = await res.Content.ReadAsStringAsync();
+			}
+		}
+		catch (Exception ex)
+		{
+			_err = ex.Message;
+		}
+	}
+
+	private static bool IsValidJsonArray(string? text)
+	{
+		if (string.IsNullOrWhiteSpace(text)) return false;
+		try
+		{
+			using var doc = JsonDocument.Parse(text);
+			return doc.RootElement.ValueKind == JsonValueKind.Array;
+		}
+		catch
+		{
+			return false;
+		}
+	}
+
+	private static string ToIndentedJson(JsonElement el)
+	{
+		var opts = new JsonSerializerOptions { WriteIndented = true };
+		return JsonSerializer.Serialize(el, opts);
+	}
+
+	private string BuildSummaryText()
+	{
+		try
+		{
+			var routesCount = 0;
+			var clustersCount = 0;
+			if (!string.IsNullOrWhiteSpace(_routesJson))
+			{
+				using var rd = JsonDocument.Parse(_routesJson);
+				if (rd.RootElement.ValueKind == JsonValueKind.Array)
+					routesCount = rd.RootElement.GetArrayLength();
+			}
+			if (!string.IsNullOrWhiteSpace(_clustersJson))
+			{
+				using var cd = JsonDocument.Parse(_clustersJson);
+				if (cd.RootElement.ValueKind == JsonValueKind.Array)
+					clustersCount = cd.RootElement.GetArrayLength();
+			}
+			return $"Routes: {routesCount}, Clusters: {clustersCount}";
+		}
+		catch
+		{
+			return string.Empty;
+		}
+	}
+}

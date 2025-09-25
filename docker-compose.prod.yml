@@ -142,6 +142,8 @@ services:
       # Optional OTLP exporter endpoint (set when using observability profile)
       OpenTelemetry__Otlp__Endpoint: ${OTLP_ENDPOINT:-}
       Cache__Redis: redis:6379
+      # Route audit writes via PgCat; override via env in real deployments
+      Audit__ConnectionString: "Host=pgcat;Port=6432;Database=postgres;Username=${POSTGRES_USER};Password=${POSTGRES_PASSWORD}"
       GatewayBaseUrl: http://gateway:8080
     volumes:
       - tansu-dashboard-keys:/keys

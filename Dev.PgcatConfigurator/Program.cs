@@ -51,8 +51,6 @@ static string GenerateToml(
     sb.AppendLine("[general]");
     sb.AppendLine("host = \"0.0.0.0\"");
     sb.AppendLine("port = 6432");
-    sb.AppendLine("enable_prometheus_exporter = true");
-    sb.AppendLine("prometheus_exporter_port = 9930");
     sb.AppendLine("connect_timeout = 3000");
     sb.AppendLine("idle_timeout = 30000");
     sb.AppendLine("server_lifetime = 86400000");

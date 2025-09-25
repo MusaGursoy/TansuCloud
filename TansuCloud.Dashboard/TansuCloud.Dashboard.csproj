@@ -10,6 +10,7 @@
   <ItemGroup>
     <PackageReference Include="Microsoft.VisualStudio.Azure.Containers.Tools.Targets" Version="1.22.1" />
   <PackageReference Include="Microsoft.AspNetCore.Authentication.OpenIdConnect" Version="9.0.9" />
+  <PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="9.0.9" />
   <PackageReference Include="Microsoft.AspNetCore.DataProtection.StackExchangeRedis" Version="9.0.9" />
   <PackageReference Include="StackExchange.Redis" Version="2.9.17" />
   <PackageReference Include="OpenTelemetry.Extensions.Hosting" Version="1.12.0" />

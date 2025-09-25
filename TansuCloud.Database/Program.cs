@@ -2,10 +2,10 @@
 using System.IdentityModel.Tokens.Jwt;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Diagnostics.HealthChecks;
 using Microsoft.Extensions.Caching.Hybrid;
 using Microsoft.Extensions.Caching.StackExchangeRedis;
 using Microsoft.Extensions.Diagnostics.HealthChecks;
-using Microsoft.AspNetCore.Diagnostics.HealthChecks;
 using Microsoft.Extensions.Options;
 using Microsoft.IdentityModel.Protocols;
 using Microsoft.IdentityModel.Protocols.OpenIdConnect;
@@ -58,7 +58,7 @@ builder
         metrics.AddRuntimeInstrumentation();
         metrics.AddAspNetCoreInstrumentation();
         metrics.AddHttpClientInstrumentation();
-        // Export custom Outbox meter so Prometheus exposes outbox_* counters
+    // Export custom Outbox meter so SigNoz records outbox_* counters via OTLP
         metrics.AddMeter("TansuCloud.Database.Outbox");
         metrics.AddMeter("TansuCloud.Audit");
         metrics.AddOtlpExporter(otlp =>
@@ -94,10 +94,14 @@ builder
     .AddCheck("self", () => HealthCheckResult.Healthy(), tags: new[] { "self" });
 
 // Audit retention options and background job (Phase 3)
-builder.Services.AddOptions<TansuCloud.Database.Services.AuditRetentionOptions>()
+builder
+    .Services.AddOptions<TansuCloud.Database.Services.AuditRetentionOptions>()
     .Bind(builder.Configuration.GetSection("AuditRetention"));
 builder.Services.AddHostedService<TansuCloud.Database.Services.AuditRetentionWorker>();
-builder.Services.AddSingleton<TansuCloud.Database.Services.IAuditDbConnectionFactory, TansuCloud.Database.Services.NpgsqlAuditDbConnectionFactory>();
+builder.Services.AddSingleton<
+    TansuCloud.Database.Services.IAuditDbConnectionFactory,
+    TansuCloud.Database.Services.NpgsqlAuditDbConnectionFactory
+>();
 
 // Phase 0: health transition publisher for Info logs on state changes
 builder.Services.AddSingleton<IHealthCheckPublisher, HealthTransitionPublisher>();
@@ -145,7 +149,10 @@ builder.Services.AddSingleton<
     TansuCloud.Database.Outbox.IOutboxProducer,
     TansuCloud.Database.Outbox.OutboxProducer
 >();
-builder.Services.AddSingleton<TansuCloud.Database.Services.IAuditQueryService, TansuCloud.Database.Services.AuditQueryService>();
+builder.Services.AddSingleton<
+    TansuCloud.Database.Services.IAuditQueryService,
+    TansuCloud.Database.Services.AuditQueryService
+>();
 
 // Optional HybridCache backed by Redis when Cache:Redis is set
 var cacheRedis = builder.Configuration["Cache:Redis"];
@@ -1007,7 +1014,12 @@ if (app.Environment.IsDevelopment())
                     audit.TryEnqueueRedacted(
                         evFail,
                         req,
-                        new[] { nameof(LogOverrideRequest.Category), nameof(LogOverrideRequest.Level), nameof(LogOverrideRequest.TtlSeconds) }
+                        new[]
+                        {
+                            nameof(LogOverrideRequest.Category),
+                            nameof(LogOverrideRequest.Level),
+                            nameof(LogOverrideRequest.TtlSeconds)
+                        }
                     );
                     return Results.Problem("Category is required", statusCode: 400);
                 }
@@ -1026,7 +1038,12 @@ if (app.Environment.IsDevelopment())
                     audit.TryEnqueueRedacted(
                         evFail,
                         req,
-                        new[] { nameof(LogOverrideRequest.Category), nameof(LogOverrideRequest.Level), nameof(LogOverrideRequest.TtlSeconds) }
+                        new[]
+                        {
+                            nameof(LogOverrideRequest.Category),
+                            nameof(LogOverrideRequest.Level),
+                            nameof(LogOverrideRequest.TtlSeconds)
+                        }
                     );
                     return Results.Problem("TtlSeconds must be > 0", statusCode: 400);
                 }
@@ -1046,7 +1063,12 @@ if (app.Environment.IsDevelopment())
                 audit.TryEnqueueRedacted(
                     ev,
                     req,
-                    new[] { nameof(LogOverrideRequest.Category), nameof(LogOverrideRequest.Level), nameof(LogOverrideRequest.TtlSeconds) }
+                    new[]
+                    {
+                        nameof(LogOverrideRequest.Category),
+                        nameof(LogOverrideRequest.Level),
+                        nameof(LogOverrideRequest.TtlSeconds)
+                    }
                 );
 
                 return Results.Ok(new { ok = true });

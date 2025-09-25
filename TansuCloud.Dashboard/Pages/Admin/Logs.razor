@@ -7,7 +7,7 @@
 <div class="mb-2">
     <button class="btn btn-sm btn-primary" @onclick="Refresh">Refresh</button>
     <label class="ms-3">
-        <input type="checkbox" @bind="runtimeEnabled" /> Reporting Enabled (runtime)
+    <input type="checkbox" @bind="runtimeEnabled" @bind:after="Toggle" /> Reporting Enabled (runtime)
     </label>
     <span class="ms-3">Buffered: @bufferCount / @bufferCapacity</span>
     <span class="ms-3">Min Level (capture): @captureMinLevel</span>
@@ -38,6 +38,13 @@
         <button class="btn btn-sm btn-secondary ms-2" @onclick="ApplyFilters">Apply</button>
     </div>
 </div>
+
+@if (!string.IsNullOrWhiteSpace(error))
+{
+    <div class="alert alert-danger" role="alert">
+        <strong>Error:</strong> @error
+    </div>
+}
 
 <table class="table table-sm table-striped">
     <thead>
@@ -74,6 +81,8 @@
     private int skip = 0;
 
     [Inject] private HttpClient Http { get; set; } = default!;
+    [Inject] private NavigationManager Nav { get; set; } = default!;
+    private string? error;
 
     protected override async Task OnInitializedAsync()
     {
@@ -82,15 +91,36 @@
 
     private async Task LoadAsync()
     {
-    var s = await Http.GetFromJsonAsync<StatusDto>("/api/admin/log-reporting/status");
-    status = s ?? new();
-    bufferCount = status.buffer.Count;
-    bufferCapacity = status.buffer.Capacity;
-    captureMinLevel = status.capture.MinimumLevel ?? "";
-    runtimeEnabled = status.runtime;
-        var url = $"/api/admin/logs/recent?take={take}&skip={skip}&level={Uri.EscapeDataString(filterLevel ?? string.Empty)}&categoryContains={Uri.EscapeDataString(filterCategory ?? string.Empty)}";
-        var logs = await Http.GetFromJsonAsync<List<TansuCloud.Dashboard.Observability.Logging.LogRecord>>(url);
-        recent = logs ?? new();
+        try
+        {
+            error = null;
+            // Call via Gateway using relative "/dashboard/api/*" so it works in-container too
+            var statusUrl = new Uri("dashboard/api/admin/log-reporting/status", UriKind.Relative);
+            var s = await Http.GetFromJsonAsync<StatusDto>(statusUrl);
+            status = s ?? new();
+            // Null-safe access in case the API payload is missing nested objects
+            bufferCount = status.buffer?.Count ?? 0;
+            bufferCapacity = status.buffer?.Capacity ?? 0;
+            captureMinLevel = status.capture?.MinimumLevel ?? "";
+            runtimeEnabled = status.runtime;
+
+            var logsUrl = new Uri(
+                $"dashboard/api/admin/logs/recent?take={take}&skip={skip}&level={Uri.EscapeDataString(filterLevel ?? string.Empty)}&categoryContains={Uri.EscapeDataString(filterCategory ?? string.Empty)}",
+                UriKind.Relative
+            );
+            var logs = await Http.GetFromJsonAsync<List<TansuCloud.Dashboard.Observability.Logging.LogRecord>>(logsUrl);
+            recent = logs ?? new();
+        }
+        catch (Exception ex)
+        {
+            // Avoid crashing the Blazor circuit; surface a concise error instead
+            error = ex.Message;
+            recent = new();
+            status = new();
+            bufferCount = 0;
+            bufferCapacity = 0;
+            captureMinLevel = "";
+        }
         StateHasChanged();
     }
 
@@ -101,8 +131,17 @@
 
     private async Task Toggle()
     {
-        await Http.PostAsJsonAsync("/api/admin/log-reporting/toggle", new { enabled = runtimeEnabled });
-        await LoadAsync();
+        try
+        {
+            error = null;
+            var toggleUrl = new Uri("dashboard/api/admin/log-reporting/toggle", UriKind.Relative);
+            await Http.PostAsJsonAsync(toggleUrl, new { enabled = runtimeEnabled });
+            await LoadAsync();
+        }
+        catch (Exception ex)
+        {
+            error = ex.Message;
+        }
     }
 
     private async Task ApplyFilters()

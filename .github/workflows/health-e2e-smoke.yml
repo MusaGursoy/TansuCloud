@@ -1,0 +1,95 @@
+name: Health E2E Smoke
+
+on:
+  pull_request:
+    paths:
+      - 'docker-compose.yml'
+      - 'dev/**'
+      - 'TansuCloud.Gateway/**'
+      - 'TansuCloud.Identity/**'
+      - 'TansuCloud.Database/**'
+      - 'TansuCloud.Storage/**'
+      - 'TansuCloud.Dashboard/**'
+      - 'tests/TansuCloud.E2E.Tests/**'
+      - '.github/workflows/health-e2e-smoke.yml'
+  push:
+    branches: [ "master" ]
+    paths:
+      - 'docker-compose.yml'
+      - 'dev/**'
+      - 'TansuCloud.Gateway/**'
+      - 'TansuCloud.Identity/**'
+      - 'TansuCloud.Database/**'
+      - 'TansuCloud.Storage/**'
+      - 'TansuCloud.Dashboard/**'
+      - 'tests/TansuCloud.E2E.Tests/**'
+      - '.github/workflows/health-e2e-smoke.yml'
+
+jobs:
+  health-e2e-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET 9
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '9.0.x'
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build custom Citus+pgvector image (cached)
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: dev/Dockerfile.citus-pgvector
+          tags: tansu/citus-pgvector:local
+          load: true
+          push: false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Docker Compose up (dev)
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          PGCAT_ADMIN_USER: admin
+          PGCAT_ADMIN_PASSWORD: admin
+          DASHBOARD_CLIENT_SECRET: dev-secret
+          PUBLIC_BASE_URL: http://gateway:8080
+          DOCKER_BUILDKIT: '1'
+        run: |
+          docker compose -f docker-compose.yml up -d --build
+
+      - name: Wait for gateway readiness
+        run: |
+          for i in {1..60}; do
+            if curl -fsS http://127.0.0.1:8080/health/ready >/dev/null; then
+              echo "Gateway is ready"; exit 0; fi; sleep 5; done
+          echo "Gateway did not become ready in time"; docker compose -f docker-compose.yml ps; docker compose -f docker-compose.yml logs --tail=200; exit 1
+
+      - name: Run Health E2E tests (smoke)
+        run: |
+          dotnet test tests/TansuCloud.E2E.Tests/TansuCloud.E2E.Tests.csproj -c Debug --filter "FullyQualifiedName~TansuCloud.E2E.Tests.HealthEndpointsE2E" --logger "trx;LogFileName=health-e2e.trx"
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: health-e2e-results
+          path: |
+            **/health-e2e.trx
+
+      - name: Dump compose status on failure
+        if: failure()
+        run: |
+          docker compose -f docker-compose.yml ps
+          docker compose -f docker-compose.yml logs --tail=300
+
+      - name: Teardown
+        if: always()
+        run: |
+          docker compose -f docker-compose.yml down -v

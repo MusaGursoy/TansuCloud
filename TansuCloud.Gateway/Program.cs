@@ -1,16 +1,22 @@
 // Tansu.Cloud Public Repository:    https://github.com/MusaGursoy/TansuCloud
 
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics.Metrics;
+using System.IO;
 using System.Linq;
 using System.Security.Cryptography;
+using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using System.Threading.RateLimiting;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.AspNetCore.DataProtection;
+using Microsoft.AspNetCore.DataProtection.StackExchangeRedis;
+using Microsoft.AspNetCore.Diagnostics.HealthChecks;
+using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.OutputCaching;
 using Microsoft.Extensions.Caching.Hybrid;
 using Microsoft.Extensions.Caching.StackExchangeRedis;
-using Microsoft.AspNetCore.Diagnostics.HealthChecks;
 using Microsoft.Extensions.Diagnostics.HealthChecks;
 using Microsoft.IdentityModel.Tokens;
 using OpenTelemetry.Logs;
@@ -21,6 +27,7 @@ using TansuCloud.Gateway.Services;
 using TansuCloud.Observability;
 using TansuCloud.Observability.Auditing;
 using Yarp.ReverseProxy.Configuration;
+using StackExchange.Redis;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -94,7 +101,7 @@ builder
         metrics.AddRuntimeInstrumentation();
         metrics.AddAspNetCoreInstrumentation();
         metrics.AddHttpClientInstrumentation();
-        // Export custom gateway proxy meter so Prometheus sees our series
+        // Export custom gateway proxy meter so SigNoz captures our series via OTLP
         metrics.AddMeter("TansuCloud.Gateway.Proxy");
         metrics.AddMeter("TansuCloud.Audit");
         metrics.AddOtlpExporter(otlp =>
@@ -110,6 +117,7 @@ builder
 // Shared observability core (Task 38): dynamic log level overrides, etc.
 builder.Services.AddTansuObservabilityCore();
 builder.Services.AddTansuAudit(builder.Configuration);
+
 // Required by HttpAuditLogger to enrich events from the current request
 builder.Services.AddHttpContextAccessor();
 
@@ -290,6 +298,50 @@ if (!string.IsNullOrWhiteSpace(redisConn) && !disableCache)
         );
 }
 
+// Persist Data Protection keys for affinity cookies and other encrypted payloads so they remain valid across restarts
+var dataProtectionBuilder = builder.Services.AddDataProtection().SetApplicationName("TansuCloud.Gateway");
+if (!string.IsNullOrWhiteSpace(redisConn))
+{
+    try
+    {
+        var mux = ConnectionMultiplexer.Connect(redisConn);
+        builder.Services.AddSingleton<IConnectionMultiplexer>(mux);
+        dataProtectionBuilder.PersistKeysToStackExchangeRedis(mux, "DataProtection-Keys:Gateway");
+        Console.WriteLine("[DataProtection] Using Redis key ring at 'DataProtection-Keys:Gateway' (StackExchange.Redis)");
+    }
+    catch
+    {
+        var fallback = builder.Configuration["DataProtection:KeysPath"] ?? "/keys";
+        try
+        {
+            Directory.CreateDirectory(fallback);
+        }
+        catch
+        {
+            // ignore directory errors; rely on Data Protection to surface issues at runtime
+        }
+
+        dataProtectionBuilder.PersistKeysToFileSystem(new DirectoryInfo(fallback));
+        Console.WriteLine($"[DataProtection] Redis connect failed; using filesystem key ring at '{fallback}'");
+    }
+}
+else
+{
+    var keysPath = builder.Configuration["DataProtection:KeysPath"] ?? "/keys";
+    try
+    {
+        Directory.CreateDirectory(keysPath);
+    }
+    catch
+    {
+        // ignore directory errors; rely on Data Protection to surface issues at runtime
+    }
+
+    dataProtectionBuilder.PersistKeysToFileSystem(new DirectoryInfo(keysPath));
+    Console.WriteLine($"[DataProtection] Using filesystem key ring at '{keysPath}'");
+}
+// End of DataProtection configuration
+
 // Gateway knobs: rate limit window for Retry-After, and static assets cache TTL
 var rateLimitWindowSeconds = builder.Configuration.GetValue("Gateway:RateLimits:WindowSeconds", 10);
 var staticAssetsTtlSeconds = builder.Configuration.GetValue(
@@ -306,7 +358,9 @@ var initialDefaults = new RateLimitDefaults
         builder.Configuration.GetValue("Gateway:RateLimits:Defaults:PermitLimit", 100)
     )
 };
-var initialRoutes = new Dictionary<string, RateLimitRouteOverride>(StringComparer.OrdinalIgnoreCase)
+var initialRateLimitRoutes = new Dictionary<string, RateLimitRouteOverride>(
+    StringComparer.OrdinalIgnoreCase
+)
 {
     {
         "db",
@@ -357,7 +411,11 @@ var initialRoutes = new Dictionary<string, RateLimitRouteOverride>(StringCompare
         }
     }
 };
-var rlRuntime = new RateLimitRuntime(rateLimitWindowSeconds, initialDefaults, initialRoutes);
+var rlRuntime = new RateLimitRuntime(
+    rateLimitWindowSeconds,
+    initialDefaults,
+    initialRateLimitRoutes
+);
 builder.Services.AddSingleton<IRateLimitRuntime>(rlRuntime);
 builder.Services.AddSingleton<RateLimitRejectionAggregator>(sp =>
 {
@@ -365,6 +423,10 @@ builder.Services.AddSingleton<RateLimitRejectionAggregator>(sp =>
     var overrides = sp.GetRequiredService<IDynamicLogLevelOverride>();
     return new RateLimitRejectionAggregator(logger, overrides, rateLimitWindowSeconds);
 });
+
+// Domains/TLS runtime registry (Iteration 2 Task 17 - scaffold)
+var domainTlsRuntime = new DomainTlsRuntime();
+builder.Services.AddSingleton<IDomainTlsRuntime>(domainTlsRuntime);
 
 // Safety controls: Rate Limiting
 builder.Services.AddRateLimiter(options =>
@@ -484,737 +546,743 @@ var identityBase = builder.Configuration["Services:IdentityBaseUrl"] ?? "http://
 var dbBase = builder.Configuration["Services:DatabaseBaseUrl"] ?? "http://127.0.0.1:5278";
 var storageBase = builder.Configuration["Services:StorageBaseUrl"] ?? "http://127.0.0.1:5257";
 
-// Add YARP Reverse Proxy from in-memory config so we don't depend on JSON comment support
+// Prepare initial YARP config in memory and register a dynamic provider
 var reverseProxyBuilder = builder.Services.AddReverseProxy();
-reverseProxyBuilder.LoadFromMemory(
-    // Routes
-    new[]
+var initialProxyRoutes = new List<RouteConfig>
+{
+    // Minimal debug route: forward under /dashdbg/* to dashboard without extra transforms
+    new RouteConfig
     {
-        // Minimal debug route: forward under /dashdbg/* to dashboard without extra transforms
-        new RouteConfig
+        RouteId = "dashboard-direct-debug",
+        ClusterId = "dashboard",
+        Order = -100,
+        Match = new RouteMatch { Path = "/dashdbg/{**catch-all}" },
+        Transforms = new[] { new Dictionary<string, string> { ["PathRemovePrefix"] = "/dashdbg" } }
+    },
+    // Alias: ensure /Identity/Account/Login at gateway root resolves to Identity UI
+    new RouteConfig
+    {
+        RouteId = "identity-login-alias-root",
+        ClusterId = "identity",
+        Order = 0,
+        Match = new RouteMatch { Path = "/Identity/Account/Login" },
+        Transforms = new[]
         {
-            RouteId = "dashboard-direct-debug",
-            ClusterId = "dashboard",
-            Order = -100,
-            Match = new RouteMatch { Path = "/dashdbg/{**catch-all}" },
-            Transforms = new[]
+            new Dictionary<string, string> { ["RequestHeaderOriginalHost"] = "true" },
+            new Dictionary<string, string>
             {
-                new Dictionary<string, string> { ["PathRemovePrefix"] = "/dashdbg" }
-            }
-        },
-        // Alias: ensure /Identity/Account/Login at gateway root resolves to Identity UI
-        new RouteConfig
+                ["RequestHeader"] = "X-Forwarded-Proto",
+                ["Set"] = "https"
+            },
+            new Dictionary<string, string>
+            {
+                ["RequestHeader"] = "X-Forwarded-Prefix",
+                ["Set"] = "/identity"
+            },
+            new Dictionary<string, string> { ["RequestHeadersCopy"] = "true" },
+            new Dictionary<string, string> { ["ResponseHeadersCopy"] = "true" }
+        }
+    },
+    // Identity UI when accessed at root paths (some frameworks generate /Identity/* redirects)
+    new RouteConfig
+    {
+        RouteId = "identity-ui-root",
+        ClusterId = "identity",
+        Order = 5,
+        Match = new RouteMatch { Path = "/Identity/{**catch-all}" },
+        Transforms = new[]
         {
-            RouteId = "identity-login-alias-root",
-            ClusterId = "identity",
-            Order = 0,
-            Match = new RouteMatch { Path = "/Identity/Account/Login" },
-            Transforms = new[]
-            {
-                new Dictionary<string, string> { ["RequestHeaderOriginalHost"] = "true" },
-                new Dictionary<string, string>
-                {
-                    ["RequestHeader"] = "X-Forwarded-Proto",
-                    ["Set"] = "https"
-                },
-                new Dictionary<string, string>
-                {
-                    ["RequestHeader"] = "X-Forwarded-Prefix",
-                    ["Set"] = "/identity"
-                },
-                new Dictionary<string, string> { ["RequestHeadersCopy"] = "true" },
-                new Dictionary<string, string> { ["ResponseHeadersCopy"] = "true" }
-            }
-        },
-        // Identity UI when accessed at root paths (some frameworks generate /Identity/* redirects)
-        new RouteConfig
+            new Dictionary<string, string> { ["RequestHeaderOriginalHost"] = "true" },
+            new Dictionary<string, string> { ["RequestHeadersCopy"] = "true" },
+            new Dictionary<string, string> { ["ResponseHeadersCopy"] = "true" }
+        }
+    },
+    // Identity static assets when referenced from root (e.g., /lib, /css, /js)
+    new RouteConfig
+    {
+        RouteId = "identity-assets-lib-root",
+        ClusterId = "identity",
+        Order = 5,
+        Match = new RouteMatch { Path = "/lib/{**catch-all}" },
+        OutputCachePolicy = "PublicStaticLong",
+        Transforms = new[]
         {
-            RouteId = "identity-ui-root",
-            ClusterId = "identity",
-            Order = 5,
-            Match = new RouteMatch { Path = "/Identity/{**catch-all}" },
-            Transforms = new[]
-            {
-                new Dictionary<string, string> { ["RequestHeaderOriginalHost"] = "true" },
-                new Dictionary<string, string> { ["RequestHeadersCopy"] = "true" },
-                new Dictionary<string, string> { ["ResponseHeadersCopy"] = "true" }
-            }
-        },
-        // Identity static assets when referenced from root (e.g., /lib, /css, /js)
-        new RouteConfig
+            new Dictionary<string, string> { ["RequestHeaderOriginalHost"] = "true" },
+            new Dictionary<string, string> { ["RequestHeadersCopy"] = "true" },
+            new Dictionary<string, string> { ["ResponseHeadersCopy"] = "true" }
+        }
+    },
+    new RouteConfig
+    {
+        RouteId = "identity-assets-css-root",
+        ClusterId = "identity",
+        Order = 5,
+        Match = new RouteMatch { Path = "/css/{**catch-all}" },
+        OutputCachePolicy = "PublicStaticLong",
+        Transforms = new[]
         {
-            RouteId = "identity-assets-lib-root",
-            ClusterId = "identity",
-            Order = 5,
-            Match = new RouteMatch { Path = "/lib/{**catch-all}" },
-            OutputCachePolicy = "PublicStaticLong",
-            Transforms = new[]
-            {
-                new Dictionary<string, string> { ["RequestHeaderOriginalHost"] = "true" },
-                new Dictionary<string, string> { ["RequestHeadersCopy"] = "true" },
-                new Dictionary<string, string> { ["ResponseHeadersCopy"] = "true" }
-            }
-        },
-        new RouteConfig
+            new Dictionary<string, string> { ["RequestHeaderOriginalHost"] = "true" },
+            new Dictionary<string, string> { ["RequestHeadersCopy"] = "true" },
+            new Dictionary<string, string> { ["ResponseHeadersCopy"] = "true" }
+        }
+    },
+    new RouteConfig
+    {
+        RouteId = "identity-assets-js-root",
+        ClusterId = "identity",
+        Order = 5,
+        Match = new RouteMatch { Path = "/js/{**catch-all}" },
+        OutputCachePolicy = "PublicStaticLong",
+        Transforms = new[]
         {
-            RouteId = "identity-assets-css-root",
-            ClusterId = "identity",
-            Order = 5,
-            Match = new RouteMatch { Path = "/css/{**catch-all}" },
-            OutputCachePolicy = "PublicStaticLong",
-            Transforms = new[]
-            {
-                new Dictionary<string, string> { ["RequestHeaderOriginalHost"] = "true" },
-                new Dictionary<string, string> { ["RequestHeadersCopy"] = "true" },
-                new Dictionary<string, string> { ["ResponseHeadersCopy"] = "true" }
-            }
-        },
-        new RouteConfig
+            new Dictionary<string, string> { ["RequestHeaderOriginalHost"] = "true" },
+            new Dictionary<string, string> { ["RequestHeadersCopy"] = "true" },
+            new Dictionary<string, string> { ["ResponseHeadersCopy"] = "true" }
+        }
+    },
+    // Dashboard static/framework endpoints when accessed via gateway root
+    new RouteConfig
+    {
+        RouteId = "dashboard-framework",
+        ClusterId = "dashboard",
+        Match = new RouteMatch { Path = "/_framework/{**catch-all}" },
+        OutputCachePolicy = "PublicStaticLong",
+        Transforms = new[]
         {
-            RouteId = "identity-assets-js-root",
-            ClusterId = "identity",
-            Order = 5,
-            Match = new RouteMatch { Path = "/js/{**catch-all}" },
-            OutputCachePolicy = "PublicStaticLong",
-            Transforms = new[]
-            {
-                new Dictionary<string, string> { ["RequestHeaderOriginalHost"] = "true" },
-                new Dictionary<string, string> { ["RequestHeadersCopy"] = "true" },
-                new Dictionary<string, string> { ["ResponseHeadersCopy"] = "true" }
-            }
-        },
-        // Dashboard static/framework endpoints when accessed via gateway root
-        new RouteConfig
+            new Dictionary<string, string> { ["RequestHeaderOriginalHost"] = "true" },
+            new Dictionary<string, string> { ["RequestHeadersCopy"] = "true" },
+            new Dictionary<string, string> { ["ResponseHeadersCopy"] = "true" }
+        }
+    },
+    // Support framework resources when addressed under /dashboard as a relative path
+    new RouteConfig
+    {
+        RouteId = "dashboard-framework-under-dashboard",
+        ClusterId = "dashboard",
+        Match = new RouteMatch { Path = "/dashboard/_framework/{**catch-all}" },
+        OutputCachePolicy = "PublicStaticLong",
+        Transforms = new[]
         {
-            RouteId = "dashboard-framework",
-            ClusterId = "dashboard",
-            Match = new RouteMatch { Path = "/_framework/{**catch-all}" },
-            OutputCachePolicy = "PublicStaticLong",
-            Transforms = new[]
-            {
-                new Dictionary<string, string> { ["RequestHeaderOriginalHost"] = "true" },
-                new Dictionary<string, string> { ["RequestHeadersCopy"] = "true" },
-                new Dictionary<string, string> { ["ResponseHeadersCopy"] = "true" }
-            }
-        },
-        // Support framework resources when addressed under /dashboard as a relative path
-        new RouteConfig
+            new Dictionary<string, string> { ["PathRemovePrefix"] = "/dashboard" },
+            new Dictionary<string, string> { ["RequestHeaderOriginalHost"] = "true" },
+            new Dictionary<string, string> { ["RequestHeadersCopy"] = "true" },
+            new Dictionary<string, string> { ["ResponseHeadersCopy"] = "true" }
+        }
+    },
+    // Root-level OIDC callbacks forwarded to Dashboard (callbacks kept at gateway root)
+    new RouteConfig
+    {
+        RouteId = "dashboard-signin-oidc-root",
+        ClusterId = "dashboard",
+        Order = 1,
+        Match = new RouteMatch { Path = "/signin-oidc" },
+        Transforms = new[]
         {
-            RouteId = "dashboard-framework-under-dashboard",
-            ClusterId = "dashboard",
-            Match = new RouteMatch { Path = "/dashboard/_framework/{**catch-all}" },
-            OutputCachePolicy = "PublicStaticLong",
-            Transforms = new[]
+            // Ensure downstream Dashboard can reconstruct prefixed return URLs during OIDC callback
+            new Dictionary<string, string>
             {
-                new Dictionary<string, string> { ["PathRemovePrefix"] = "/dashboard" },
-                new Dictionary<string, string> { ["RequestHeaderOriginalHost"] = "true" },
-                new Dictionary<string, string> { ["RequestHeadersCopy"] = "true" },
-                new Dictionary<string, string> { ["ResponseHeadersCopy"] = "true" }
-            }
-        },
-        // Root-level OIDC callbacks forwarded to Dashboard (callbacks kept at gateway root)
-        new RouteConfig
+                ["RequestHeader"] = "X-Forwarded-Proto",
+                ["Set"] = "https"
+            },
+            new Dictionary<string, string>
+            {
+                ["RequestHeader"] = "X-Forwarded-Prefix",
+                ["Set"] = "/dashboard"
+            },
+            new Dictionary<string, string> { ["RequestHeaderOriginalHost"] = "true" },
+            new Dictionary<string, string> { ["RequestHeadersCopy"] = "true" },
+            new Dictionary<string, string> { ["ResponseHeadersCopy"] = "true" }
+        }
+    },
+    // Also support callbacks under /dashboard when X-Forwarded-Prefix is used by the client
+    new RouteConfig
+    {
+        RouteId = "dashboard-signin-oidc-under-dashboard",
+        ClusterId = "dashboard",
+        Order = 1,
+        Match = new RouteMatch { Path = "/dashboard/signin-oidc" },
+        Transforms = new[]
         {
-            RouteId = "dashboard-signin-oidc-root",
-            ClusterId = "dashboard",
-            Order = 1,
-            Match = new RouteMatch { Path = "/signin-oidc" },
-            Transforms = new[]
+            new Dictionary<string, string> { ["PathRemovePrefix"] = "/dashboard" },
+            // Keep forwarded scheme/prefix consistent for downstream during callback processing
+            new Dictionary<string, string>
             {
-                // Ensure downstream Dashboard can reconstruct prefixed return URLs during OIDC callback
-                new Dictionary<string, string>
-                {
-                    ["RequestHeader"] = "X-Forwarded-Proto",
-                    ["Set"] = "https"
-                },
-                new Dictionary<string, string>
-                {
-                    ["RequestHeader"] = "X-Forwarded-Prefix",
-                    ["Set"] = "/dashboard"
-                },
-                new Dictionary<string, string> { ["RequestHeaderOriginalHost"] = "true" },
-                new Dictionary<string, string> { ["RequestHeadersCopy"] = "true" },
-                new Dictionary<string, string> { ["ResponseHeadersCopy"] = "true" }
-            }
-        },
-        // Also support callbacks under /dashboard when X-Forwarded-Prefix is used by the client
-        new RouteConfig
+                ["RequestHeader"] = "X-Forwarded-Proto",
+                ["Set"] = "https"
+            },
+            new Dictionary<string, string>
+            {
+                ["RequestHeader"] = "X-Forwarded-Prefix",
+                ["Set"] = "/dashboard"
+            },
+            new Dictionary<string, string> { ["RequestHeaderOriginalHost"] = "true" },
+            new Dictionary<string, string> { ["RequestHeadersCopy"] = "true" },
+            new Dictionary<string, string> { ["ResponseHeadersCopy"] = "true" }
+        }
+    },
+    new RouteConfig
+    {
+        RouteId = "dashboard-signout-callback-oidc-root",
+        ClusterId = "dashboard",
+        Order = 1,
+        Match = new RouteMatch { Path = "/signout-callback-oidc" },
+        Transforms = new[]
         {
-            RouteId = "dashboard-signin-oidc-under-dashboard",
-            ClusterId = "dashboard",
-            Order = 1,
-            Match = new RouteMatch { Path = "/dashboard/signin-oidc" },
-            Transforms = new[]
+            // Ensure downstream sees canonical scheme/prefix when building post-logout redirects
+            new Dictionary<string, string>
             {
-                new Dictionary<string, string> { ["PathRemovePrefix"] = "/dashboard" },
-                // Keep forwarded scheme/prefix consistent for downstream during callback processing
-                new Dictionary<string, string>
-                {
-                    ["RequestHeader"] = "X-Forwarded-Proto",
-                    ["Set"] = "https"
-                },
-                new Dictionary<string, string>
-                {
-                    ["RequestHeader"] = "X-Forwarded-Prefix",
-                    ["Set"] = "/dashboard"
-                },
-                new Dictionary<string, string> { ["RequestHeaderOriginalHost"] = "true" },
-                new Dictionary<string, string> { ["RequestHeadersCopy"] = "true" },
-                new Dictionary<string, string> { ["ResponseHeadersCopy"] = "true" }
-            }
-        },
-        new RouteConfig
+                ["RequestHeader"] = "X-Forwarded-Proto",
+                ["Set"] = "https"
+            },
+            new Dictionary<string, string>
+            {
+                ["RequestHeader"] = "X-Forwarded-Prefix",
+                ["Set"] = "/dashboard"
+            },
+            new Dictionary<string, string> { ["RequestHeaderOriginalHost"] = "true" },
+            new Dictionary<string, string> { ["RequestHeadersCopy"] = "true" },
+            new Dictionary<string, string> { ["ResponseHeadersCopy"] = "true" }
+        }
+    },
+    new RouteConfig
+    {
+        RouteId = "dashboard-signout-callback-oidc-under-dashboard",
+        ClusterId = "dashboard",
+        Order = 1,
+        Match = new RouteMatch { Path = "/dashboard/signout-callback-oidc" },
+        Transforms = new[]
         {
-            RouteId = "dashboard-signout-callback-oidc-root",
-            ClusterId = "dashboard",
-            Order = 1,
-            Match = new RouteMatch { Path = "/signout-callback-oidc" },
-            Transforms = new[]
+            new Dictionary<string, string> { ["PathRemovePrefix"] = "/dashboard" },
+            new Dictionary<string, string>
             {
-                // Ensure downstream sees canonical scheme/prefix when building post-logout redirects
-                new Dictionary<string, string>
-                {
-                    ["RequestHeader"] = "X-Forwarded-Proto",
-                    ["Set"] = "https"
-                },
-                new Dictionary<string, string>
-                {
-                    ["RequestHeader"] = "X-Forwarded-Prefix",
-                    ["Set"] = "/dashboard"
-                },
-                new Dictionary<string, string> { ["RequestHeaderOriginalHost"] = "true" },
-                new Dictionary<string, string> { ["RequestHeadersCopy"] = "true" },
-                new Dictionary<string, string> { ["ResponseHeadersCopy"] = "true" }
-            }
-        },
-        new RouteConfig
+                ["RequestHeader"] = "X-Forwarded-Proto",
+                ["Set"] = "https"
+            },
+            new Dictionary<string, string>
+            {
+                ["RequestHeader"] = "X-Forwarded-Prefix",
+                ["Set"] = "/dashboard"
+            },
+            new Dictionary<string, string> { ["RequestHeaderOriginalHost"] = "true" },
+            new Dictionary<string, string> { ["RequestHeadersCopy"] = "true" },
+            new Dictionary<string, string> { ["ResponseHeadersCopy"] = "true" }
+        }
+    },
+    // Low-priority root OIDC endpoints to preserve compatibility; canonical path is /identity/*
+    new RouteConfig
+    {
+        RouteId = "identity-connect-root",
+        ClusterId = "identity",
+        Order = 10,
+        Match = new RouteMatch { Path = "/connect/{**catch-all}" },
+        Transforms = new[]
         {
-            RouteId = "dashboard-signout-callback-oidc-under-dashboard",
-            ClusterId = "dashboard",
-            Order = 1,
-            Match = new RouteMatch { Path = "/dashboard/signout-callback-oidc" },
-            Transforms = new[]
+            new Dictionary<string, string> { ["RequestHeaderOriginalHost"] = "true" },
+            new Dictionary<string, string>
             {
-                new Dictionary<string, string> { ["PathRemovePrefix"] = "/dashboard" },
-                new Dictionary<string, string>
-                {
-                    ["RequestHeader"] = "X-Forwarded-Proto",
-                    ["Set"] = "https"
-                },
-                new Dictionary<string, string>
-                {
-                    ["RequestHeader"] = "X-Forwarded-Prefix",
-                    ["Set"] = "/dashboard"
-                },
-                new Dictionary<string, string> { ["RequestHeaderOriginalHost"] = "true" },
-                new Dictionary<string, string> { ["RequestHeadersCopy"] = "true" },
-                new Dictionary<string, string> { ["ResponseHeadersCopy"] = "true" }
-            }
-        },
-        // Low-priority root OIDC endpoints to preserve compatibility; canonical path is /identity/*
-        new RouteConfig
+                ["RequestHeader"] = "X-Forwarded-Proto",
+                ["Set"] = "https"
+            },
+            new Dictionary<string, string>
+            {
+                ["RequestHeader"] = "X-Forwarded-Prefix",
+                ["Set"] = "/identity"
+            },
+            new Dictionary<string, string> { ["RequestHeadersCopy"] = "true" },
+            new Dictionary<string, string> { ["ResponseHeadersCopy"] = "true" }
+        }
+    },
+    new RouteConfig
+    {
+        RouteId = "identity-wellknown-root",
+        ClusterId = "identity",
+        Order = 10,
+        Match = new RouteMatch { Path = "/.well-known/{**catch-all}" },
+        Transforms = new[]
         {
-            RouteId = "identity-connect-root",
-            ClusterId = "identity",
-            Order = 10,
-            Match = new RouteMatch { Path = "/connect/{**catch-all}" },
-            Transforms = new[]
+            new Dictionary<string, string> { ["RequestHeaderOriginalHost"] = "true" },
+            new Dictionary<string, string>
             {
-                new Dictionary<string, string> { ["RequestHeaderOriginalHost"] = "true" },
-                new Dictionary<string, string>
-                {
-                    ["RequestHeader"] = "X-Forwarded-Proto",
-                    ["Set"] = "https"
-                },
-                new Dictionary<string, string>
-                {
-                    ["RequestHeader"] = "X-Forwarded-Prefix",
-                    ["Set"] = "/identity"
-                },
-                new Dictionary<string, string> { ["RequestHeadersCopy"] = "true" },
-                new Dictionary<string, string> { ["ResponseHeadersCopy"] = "true" }
-            }
-        },
-        new RouteConfig
+                ["RequestHeader"] = "X-Forwarded-Proto",
+                ["Set"] = "https"
+            },
+            new Dictionary<string, string>
+            {
+                ["RequestHeader"] = "X-Forwarded-Prefix",
+                ["Set"] = "/identity"
+            },
+            new Dictionary<string, string> { ["RequestHeadersCopy"] = "true" },
+            new Dictionary<string, string> { ["ResponseHeadersCopy"] = "true" }
+        }
+    },
+    // Note: Root-level "/.well-known/*" and "/connect/*" routes are kept as low-priority
+    // aliases for compatibility, but the canonical public base is "/identity/*".
+    // Prefer the prefixed routes and reserve the root paths for legacy clients only.
+    new RouteConfig
+    {
+        RouteId = "dashboard-content",
+        ClusterId = "dashboard",
+        Match = new RouteMatch { Path = "/_content/{**catch-all}" },
+        OutputCachePolicy = "PublicStaticLong",
+        Transforms = new[]
         {
-            RouteId = "identity-wellknown-root",
-            ClusterId = "identity",
-            Order = 10,
-            Match = new RouteMatch { Path = "/.well-known/{**catch-all}" },
-            Transforms = new[]
-            {
-                new Dictionary<string, string> { ["RequestHeaderOriginalHost"] = "true" },
-                new Dictionary<string, string>
-                {
-                    ["RequestHeader"] = "X-Forwarded-Proto",
-                    ["Set"] = "https"
-                },
-                new Dictionary<string, string>
-                {
-                    ["RequestHeader"] = "X-Forwarded-Prefix",
-                    ["Set"] = "/identity"
-                },
-                new Dictionary<string, string> { ["RequestHeadersCopy"] = "true" },
-                new Dictionary<string, string> { ["ResponseHeadersCopy"] = "true" }
-            }
-        },
-        // Note: Root-level "/.well-known/*" and "/connect/*" routes are kept as low-priority
-        // aliases for compatibility, but the canonical public base is "/identity/*".
-        // Prefer the prefixed routes and reserve the root paths for legacy clients only.
-        new RouteConfig
+            new Dictionary<string, string> { ["RequestHeaderOriginalHost"] = "true" },
+            new Dictionary<string, string> { ["RequestHeadersCopy"] = "true" },
+            new Dictionary<string, string> { ["ResponseHeadersCopy"] = "true" }
+        }
+    },
+    new RouteConfig
+    {
+        RouteId = "dashboard-content-under-dashboard",
+        ClusterId = "dashboard",
+        Match = new RouteMatch { Path = "/dashboard/_content/{**catch-all}" },
+        OutputCachePolicy = "PublicStaticLong",
+        Transforms = new[]
         {
-            RouteId = "dashboard-content",
-            ClusterId = "dashboard",
-            Match = new RouteMatch { Path = "/_content/{**catch-all}" },
-            OutputCachePolicy = "PublicStaticLong",
-            Transforms = new[]
-            {
-                new Dictionary<string, string> { ["RequestHeaderOriginalHost"] = "true" },
-                new Dictionary<string, string> { ["RequestHeadersCopy"] = "true" },
-                new Dictionary<string, string> { ["ResponseHeadersCopy"] = "true" }
-            }
-        },
-        new RouteConfig
+            new Dictionary<string, string> { ["PathRemovePrefix"] = "/dashboard" },
+            new Dictionary<string, string> { ["RequestHeaderOriginalHost"] = "true" },
+            new Dictionary<string, string> { ["RequestHeadersCopy"] = "true" },
+            new Dictionary<string, string> { ["ResponseHeadersCopy"] = "true" }
+        }
+    },
+    new RouteConfig
+    {
+        RouteId = "dashboard-blazor",
+        ClusterId = "dashboard",
+        Match = new RouteMatch { Path = "/_blazor/{**catch-all}" },
+        OutputCachePolicy = "PublicStaticLong",
+        Transforms = new[]
         {
-            RouteId = "dashboard-content-under-dashboard",
-            ClusterId = "dashboard",
-            Match = new RouteMatch { Path = "/dashboard/_content/{**catch-all}" },
-            OutputCachePolicy = "PublicStaticLong",
-            Transforms = new[]
+            new Dictionary<string, string> { ["RequestHeaderOriginalHost"] = "true" },
+            new Dictionary<string, string> { ["RequestHeadersCopy"] = "true" },
+            new Dictionary<string, string> { ["ResponseHeadersCopy"] = "true" },
+            // Ensure the downstream Dashboard app gets the canonical base path so the circuit
+            // uses /dashboard consistently and avoids router NotFound flicker on refresh
+            new Dictionary<string, string>
             {
-                new Dictionary<string, string> { ["PathRemovePrefix"] = "/dashboard" },
-                new Dictionary<string, string> { ["RequestHeaderOriginalHost"] = "true" },
-                new Dictionary<string, string> { ["RequestHeadersCopy"] = "true" },
-                new Dictionary<string, string> { ["ResponseHeadersCopy"] = "true" }
-            }
-        },
-        new RouteConfig
-        {
-            RouteId = "dashboard-blazor",
-            ClusterId = "dashboard",
-            Match = new RouteMatch { Path = "/_blazor/{**catch-all}" },
-            OutputCachePolicy = "PublicStaticLong",
-            Transforms = new[]
-            {
-                new Dictionary<string, string> { ["RequestHeaderOriginalHost"] = "true" },
-                new Dictionary<string, string> { ["RequestHeadersCopy"] = "true" },
-                new Dictionary<string, string> { ["ResponseHeadersCopy"] = "true" },
-                // Ensure the downstream Dashboard app gets the canonical base path so the circuit
-                // uses /dashboard consistently and avoids router NotFound flicker on refresh
-                new Dictionary<string, string>
-                {
-                    ["RequestHeader"] = "X-Forwarded-Prefix",
-                    ["Set"] = "/dashboard"
-                }
-            }
-        },
-        new RouteConfig
-        {
-            RouteId = "dashboard-blazor-under-dashboard",
-            ClusterId = "dashboard",
-            Match = new RouteMatch { Path = "/dashboard/_blazor/{**catch-all}" },
-            OutputCachePolicy = "PublicStaticLong",
-            Transforms = new[]
-            {
-                new Dictionary<string, string> { ["PathRemovePrefix"] = "/dashboard" },
-                new Dictionary<string, string> { ["RequestHeaderOriginalHost"] = "true" },
-                new Dictionary<string, string> { ["RequestHeadersCopy"] = "true" },
-                new Dictionary<string, string> { ["ResponseHeadersCopy"] = "true" },
-                // Also stamp the prefix when addressed under /dashboard
-                new Dictionary<string, string>
-                {
-                    ["RequestHeader"] = "X-Forwarded-Prefix",
-                    ["Set"] = "/dashboard"
-                }
-            }
-        },
-        new RouteConfig
-        {
-            RouteId = "dashboard-favicon",
-            ClusterId = "dashboard",
-            Match = new RouteMatch { Path = "/favicon.ico" },
-            OutputCachePolicy = "PublicStaticLong",
-            Transforms = new[]
-            {
-                new Dictionary<string, string> { ["RequestHeaderOriginalHost"] = "true" },
-                new Dictionary<string, string> { ["RequestHeadersCopy"] = "true" },
-                new Dictionary<string, string> { ["ResponseHeadersCopy"] = "true" }
-            }
-        },
-        // Forward app.css (non-hashed)
-        new RouteConfig
-        {
-            RouteId = "dashboard-app-css-exact",
-            ClusterId = "dashboard",
-            Order = -5,
-            Match = new RouteMatch { Path = "/app.css" },
-            OutputCachePolicy = "PublicStaticLong",
-            Transforms = new[]
-            {
-                new Dictionary<string, string> { ["RequestHeaderOriginalHost"] = "true" },
-                new Dictionary<string, string> { ["RequestHeadersCopy"] = "true" },
-                new Dictionary<string, string> { ["ResponseHeadersCopy"] = "true" }
-            }
-        },
-        // Forward hashed app CSS (e.g., /app.<hash>.css)
-        new RouteConfig
-        {
-            RouteId = "dashboard-app-css-hash",
-            ClusterId = "dashboard",
-            Order = -5,
-            Match = new RouteMatch { Path = "/app.{hash}.css" },
-            OutputCachePolicy = "PublicStaticLong",
-            Transforms = new[]
-            {
-                new Dictionary<string, string> { ["RequestHeaderOriginalHost"] = "true" },
-                new Dictionary<string, string> { ["RequestHeadersCopy"] = "true" },
-                new Dictionary<string, string> { ["ResponseHeadersCopy"] = "true" }
-            }
-        },
-        // Forward component-scoped styles (e.g., /TansuCloud.Dashboard.<hash>.styles.css)
-        new RouteConfig
-        {
-            RouteId = "dashboard-styles-css-hash",
-            ClusterId = "dashboard",
-            Order = -10,
-            Match = new RouteMatch { Path = "/TansuCloud.Dashboard.{hash}.styles.css" },
-            OutputCachePolicy = "PublicStaticLong",
-            Transforms = new[]
-            {
-                new Dictionary<string, string> { ["RequestHeaderOriginalHost"] = "true" },
-                new Dictionary<string, string> { ["RequestHeadersCopy"] = "true" },
-                new Dictionary<string, string> { ["ResponseHeadersCopy"] = "true" }
-            }
-        },
-        // Forward non-hashed component styles generated by Blazor Server
-        new RouteConfig
-        {
-            RouteId = "dashboard-styles-css",
-            ClusterId = "dashboard",
-            Order = -10,
-            Match = new RouteMatch { Path = "/TansuCloud.Dashboard.styles.css" },
-            OutputCachePolicy = "PublicStaticLong",
-            Transforms = new[]
-            {
-                new Dictionary<string, string> { ["RequestHeaderOriginalHost"] = "true" },
-                new Dictionary<string, string> { ["RequestHeadersCopy"] = "true" },
-                new Dictionary<string, string> { ["ResponseHeadersCopy"] = "true" }
-            }
-        },
-        // Also support the stylesheet when addressed under /dashboard
-        new RouteConfig
-        {
-            RouteId = "dashboard-styles-css-under-dashboard",
-            ClusterId = "dashboard",
-            Order = -10,
-            Match = new RouteMatch { Path = "/dashboard/TansuCloud.Dashboard.styles.css" },
-            OutputCachePolicy = "PublicStaticLong",
-            Transforms = new[]
-            {
-                new Dictionary<string, string> { ["PathRemovePrefix"] = "/dashboard" },
-                new Dictionary<string, string> { ["RequestHeaderOriginalHost"] = "true" },
-                new Dictionary<string, string> { ["RequestHeadersCopy"] = "true" },
-                new Dictionary<string, string> { ["ResponseHeadersCopy"] = "true" }
-            }
-        },
-        new RouteConfig
-        {
-            RouteId = "dashboard-health-under-dashboard",
-            ClusterId = "dashboard",
-            Order = -50,
-            Match = new RouteMatch { Path = "/dashboard/health/{**catch-all}" },
-            Transforms = new[]
-            {
-                // Strip the /dashboard prefix but do NOT set X-Forwarded-Prefix to avoid interfering with health endpoints
-                new Dictionary<string, string> { ["PathRemovePrefix"] = "/dashboard" },
-                new Dictionary<string, string> { ["RequestHeaderOriginalHost"] = "true" },
-                new Dictionary<string, string> { ["RequestHeadersCopy"] = "true" },
-                new Dictionary<string, string> { ["ResponseHeadersCopy"] = "true" }
-            }
-        },
-        // Forward Dashboard admin/API calls under /dashboard/api/* to the Dashboard app preserving the /api/* path
-        // so Minimal API endpoints like /api/metrics/* are reachable via the gateway canonical prefix.
-        new RouteConfig
-        {
-            RouteId = "dashboard-api-under-dashboard",
-            ClusterId = "dashboard",
-            Order = -100,
-            Match = new RouteMatch { Path = "/dashboard/api/{**catch-all}" },
-            Transforms = new[]
-            {
-                // Remove the /dashboard prefix but preserve the remaining /api/* path
-                new Dictionary<string, string> { ["PathRemovePrefix"] = "/dashboard" },
-                // Preserve original Host header for downstream
-                new Dictionary<string, string> { ["RequestHeaderOriginalHost"] = "true" },
-                // Surface HTTPS scheme to downstream so OIDC and cookie policies remain consistent
-                new Dictionary<string, string>
-                {
-                    ["RequestHeader"] = "X-Forwarded-Proto",
-                    ["Set"] = "https"
-                },
-                // Inform downstream it is hosted under /dashboard (useful for building absolute links)
-                new Dictionary<string, string>
-                {
-                    ["RequestHeader"] = "X-Forwarded-Prefix",
-                    ["Set"] = "/dashboard"
-                },
-                new Dictionary<string, string> { ["RequestHeadersCopy"] = "true" },
-                new Dictionary<string, string> { ["ResponseHeadersCopy"] = "true" }
-            }
-        },
-        new RouteConfig
-        {
-            RouteId = "dashboard-route",
-            ClusterId = "dashboard",
-            Order = 100,
-            Match = new RouteMatch { Path = "/dashboard/{**catch-all}" },
-            Transforms = new[]
-            {
-                new Dictionary<string, string> { ["PathRemovePrefix"] = "/dashboard" },
-                // Preserve original Host header for downstream apps
-                new Dictionary<string, string> { ["RequestHeaderOriginalHost"] = "true" },
-                // Surface HTTPS scheme to downstream so OIDC redirect URIs use https when accessed via gateway
-                new Dictionary<string, string>
-                {
-                    ["RequestHeader"] = "X-Forwarded-Proto",
-                    ["Set"] = "https"
-                },
-                // Propagate a base path hint to downstream (useful for UI routing)
-                new Dictionary<string, string>
-                {
-                    ["RequestHeader"] = "X-Forwarded-Prefix",
-                    ["Set"] = "/dashboard"
-                },
-                // Copy request/response headers (ensures trace headers like traceparent are forwarded)
-                new Dictionary<string, string> { ["RequestHeadersCopy"] = "true" },
-                new Dictionary<string, string> { ["ResponseHeadersCopy"] = "true" }
-            }
-        },
-        new RouteConfig
-        {
-            RouteId = "dashboard-root",
-            ClusterId = "dashboard",
-            Match = new RouteMatch { Path = "/dashboard" },
-            Transforms = new[]
-            {
-                new Dictionary<string, string> { ["PathRemovePrefix"] = "/dashboard" },
-                // After removing the prefix, the path would be empty for the exact match.
-                // Force it to "/" to avoid downstream issuing a 301 redirect to the root,
-                // which would drop the "/dashboard" prefix at the client side.
-                new Dictionary<string, string> { ["PathSet"] = "/" },
-                new Dictionary<string, string> { ["RequestHeaderOriginalHost"] = "true" },
-                // Ensure downstream sees HTTPS and the /dashboard base path for correct OIDC redirect URIs
-                new Dictionary<string, string>
-                {
-                    ["RequestHeader"] = "X-Forwarded-Proto",
-                    ["Set"] = "https"
-                },
-                new Dictionary<string, string>
-                {
-                    ["RequestHeader"] = "X-Forwarded-Prefix",
-                    ["Set"] = "/dashboard"
-                },
-                new Dictionary<string, string> { ["RequestHeadersCopy"] = "true" },
-                new Dictionary<string, string> { ["ResponseHeadersCopy"] = "true" }
-            }
-        },
-        // NOTE: The /admin/* alias is handled via an explicit redirect endpoint (below),
-        // not via proxy transforms. Keeping it out of YARP ensures the browser address bar
-        // reflects the canonical /dashboard/* path and avoids prefix-related flakiness.
-        new RouteConfig
-        {
-            RouteId = "identity-route",
-            ClusterId = "identity",
-            Order = 1,
-            Match = new RouteMatch { Path = "/identity/{**catch-all}" },
-            Transforms = new[]
-            {
-                new Dictionary<string, string> { ["PathRemovePrefix"] = "/identity" },
-                new Dictionary<string, string> { ["RequestHeaderOriginalHost"] = "true" },
-                // Surface HTTPS scheme to downstream so frameworks relying on IsHttps don't reject proxied requests
-                new Dictionary<string, string>
-                {
-                    ["RequestHeader"] = "X-Forwarded-Proto",
-                    ["Set"] = "https"
-                },
-                new Dictionary<string, string>
-                {
-                    ["RequestHeader"] = "X-Forwarded-Prefix",
-                    ["Set"] = "/identity"
-                },
-                new Dictionary<string, string> { ["RequestHeadersCopy"] = "true" },
-                new Dictionary<string, string> { ["ResponseHeadersCopy"] = "true" }
-            }
-        },
-        // Map OpenID Connect endpoints at root to Identity
-        // Explicitly surface Identity OIDC endpoints under "/identity" to avoid root-path ambiguities
-        new RouteConfig
-        {
-            RouteId = "identity-connect-prefixed",
-            ClusterId = "identity",
-            Order = 0,
-            Match = new RouteMatch { Path = "/identity/connect/{**catch-all}" },
-            Transforms = new[]
-            {
-                new Dictionary<string, string> { ["PathRemovePrefix"] = "/identity" },
-                new Dictionary<string, string> { ["RequestHeaderOriginalHost"] = "true" },
-                new Dictionary<string, string>
-                {
-                    ["RequestHeader"] = "X-Forwarded-Proto",
-                    ["Set"] = "https"
-                },
-                new Dictionary<string, string>
-                {
-                    ["RequestHeader"] = "X-Forwarded-Prefix",
-                    ["Set"] = "/identity"
-                },
-                new Dictionary<string, string> { ["RequestHeadersCopy"] = "true" },
-                new Dictionary<string, string> { ["ResponseHeadersCopy"] = "true" }
-            }
-        },
-        new RouteConfig
-        {
-            RouteId = "identity-wellknown-prefixed",
-            ClusterId = "identity",
-            Order = 0,
-            Match = new RouteMatch { Path = "/identity/.well-known/{**catch-all}" },
-            Transforms = new[]
-            {
-                new Dictionary<string, string> { ["PathRemovePrefix"] = "/identity" },
-                new Dictionary<string, string> { ["RequestHeaderOriginalHost"] = "true" },
-                new Dictionary<string, string>
-                {
-                    ["RequestHeader"] = "X-Forwarded-Proto",
-                    ["Set"] = "https"
-                },
-                new Dictionary<string, string>
-                {
-                    ["RequestHeader"] = "X-Forwarded-Prefix",
-                    ["Set"] = "/identity"
-                },
-                new Dictionary<string, string> { ["RequestHeadersCopy"] = "true" },
-                new Dictionary<string, string> { ["ResponseHeadersCopy"] = "true" }
-            }
-        },
-        new RouteConfig
-        {
-            RouteId = "db-route",
-            ClusterId = "db",
-            Match = new RouteMatch { Path = "/db/{**catch-all}" },
-            Transforms = new[]
-            {
-                new Dictionary<string, string> { ["PathRemovePrefix"] = "/db" },
-                new Dictionary<string, string> { ["RequestHeaderOriginalHost"] = "true" },
-                new Dictionary<string, string>
-                {
-                    ["RequestHeader"] = "X-Forwarded-Prefix",
-                    ["Set"] = "/db"
-                },
-                new Dictionary<string, string> { ["RequestHeadersCopy"] = "true" },
-                new Dictionary<string, string> { ["ResponseHeadersCopy"] = "true" }
-            }
-        },
-        new RouteConfig
-        {
-            RouteId = "storage-route",
-            ClusterId = "storage",
-            Match = new RouteMatch { Path = "/storage/{**catch-all}" },
-            Transforms = new[]
-            {
-                new Dictionary<string, string> { ["PathRemovePrefix"] = "/storage" },
-                new Dictionary<string, string> { ["RequestHeaderOriginalHost"] = "true" },
-                new Dictionary<string, string>
-                {
-                    ["RequestHeader"] = "X-Forwarded-Prefix",
-                    ["Set"] = "/storage"
-                },
-                new Dictionary<string, string> { ["RequestHeadersCopy"] = "true" },
-                new Dictionary<string, string> { ["ResponseHeadersCopy"] = "true" },
-                // Ensure downstream Vary: Accept-Encoding is present even when not compressed,
-                // so caches/keying remain correct (aligns with Storage service semantics).
-                new Dictionary<string, string>
-                {
-                    ["ResponseHeader"] = "Vary",
-                    ["Set"] = "Accept-Encoding"
-                }
+                ["RequestHeader"] = "X-Forwarded-Prefix",
+                ["Set"] = "/dashboard"
             }
         }
     },
-    // Clusters -> use dev ports from respective projects
-    new[]
+    new RouteConfig
     {
-        new ClusterConfig
+        RouteId = "dashboard-blazor-under-dashboard",
+        ClusterId = "dashboard",
+        Match = new RouteMatch { Path = "/dashboard/_blazor/{**catch-all}" },
+        OutputCachePolicy = "PublicStaticLong",
+        Transforms = new[]
         {
-            ClusterId = "dashboard",
-            // Enable sticky sessions for Blazor Server (SignalR) stability via the gateway
-            SessionAffinity = new()
+            new Dictionary<string, string> { ["PathRemovePrefix"] = "/dashboard" },
+            new Dictionary<string, string> { ["RequestHeaderOriginalHost"] = "true" },
+            new Dictionary<string, string> { ["RequestHeadersCopy"] = "true" },
+            new Dictionary<string, string> { ["ResponseHeadersCopy"] = "true" },
+            // Also stamp the prefix when addressed under /dashboard
+            new Dictionary<string, string>
             {
-                Enabled = true,
-                Policy = "Cookie", // use affinity cookie
-                FailurePolicy = "Redistribute",
-                AffinityKeyName = ".YARP.AFFINITY"
-            },
-            // Allow very long-lived upgraded connections and avoid activity timeouts
-            HttpRequest = new()
-            {
-                // Use a large finite timeout for safety; some environments can misinterpret 0
-                // (intended as infinite) as immediate timeout. 10 minutes covers WS handshakes
-                // and normal requests while avoiding spurious gateway 504s.
-                ActivityTimeout = TimeSpan.FromMinutes(10),
-                // Force HTTP/1.1 for plaintext backend to avoid h2c negotiation issues
-                Version = new Version(1, 1),
-                VersionPolicy = HttpVersionPolicy.RequestVersionOrLower
-            },
-            Destinations = new Dictionary<string, DestinationConfig>
-            {
-                ["d1"] = new() { Address = dashboardBase }
+                ["RequestHeader"] = "X-Forwarded-Prefix",
+                ["Set"] = "/dashboard"
             }
-        },
-        new ClusterConfig
+        }
+    },
+    new RouteConfig
+    {
+        RouteId = "dashboard-favicon",
+        ClusterId = "dashboard",
+        Match = new RouteMatch { Path = "/favicon.ico" },
+        OutputCachePolicy = "PublicStaticLong",
+        Transforms = new[]
         {
-            ClusterId = "identity",
-            // Align request handling with dashboard cluster to avoid HTTP version negotiation edge cases
-            HttpRequest = new()
-            {
-                ActivityTimeout = TimeSpan.FromMinutes(5),
-                Version = new Version(1, 1),
-                VersionPolicy = HttpVersionPolicy.RequestVersionOrLower
-            },
-            Destinations = new Dictionary<string, DestinationConfig>
-            {
-                ["i1"] = new() { Address = identityBase }
-            }
-        },
-        new ClusterConfig
+            new Dictionary<string, string> { ["RequestHeaderOriginalHost"] = "true" },
+            new Dictionary<string, string> { ["RequestHeadersCopy"] = "true" },
+            new Dictionary<string, string> { ["ResponseHeadersCopy"] = "true" }
+        }
+    },
+    // Forward app.css (non-hashed)
+    new RouteConfig
+    {
+        RouteId = "dashboard-app-css-exact",
+        ClusterId = "dashboard",
+        Order = -5,
+        Match = new RouteMatch { Path = "/app.css" },
+        OutputCachePolicy = "PublicStaticLong",
+        Transforms = new[]
         {
-            ClusterId = "db",
-            HttpRequest = new()
-            {
-                ActivityTimeout = TimeSpan.FromMinutes(5),
-                Version = new Version(1, 1),
-                VersionPolicy = HttpVersionPolicy.RequestVersionOrLower
-            },
-            Destinations = new Dictionary<string, DestinationConfig>
-            {
-                ["db1"] = new() { Address = dbBase }
-            }
-        },
-        new ClusterConfig
+            new Dictionary<string, string> { ["RequestHeaderOriginalHost"] = "true" },
+            new Dictionary<string, string> { ["RequestHeadersCopy"] = "true" },
+            new Dictionary<string, string> { ["ResponseHeadersCopy"] = "true" }
+        }
+    },
+    // Forward hashed app CSS (e.g., /app.<hash>.css)
+    new RouteConfig
+    {
+        RouteId = "dashboard-app-css-hash",
+        ClusterId = "dashboard",
+        Order = -5,
+        Match = new RouteMatch { Path = "/app.{hash}.css" },
+        OutputCachePolicy = "PublicStaticLong",
+        Transforms = new[]
         {
-            ClusterId = "storage",
-            HttpRequest = new()
+            new Dictionary<string, string> { ["RequestHeaderOriginalHost"] = "true" },
+            new Dictionary<string, string> { ["RequestHeadersCopy"] = "true" },
+            new Dictionary<string, string> { ["ResponseHeadersCopy"] = "true" }
+        }
+    },
+    // Forward component-scoped styles (e.g., /TansuCloud.Dashboard.<hash>.styles.css)
+    new RouteConfig
+    {
+        RouteId = "dashboard-styles-css-hash",
+        ClusterId = "dashboard",
+        Order = -10,
+        Match = new RouteMatch { Path = "/TansuCloud.Dashboard.{hash}.styles.css" },
+        OutputCachePolicy = "PublicStaticLong",
+        Transforms = new[]
+        {
+            new Dictionary<string, string> { ["RequestHeaderOriginalHost"] = "true" },
+            new Dictionary<string, string> { ["RequestHeadersCopy"] = "true" },
+            new Dictionary<string, string> { ["ResponseHeadersCopy"] = "true" }
+        }
+    },
+    // Forward non-hashed component styles generated by Blazor Server
+    new RouteConfig
+    {
+        RouteId = "dashboard-styles-css",
+        ClusterId = "dashboard",
+        Order = -10,
+        Match = new RouteMatch { Path = "/TansuCloud.Dashboard.styles.css" },
+        OutputCachePolicy = "PublicStaticLong",
+        Transforms = new[]
+        {
+            new Dictionary<string, string> { ["RequestHeaderOriginalHost"] = "true" },
+            new Dictionary<string, string> { ["RequestHeadersCopy"] = "true" },
+            new Dictionary<string, string> { ["ResponseHeadersCopy"] = "true" }
+        }
+    },
+    // Also support the stylesheet when addressed under /dashboard
+    new RouteConfig
+    {
+        RouteId = "dashboard-styles-css-under-dashboard",
+        ClusterId = "dashboard",
+        Order = -10,
+        Match = new RouteMatch { Path = "/dashboard/TansuCloud.Dashboard.styles.css" },
+        OutputCachePolicy = "PublicStaticLong",
+        Transforms = new[]
+        {
+            new Dictionary<string, string> { ["PathRemovePrefix"] = "/dashboard" },
+            new Dictionary<string, string> { ["RequestHeaderOriginalHost"] = "true" },
+            new Dictionary<string, string> { ["RequestHeadersCopy"] = "true" },
+            new Dictionary<string, string> { ["ResponseHeadersCopy"] = "true" }
+        }
+    },
+    new RouteConfig
+    {
+        RouteId = "dashboard-health-under-dashboard",
+        ClusterId = "dashboard",
+        Order = -50,
+        Match = new RouteMatch { Path = "/dashboard/health/{**catch-all}" },
+        Transforms = new[]
+        {
+            // Strip the /dashboard prefix but do NOT set X-Forwarded-Prefix to avoid interfering with health endpoints
+            new Dictionary<string, string> { ["PathRemovePrefix"] = "/dashboard" },
+            new Dictionary<string, string> { ["RequestHeaderOriginalHost"] = "true" },
+            new Dictionary<string, string> { ["RequestHeadersCopy"] = "true" },
+            new Dictionary<string, string> { ["ResponseHeadersCopy"] = "true" }
+        }
+    },
+    // Forward Dashboard admin/API calls under /dashboard/api/* to the Dashboard app preserving the /api/* path
+    // so Minimal API endpoints like /api/metrics/* are reachable via the gateway canonical prefix.
+    new RouteConfig
+    {
+        RouteId = "dashboard-api-under-dashboard",
+        ClusterId = "dashboard",
+        Order = -100,
+        Match = new RouteMatch { Path = "/dashboard/api/{**catch-all}" },
+        Transforms = new[]
+        {
+            // Remove the /dashboard prefix but preserve the remaining /api/* path
+            new Dictionary<string, string> { ["PathRemovePrefix"] = "/dashboard" },
+            // Preserve original Host header for downstream
+            new Dictionary<string, string> { ["RequestHeaderOriginalHost"] = "true" },
+            // Surface HTTPS scheme to downstream so OIDC and cookie policies remain consistent
+            new Dictionary<string, string>
             {
-                ActivityTimeout = TimeSpan.FromMinutes(5),
-                Version = new Version(1, 1),
-                VersionPolicy = HttpVersionPolicy.RequestVersionOrLower
+                ["RequestHeader"] = "X-Forwarded-Proto",
+                ["Set"] = "https"
             },
-            Destinations = new Dictionary<string, DestinationConfig>
+            // Inform downstream it is hosted under /dashboard (useful for building absolute links)
+            new Dictionary<string, string>
             {
-                ["s1"] = new() { Address = storageBase }
+                ["RequestHeader"] = "X-Forwarded-Prefix",
+                ["Set"] = "/dashboard"
+            },
+            new Dictionary<string, string> { ["RequestHeadersCopy"] = "true" },
+            new Dictionary<string, string> { ["ResponseHeadersCopy"] = "true" }
+        }
+    },
+    new RouteConfig
+    {
+        RouteId = "dashboard-route",
+        ClusterId = "dashboard",
+        Order = 100,
+        Match = new RouteMatch { Path = "/dashboard/{**catch-all}" },
+        Transforms = new[]
+        {
+            new Dictionary<string, string> { ["PathRemovePrefix"] = "/dashboard" },
+            // Preserve original Host header for downstream apps
+            new Dictionary<string, string> { ["RequestHeaderOriginalHost"] = "true" },
+            // Surface HTTPS scheme to downstream so OIDC redirect URIs use https when accessed via gateway
+            new Dictionary<string, string>
+            {
+                ["RequestHeader"] = "X-Forwarded-Proto",
+                ["Set"] = "https"
+            },
+            // Propagate a base path hint to downstream (useful for UI routing)
+            new Dictionary<string, string>
+            {
+                ["RequestHeader"] = "X-Forwarded-Prefix",
+                ["Set"] = "/dashboard"
+            },
+            // Copy request/response headers (ensures trace headers like traceparent are forwarded)
+            new Dictionary<string, string> { ["RequestHeadersCopy"] = "true" },
+            new Dictionary<string, string> { ["ResponseHeadersCopy"] = "true" }
+        }
+    },
+    new RouteConfig
+    {
+        RouteId = "dashboard-root",
+        ClusterId = "dashboard",
+        Match = new RouteMatch { Path = "/dashboard" },
+        Transforms = new[]
+        {
+            new Dictionary<string, string> { ["PathRemovePrefix"] = "/dashboard" },
+            // After removing the prefix, the path would be empty for the exact match.
+            // Force it to "/" to avoid downstream issuing a 301 redirect to the root,
+            // which would drop the "/dashboard" prefix at the client side.
+            new Dictionary<string, string> { ["PathSet"] = "/" },
+            new Dictionary<string, string> { ["RequestHeaderOriginalHost"] = "true" },
+            // Ensure downstream sees HTTPS and the /dashboard base path for correct OIDC redirect URIs
+            new Dictionary<string, string>
+            {
+                ["RequestHeader"] = "X-Forwarded-Proto",
+                ["Set"] = "https"
+            },
+            new Dictionary<string, string>
+            {
+                ["RequestHeader"] = "X-Forwarded-Prefix",
+                ["Set"] = "/dashboard"
+            },
+            new Dictionary<string, string> { ["RequestHeadersCopy"] = "true" },
+            new Dictionary<string, string> { ["ResponseHeadersCopy"] = "true" }
+        }
+    },
+    // NOTE: The /admin/* alias is handled via an explicit redirect endpoint (below),
+    // not via proxy transforms. Keeping it out of YARP ensures the browser address bar
+    // reflects the canonical /dashboard/* path and avoids prefix-related flakiness.
+    new RouteConfig
+    {
+        RouteId = "identity-route",
+        ClusterId = "identity",
+        Order = 1,
+        Match = new RouteMatch { Path = "/identity/{**catch-all}" },
+        Transforms = new[]
+        {
+            new Dictionary<string, string> { ["PathRemovePrefix"] = "/identity" },
+            new Dictionary<string, string> { ["RequestHeaderOriginalHost"] = "true" },
+            // Surface HTTPS scheme to downstream so frameworks relying on IsHttps don't reject proxied requests
+            new Dictionary<string, string>
+            {
+                ["RequestHeader"] = "X-Forwarded-Proto",
+                ["Set"] = "https"
+            },
+            new Dictionary<string, string>
+            {
+                ["RequestHeader"] = "X-Forwarded-Prefix",
+                ["Set"] = "/identity"
+            },
+            new Dictionary<string, string> { ["RequestHeadersCopy"] = "true" },
+            new Dictionary<string, string> { ["ResponseHeadersCopy"] = "true" }
+        }
+    },
+    // Map OpenID Connect endpoints at root to Identity
+    // Explicitly surface Identity OIDC endpoints under "/identity" to avoid root-path ambiguities
+    new RouteConfig
+    {
+        RouteId = "identity-connect-prefixed",
+        ClusterId = "identity",
+        Order = 0,
+        Match = new RouteMatch { Path = "/identity/connect/{**catch-all}" },
+        Transforms = new[]
+        {
+            new Dictionary<string, string> { ["PathRemovePrefix"] = "/identity" },
+            new Dictionary<string, string> { ["RequestHeaderOriginalHost"] = "true" },
+            new Dictionary<string, string>
+            {
+                ["RequestHeader"] = "X-Forwarded-Proto",
+                ["Set"] = "https"
+            },
+            new Dictionary<string, string>
+            {
+                ["RequestHeader"] = "X-Forwarded-Prefix",
+                ["Set"] = "/identity"
+            },
+            new Dictionary<string, string> { ["RequestHeadersCopy"] = "true" },
+            new Dictionary<string, string> { ["ResponseHeadersCopy"] = "true" }
+        }
+    },
+    new RouteConfig
+    {
+        RouteId = "identity-wellknown-prefixed",
+        ClusterId = "identity",
+        Order = 0,
+        Match = new RouteMatch { Path = "/identity/.well-known/{**catch-all}" },
+        Transforms = new[]
+        {
+            new Dictionary<string, string> { ["PathRemovePrefix"] = "/identity" },
+            new Dictionary<string, string> { ["RequestHeaderOriginalHost"] = "true" },
+            new Dictionary<string, string>
+            {
+                ["RequestHeader"] = "X-Forwarded-Proto",
+                ["Set"] = "https"
+            },
+            new Dictionary<string, string>
+            {
+                ["RequestHeader"] = "X-Forwarded-Prefix",
+                ["Set"] = "/identity"
+            },
+            new Dictionary<string, string> { ["RequestHeadersCopy"] = "true" },
+            new Dictionary<string, string> { ["ResponseHeadersCopy"] = "true" }
+        }
+    },
+    new RouteConfig
+    {
+        RouteId = "db-route",
+        ClusterId = "db",
+        Match = new RouteMatch { Path = "/db/{**catch-all}" },
+        Transforms = new[]
+        {
+            new Dictionary<string, string> { ["PathRemovePrefix"] = "/db" },
+            new Dictionary<string, string> { ["RequestHeaderOriginalHost"] = "true" },
+            new Dictionary<string, string>
+            {
+                ["RequestHeader"] = "X-Forwarded-Prefix",
+                ["Set"] = "/db"
+            },
+            new Dictionary<string, string> { ["RequestHeadersCopy"] = "true" },
+            new Dictionary<string, string> { ["ResponseHeadersCopy"] = "true" }
+        }
+    },
+    new RouteConfig
+    {
+        RouteId = "storage-route",
+        ClusterId = "storage",
+        Match = new RouteMatch { Path = "/storage/{**catch-all}" },
+        Transforms = new[]
+        {
+            new Dictionary<string, string> { ["PathRemovePrefix"] = "/storage" },
+            new Dictionary<string, string> { ["RequestHeaderOriginalHost"] = "true" },
+            new Dictionary<string, string>
+            {
+                ["RequestHeader"] = "X-Forwarded-Prefix",
+                ["Set"] = "/storage"
+            },
+            new Dictionary<string, string> { ["RequestHeadersCopy"] = "true" },
+            new Dictionary<string, string> { ["ResponseHeadersCopy"] = "true" },
+            // Ensure downstream Vary: Accept-Encoding is present even when not compressed,
+            // so caches/keying remain correct (aligns with Storage service semantics).
+            new Dictionary<string, string>
+            {
+                ["ResponseHeader"] = "Vary",
+                ["Set"] = "Accept-Encoding"
             }
         }
     }
+};
+var initialProxyClusters = new List<ClusterConfig>
+{
+    new ClusterConfig
+    {
+        ClusterId = "dashboard",
+        // Enable sticky sessions for Blazor Server (SignalR) stability via the gateway
+        SessionAffinity = new()
+        {
+            Enabled = true,
+            Policy = "Cookie", // use affinity cookie
+            FailurePolicy = "Redistribute",
+            AffinityKeyName = ".YARP.AFFINITY"
+        },
+        // Allow very long-lived upgraded connections and avoid activity timeouts
+        HttpRequest = new()
+        {
+            // Use a large finite timeout for safety; some environments can misinterpret 0
+            // (intended as infinite) as immediate timeout. 10 minutes covers WS handshakes
+            // and normal requests while avoiding spurious gateway 504s.
+            ActivityTimeout = TimeSpan.FromMinutes(10),
+            // Force HTTP/1.1 for plaintext backend to avoid h2c negotiation issues
+            Version = new Version(1, 1),
+            VersionPolicy = HttpVersionPolicy.RequestVersionOrLower
+        },
+        Destinations = new Dictionary<string, DestinationConfig>
+        {
+            ["d1"] = new() { Address = dashboardBase }
+        }
+    },
+    new ClusterConfig
+    {
+        ClusterId = "identity",
+        // Align request handling with dashboard cluster to avoid HTTP version negotiation edge cases
+        HttpRequest = new()
+        {
+            ActivityTimeout = TimeSpan.FromMinutes(5),
+            Version = new Version(1, 1),
+            VersionPolicy = HttpVersionPolicy.RequestVersionOrLower
+        },
+        Destinations = new Dictionary<string, DestinationConfig>
+        {
+            ["i1"] = new() { Address = identityBase }
+        }
+    },
+    new ClusterConfig
+    {
+        ClusterId = "db",
+        HttpRequest = new()
+        {
+            ActivityTimeout = TimeSpan.FromMinutes(5),
+            Version = new Version(1, 1),
+            VersionPolicy = HttpVersionPolicy.RequestVersionOrLower
+        },
+        Destinations = new Dictionary<string, DestinationConfig>
+        {
+            ["db1"] = new() { Address = dbBase }
+        }
+    },
+    new ClusterConfig
+    {
+        ClusterId = "storage",
+        HttpRequest = new()
+        {
+            ActivityTimeout = TimeSpan.FromMinutes(5),
+            Version = new Version(1, 1),
+            VersionPolicy = HttpVersionPolicy.RequestVersionOrLower
+        },
+        Destinations = new Dictionary<string, DestinationConfig>
+        {
+            ["s1"] = new() { Address = storageBase }
+        }
+    }
+};
+
+// Register a dynamic provider seeded with our initial config
+var dynamicProvider = new TansuCloud.Gateway.Services.DynamicProxyConfigProvider(
+    initialProxyRoutes,
+    initialProxyClusters
 );
+builder.Services.AddSingleton<IProxyConfigProvider>(dynamicProvider);
+
+// Also expose helper services for admin/runtime
+builder.Services.AddSingleton<TansuCloud.Gateway.Services.DynamicProxyConfigProvider>(
+    dynamicProvider
+);
+builder.Services.AddSingleton<IRoutesRuntime, RoutesRuntime>();
 
 // Harden HttpClient used by YARP per cluster (disable proxies, force HTTP/1.1 semantics)
 reverseProxyBuilder.ConfigureHttpClient(
@@ -1524,6 +1592,114 @@ app.MapHealthChecks(
 app.UseAuthentication();
 app.UseAuthorization();
 
+// Development resilience: cache OIDC discovery and JWKS at the gateway with short TTL and
+// fallback to last known good response if the upstream temporarily fails (e.g., 502 during restarts).
+if (app.Environment.IsDevelopment())
+{
+    var oidcCacheLogger = app
+        .Services.GetRequiredService<ILoggerFactory>()
+        .CreateLogger("Gateway.OIDC-Cache");
+    var cache =
+        new ConcurrentDictionary<
+            string,
+            (DateTimeOffset Expires, string Content, string ContentType)
+        >();
+
+    // Helper to proxy and cache
+    async Task<IResult> ProxyWithCacheAsync(
+        HttpContext http,
+        string upstreamUrl,
+        string cacheKey,
+        string contentType
+    )
+    {
+        using var handler = new SocketsHttpHandler
+        {
+            AllowAutoRedirect = false,
+            AutomaticDecompression = System.Net.DecompressionMethods.None,
+            ConnectTimeout = TimeSpan.FromSeconds(3),
+            EnableMultipleHttp2Connections = false
+        };
+        using var client = new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(5) };
+        client.DefaultRequestVersion = System.Net.HttpVersion.Version11;
+        client.DefaultVersionPolicy = HttpVersionPolicy.RequestVersionOrLower;
+        try
+        {
+            using var req = new HttpRequestMessage(HttpMethod.Get, upstreamUrl);
+            using var resp = await client.SendAsync(
+                req,
+                HttpCompletionOption.ResponseHeadersRead,
+                http.RequestAborted
+            );
+            var text = await resp.Content.ReadAsStringAsync(http.RequestAborted);
+            if (resp.IsSuccessStatusCode)
+            {
+                var ttl = TimeSpan.FromSeconds(30); // short TTL in dev
+                cache[cacheKey] = (DateTimeOffset.UtcNow.Add(ttl), text, contentType);
+                return Results.Content(text, contentType);
+            }
+            else
+            {
+                // Upstream returned a failure; fall back to cache if available and not expired
+                if (
+                    cache.TryGetValue(cacheKey, out var entry)
+                    && entry.Expires > DateTimeOffset.UtcNow
+                )
+                {
+                    oidcCacheLogger.LogWarning(
+                        "OIDC cache hit for {Key} due to upstream {Status}",
+                        cacheKey,
+                        (int)resp.StatusCode
+                    );
+                    return Results.Content(entry.Content, entry.ContentType);
+                }
+                return Results.StatusCode((int)resp.StatusCode);
+            }
+        }
+        catch (Exception ex)
+        {
+            // Network error; serve cached value if present
+            if (cache.TryGetValue(cacheKey, out var entry) && entry.Expires > DateTimeOffset.UtcNow)
+            {
+                oidcCacheLogger.LogWarning(
+                    ex,
+                    "OIDC cache fallback for {Key} due to exception",
+                    cacheKey
+                );
+                return Results.Content(entry.Content, entry.ContentType);
+            }
+            oidcCacheLogger.LogError(ex, "OIDC upstream failure and no cache for {Key}", cacheKey);
+            return Results.StatusCode(StatusCodes.Status502BadGateway);
+        }
+    }
+
+    // Discovery document
+    app.MapGet(
+            "/identity/.well-known/openid-configuration",
+            async (HttpContext http, IConfiguration cfg) =>
+            {
+                var identityBase = cfg["Services:IdentityBaseUrl"] ?? "http://127.0.0.1:5095";
+                var url = identityBase.TrimEnd('/') + "/.well-known/openid-configuration";
+                return await ProxyWithCacheAsync(http, url, "discovery", "application/json");
+            }
+        )
+        .WithDisplayName("Dev: OIDC discovery with cache")
+        .AllowAnonymous();
+
+    // JWKS endpoint
+    app.MapGet(
+            "/identity/.well-known/jwks",
+            async (HttpContext http, IConfiguration cfg) =>
+            {
+                var identityBase = cfg["Services:IdentityBaseUrl"] ?? "http://127.0.0.1:5095";
+                var url = identityBase.TrimEnd('/') + "/.well-known/jwks";
+                return await ProxyWithCacheAsync(http, url, "jwks", "application/json");
+            }
+        )
+        .WithDisplayName("Dev: OIDC JWKS with cache")
+        .AllowAnonymous();
+}
+
 // Admin API endpoints
 // In Development, keep them anonymously accessible for ease of testing.
 // In non-Development, require AdminOnly policy via JWT bearer.
@@ -1568,7 +1744,11 @@ adminGroup
                         Subject = http.User?.Identity?.Name ?? "anonymous",
                         CorrelationId = http.TraceIdentifier
                     };
-                    audit.TryEnqueueRedacted(ev, new { Path = http.Request?.Path.Value }, new[] { "Path" });
+                    audit.TryEnqueueRedacted(
+                        ev,
+                        new { Path = http.Request?.Path.Value },
+                        new[] { "Path" }
+                    );
                 }
                 catch { }
                 return Results.Problem(
@@ -1647,7 +1827,11 @@ adminGroup
                             Subject = http.User?.Identity?.Name ?? "anonymous",
                             CorrelationId = http.TraceIdentifier
                         };
-                        audit.TryEnqueueRedacted(ev, new { Path = http.Request?.Path.Value }, new[] { "Path" });
+                        audit.TryEnqueueRedacted(
+                            ev,
+                            new { Path = http.Request?.Path.Value },
+                            new[] { "Path" }
+                        );
                     }
                     catch { }
                     return Results.Problem(
@@ -1745,13 +1929,539 @@ adminGroup
     )
     .WithDisplayName("Admin: Set rate limits");
 
+// Domains/TLS admin endpoints (scaffold)
+adminGroup
+    .MapGet("/domains", (IDomainTlsRuntime runtime) => Results.Json(runtime.List()))
+    .WithDisplayName("Admin: List domain bindings");
+
+adminGroup
+    .MapPost(
+        "/domains",
+        (
+            HttpContext http,
+            IDomainTlsRuntime runtime,
+            DomainBindRequestDto body,
+            ILoggerFactory loggerFactory,
+            IAuditLogger audit
+        ) =>
+        {
+            if (body is null)
+            {
+                return Results.Problem(
+                    title: "Invalid body",
+                    detail: "Request body is required.",
+                    statusCode: StatusCodes.Status400BadRequest
+                );
+            }
+            var errors = new List<string>();
+            if (string.IsNullOrWhiteSpace(body.Host))
+                errors.Add("Host is required.");
+            if (string.IsNullOrWhiteSpace(body.PfxBase64))
+                errors.Add("PfxBase64 is required (PEM not yet supported).");
+            if (errors.Count > 0)
+            {
+                return Results.ValidationProblem(
+                    new Dictionary<string, string[]> { ["domains"] = errors.ToArray() },
+                    statusCode: 400,
+                    title: "Validation failed"
+                );
+            }
+
+            try
+            {
+                var info = runtime.AddOrReplace(body);
+                try
+                {
+                    var ev = new TansuCloud.Observability.Auditing.AuditEvent
+                    {
+                        Category = "Admin",
+                        Action = "DomainBind",
+                        Outcome = "Success",
+                        Subject = http.User?.Identity?.Name ?? "anonymous",
+                        CorrelationId = http.TraceIdentifier
+                    };
+                    audit.TryEnqueueRedacted(
+                        ev,
+                        new
+                        {
+                            info.Host,
+                            info.Thumbprint,
+                            info.NotAfter
+                        },
+                        new[] { "Host", "Thumbprint", "NotAfter" }
+                    );
+                }
+                catch { }
+                return Results.Json(info);
+            }
+            catch (FormatException)
+            {
+                return Results.Problem(
+                    title: "Invalid certificate",
+                    detail: "PFX data is not valid base64.",
+                    statusCode: 400
+                );
+            }
+            catch (CryptographicException ex)
+            {
+                return Results.Problem(
+                    title: "Certificate error",
+                    detail: ex.Message,
+                    statusCode: 400
+                );
+            }
+        }
+    )
+    .WithDisplayName("Admin: Add or replace domain binding");
+
+// Add/replace via PEM (certificate + private key)
+adminGroup
+    .MapPost(
+        "/domains/pem",
+        (
+            HttpContext http,
+            IDomainTlsRuntime runtime,
+            DomainBindPemRequestDto body,
+            IAuditLogger audit
+        ) =>
+        {
+            if (body is null)
+            {
+                return Results.Problem(
+                    title: "Invalid body",
+                    detail: "Request body is required.",
+                    statusCode: StatusCodes.Status400BadRequest
+                );
+            }
+            var errors = new List<string>();
+            if (string.IsNullOrWhiteSpace(body.Host))
+                errors.Add("Host is required.");
+            if (string.IsNullOrWhiteSpace(body.CertPem))
+                errors.Add("CertPem is required.");
+            if (string.IsNullOrWhiteSpace(body.KeyPem))
+                errors.Add("KeyPem is required.");
+            if (errors.Count > 0)
+            {
+                return Results.ValidationProblem(
+                    new Dictionary<string, string[]> { ["domains"] = errors.ToArray() },
+                    statusCode: 400,
+                    title: "Validation failed"
+                );
+            }
+            try
+            {
+                var info = runtime.AddOrReplacePem(body);
+                try
+                {
+                    var ev = new TansuCloud.Observability.Auditing.AuditEvent
+                    {
+                        Category = "Admin",
+                        Action = "DomainBindPem",
+                        Outcome = "Success",
+                        Subject = http.User?.Identity?.Name ?? "anonymous",
+                        CorrelationId = http.TraceIdentifier
+                    };
+                    audit.TryEnqueueRedacted(
+                        ev,
+                        new
+                        {
+                            info.Host,
+                            info.Thumbprint,
+                            info.NotAfter
+                        },
+                        new[] { "Host", "Thumbprint", "NotAfter" }
+                    );
+                }
+                catch { }
+                return Results.Json(info);
+            }
+            catch (CryptographicException ex)
+            {
+                return Results.Problem(
+                    title: "Certificate error",
+                    detail: ex.Message,
+                    statusCode: 400
+                );
+            }
+            catch (ArgumentException ex)
+            {
+                return Results.Problem(title: "Invalid input", detail: ex.Message, statusCode: 400);
+            }
+        }
+    )
+    .WithDisplayName("Admin: Add or replace domain binding (PEM)");
+
+// Rotate binding with new cert (returns previous metadata too)
+adminGroup
+    .MapPost(
+        "/domains/rotate",
+        (
+            HttpContext http,
+            IDomainTlsRuntime runtime,
+            DomainRotateRequestDto body,
+            IAuditLogger audit
+        ) =>
+        {
+            if (body is null)
+            {
+                return Results.Problem(
+                    title: "Invalid body",
+                    detail: "Request body is required.",
+                    statusCode: StatusCodes.Status400BadRequest
+                );
+            }
+            if (string.IsNullOrWhiteSpace(body.Host))
+            {
+                return Results.ValidationProblem(
+                    new Dictionary<string, string[]>
+                    {
+                        ["domains"] = new[] { "Host is required." }
+                    },
+                    statusCode: 400,
+                    title: "Validation failed"
+                );
+            }
+            var hasPfx = !string.IsNullOrWhiteSpace(body.PfxBase64);
+            var hasPem =
+                !string.IsNullOrWhiteSpace(body.CertPem) && !string.IsNullOrWhiteSpace(body.KeyPem);
+            if (!hasPfx && !hasPem)
+            {
+                return Results.ValidationProblem(
+                    new Dictionary<string, string[]>
+                    {
+                        ["domains"] = new[] { "Provide PfxBase64 or (CertPem + KeyPem)." }
+                    },
+                    statusCode: 400,
+                    title: "Validation failed"
+                );
+            }
+            try
+            {
+                var (current, previous) = runtime.Rotate(body);
+                try
+                {
+                    var ev = new TansuCloud.Observability.Auditing.AuditEvent
+                    {
+                        Category = "Admin",
+                        Action = "DomainRotate",
+                        Outcome = "Success",
+                        Subject = http.User?.Identity?.Name ?? "anonymous",
+                        CorrelationId = http.TraceIdentifier
+                    };
+                    audit.TryEnqueueRedacted(
+                        ev,
+                        new
+                        {
+                            current.Host,
+                            current.Thumbprint,
+                            current.NotAfter,
+                            PreviousThumbprint = previous?.Thumbprint
+                        },
+                        new[] { "Host", "Thumbprint", "NotAfter", "PreviousThumbprint" }
+                    );
+                }
+                catch { }
+                return Results.Json(new { current, previous });
+            }
+            catch (FormatException)
+            {
+                return Results.Problem(
+                    title: "Invalid certificate",
+                    detail: "PFX data is not valid base64.",
+                    statusCode: 400
+                );
+            }
+            catch (CryptographicException ex)
+            {
+                return Results.Problem(
+                    title: "Certificate error",
+                    detail: ex.Message,
+                    statusCode: 400
+                );
+            }
+            catch (ArgumentException ex)
+            {
+                return Results.Problem(title: "Invalid input", detail: ex.Message, statusCode: 400);
+            }
+        }
+    )
+    .WithDisplayName("Admin: Rotate domain binding");
+
+adminGroup
+    .MapDelete(
+        "/domains/{host}",
+        (HttpContext http, IDomainTlsRuntime runtime, string host, IAuditLogger audit) =>
+        {
+            if (string.IsNullOrWhiteSpace(host))
+                return Results.Problem("Host is required", statusCode: 400);
+            var removed = runtime.Remove(host);
+            if (!removed)
+                return Results.NotFound();
+            try
+            {
+                var ev = new TansuCloud.Observability.Auditing.AuditEvent
+                {
+                    Category = "Admin",
+                    Action = "DomainUnbind",
+                    Outcome = "Success",
+                    Subject = http.User?.Identity?.Name ?? "anonymous",
+                    CorrelationId = http.TraceIdentifier
+                };
+                audit.TryEnqueueRedacted(ev, new { Host = host }, new[] { "Host" });
+            }
+            catch { }
+            return Results.NoContent();
+        }
+    )
+    .WithDisplayName("Admin: Remove domain binding");
+
+// Routes (YARP) admin endpoints - list/apply/rollback
+adminGroup
+    .MapGet(
+        "/routes",
+        (DynamicProxyConfigProvider provider) =>
+        {
+            var (routes, clusters) = provider.GetSnapshot();
+            return Results.Json(new { routes, clusters });
+        }
+    )
+    .WithDisplayName("Admin: Get YARP routes");
+
+adminGroup
+    .MapPost(
+        "/routes",
+        (
+            HttpContext http,
+            DynamicProxyConfigProvider provider,
+            IRoutesRuntime runtime,
+            IAuditLogger audit,
+            [FromBody] RoutesUpdateDto dto
+        ) =>
+        {
+            if (dto is null)
+            {
+                return Results.Problem(
+                    title: "Invalid body",
+                    detail: "Request body is required.",
+                    statusCode: 400
+                );
+            }
+            dto.Routes ??= new();
+            dto.Clusters ??= new();
+            // Minimal validation: unique RouteId/ClusterId and referenced clusters exist
+            var errors = new List<string>();
+            var routeIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var r in dto.Routes)
+            {
+                if (string.IsNullOrWhiteSpace(r.RouteId))
+                    errors.Add("RouteId is required for all routes.");
+                else if (!routeIds.Add(r.RouteId))
+                    errors.Add($"Duplicate RouteId '{r.RouteId}'.");
+                if (r.Match?.Path is null)
+                    errors.Add($"Route '{r.RouteId}' must specify Match.Path.");
+                if (string.IsNullOrWhiteSpace(r.ClusterId))
+                    errors.Add($"Route '{r.RouteId}' must specify ClusterId.");
+            }
+            var clusterIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var c in dto.Clusters)
+            {
+                if (string.IsNullOrWhiteSpace(c.ClusterId))
+                    errors.Add("ClusterId is required for all clusters.");
+                else if (!clusterIds.Add(c.ClusterId))
+                    errors.Add($"Duplicate ClusterId '{c.ClusterId}'.");
+                if (c.Destinations is null || c.Destinations.Count == 0)
+                    errors.Add($"Cluster '{c.ClusterId}' must have at least one destination.");
+            }
+            // Verify route->cluster references
+            foreach (var r in dto.Routes)
+            {
+                if (!string.IsNullOrWhiteSpace(r.ClusterId) && !clusterIds.Contains(r.ClusterId))
+                    errors.Add($"Route '{r.RouteId}' references missing cluster '{r.ClusterId}'.");
+            }
+            if (errors.Count > 0)
+            {
+                return Results.ValidationProblem(
+                    new Dictionary<string, string[]> { ["routes"] = errors.ToArray() },
+                    statusCode: 400,
+                    title: "Validation failed"
+                );
+            }
+
+            // Save previous snapshot for rollback then apply
+            var (prevRoutes, prevClusters) = provider.GetSnapshot();
+            runtime.SetPrevious(prevRoutes, prevClusters);
+            provider.Update(dto.Routes, dto.Clusters);
+
+            // Audit success (no secrets)
+            try
+            {
+                var ev = new TansuCloud.Observability.Auditing.AuditEvent
+                {
+                    Category = "Admin",
+                    Action = "RoutesUpdate",
+                    Outcome = "Success",
+                    Subject = http.User?.Identity?.Name ?? "anonymous",
+                    CorrelationId = http.TraceIdentifier
+                };
+                audit.TryEnqueueRedacted(
+                    ev,
+                    new { Routes = dto.Routes.Count, Clusters = dto.Clusters.Count },
+                    new[] { "Routes", "Clusters" }
+                );
+            }
+            catch { }
+
+            var (routesAfter, clustersAfter) = provider.GetSnapshot();
+            return Results.Json(new { routes = routesAfter, clusters = clustersAfter });
+        }
+    )
+    .WithDisplayName("Admin: Set YARP routes");
+
+adminGroup
+    .MapPost(
+        "/routes/rollback",
+        (
+            HttpContext http,
+            DynamicProxyConfigProvider provider,
+            IRoutesRuntime runtime,
+            IAuditLogger audit
+        ) =>
+        {
+            var prev = runtime.GetPrevious();
+            if (prev is null)
+            {
+                return Results.Problem(
+                    title: "Nothing to rollback",
+                    detail: "No previous snapshot stored.",
+                    statusCode: 400
+                );
+            }
+            provider.Update(prev.Value.Routes, prev.Value.Clusters);
+            runtime.ClearPrevious();
+
+            try
+            {
+                var ev = new TansuCloud.Observability.Auditing.AuditEvent
+                {
+                    Category = "Admin",
+                    Action = "RoutesRollback",
+                    Outcome = "Success",
+                    Subject = http.User?.Identity?.Name ?? "anonymous",
+                    CorrelationId = http.TraceIdentifier
+                };
+                audit.TryEnqueueRedacted(ev, new { ok = true }, new[] { "ok" });
+            }
+            catch { }
+
+            var (routesAfter, clustersAfter) = provider.GetSnapshot();
+            return Results.Json(new { routes = routesAfter, clusters = clustersAfter });
+        }
+    )
+    .WithDisplayName("Admin: Rollback YARP routes");
+
+// Routes (YARP) health probe: per-cluster destination readiness snapshot
+adminGroup
+    .MapGet(
+        "/routes/health",
+        async (HttpContext http, DynamicProxyConfigProvider provider, [FromQuery] string? path) =>
+        {
+            // Default health path if not specified: "/health/ready"
+            var healthPath = string.IsNullOrWhiteSpace(path) ? "/health/ready" : path!.Trim();
+            if (!healthPath.StartsWith('/'))
+                healthPath = "/" + healthPath;
+
+            var (_, clusters) = provider.GetSnapshot();
+            var results = new List<object>();
+
+            // Local HttpClient configured similar to our proxy constraints
+            using var handler = new SocketsHttpHandler
+            {
+                AllowAutoRedirect = false,
+                AutomaticDecompression = System.Net.DecompressionMethods.None,
+                ConnectTimeout = TimeSpan.FromSeconds(3),
+                EnableMultipleHttp2Connections = false,
+                SslOptions = new System.Net.Security.SslClientAuthenticationOptions
+                {
+                    EnabledSslProtocols = System.Security.Authentication.SslProtocols.Tls12
+                }
+            };
+            using var client = new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(5) };
+            client.DefaultRequestVersion = System.Net.HttpVersion.Version11;
+            client.DefaultVersionPolicy = HttpVersionPolicy.RequestVersionOrLower;
+
+            foreach (var c in clusters)
+            {
+                var dests = new List<object>();
+                if (c.Destinations is not null)
+                {
+                    foreach (var kv in c.Destinations)
+                    {
+                        var name = kv.Key;
+                        var address = kv.Value?.Address ?? string.Empty;
+                        var url = string.IsNullOrWhiteSpace(address)
+                            ? string.Empty
+                            : address.TrimEnd('/') + healthPath;
+                        var sw = System.Diagnostics.Stopwatch.StartNew();
+                        int status = 0;
+                        bool ok = false;
+                        string? error = null;
+                        try
+                        {
+                            using var req = new HttpRequestMessage(HttpMethod.Get, url);
+                            using var resp = await client.SendAsync(
+                                req,
+                                HttpCompletionOption.ResponseHeadersRead,
+                                http.RequestAborted
+                            );
+                            status = (int)resp.StatusCode;
+                            ok = resp.IsSuccessStatusCode;
+                        }
+                        catch (OperationCanceledException)
+                        {
+                            error = "canceled";
+                        }
+                        catch (Exception ex)
+                        {
+                            error = ex.GetType().Name + ": " + ex.Message;
+                        }
+                        finally
+                        {
+                            sw.Stop();
+                        }
+                        dests.Add(
+                            new
+                            {
+                                name,
+                                address,
+                                url,
+                                status,
+                                ok,
+                                elapsedMs = sw.ElapsedMilliseconds,
+                                error
+                            }
+                        );
+                    }
+                }
+                results.Add(new { clusterId = c.ClusterId, destinations = dests });
+            }
+
+            return Results.Json(new { path = healthPath, clusters = results });
+        }
+    )
+    .WithDisplayName("Admin: YARP clusters health");
+
 // Phase 0: dynamic log level override shim (Development only)
 if (app.Environment.IsDevelopment())
 {
     adminGroup
         .MapPost(
             "/logging/overrides",
-            (HttpContext http, IDynamicLogLevelOverride ovr, [AsParameters] LogOverrideRequest req, IAuditLogger audit) =>
+            (
+                HttpContext http,
+                IDynamicLogLevelOverride ovr,
+                [AsParameters] LogOverrideRequest req,
+                IAuditLogger audit
+            ) =>
             {
                 if (string.IsNullOrWhiteSpace(req.Category))
                 {
@@ -1766,7 +2476,11 @@ if (app.Environment.IsDevelopment())
                             Subject = http.User?.Identity?.Name ?? "anonymous",
                             CorrelationId = http.TraceIdentifier
                         };
-                        audit.TryEnqueueRedacted(ev, new { Error = "CategoryRequired" }, new[] { "Error" });
+                        audit.TryEnqueueRedacted(
+                            ev,
+                            new { Error = "CategoryRequired" },
+                            new[] { "Error" }
+                        );
                     }
                     catch { }
                     return Results.Problem("Category is required", statusCode: 400);
@@ -1784,7 +2498,11 @@ if (app.Environment.IsDevelopment())
                             Subject = http.User?.Identity?.Name ?? "anonymous",
                             CorrelationId = http.TraceIdentifier
                         };
-                        audit.TryEnqueueRedacted(ev, new { Error = "TtlSecondsInvalid" }, new[] { "Error" });
+                        audit.TryEnqueueRedacted(
+                            ev,
+                            new { Error = "TtlSecondsInvalid" },
+                            new[] { "Error" }
+                        );
                     }
                     catch { }
                     return Results.Problem("TtlSeconds must be > 0", statusCode: 400);
@@ -1804,7 +2522,12 @@ if (app.Environment.IsDevelopment())
                     };
                     audit.TryEnqueueRedacted(
                         ev,
-                        new { req.Category, Level = req.Level.ToString(), req.TtlSeconds },
+                        new
+                        {
+                            req.Category,
+                            Level = req.Level.ToString(),
+                            req.TtlSeconds
+                        },
                         new[] { "Category", "Level", "TtlSeconds" }
                     );
                 }

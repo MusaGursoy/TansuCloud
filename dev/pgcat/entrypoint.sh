@@ -6,8 +6,6 @@ cat > "$CONFIG" <<EOF
 [general]
 host = "0.0.0.0"
 port = 6432
-enable_prometheus_exporter = true
-prometheus_exporter_port = 9930
 connect_timeout = 3000
 idle_timeout = 30000
 server_lifetime = 86400000

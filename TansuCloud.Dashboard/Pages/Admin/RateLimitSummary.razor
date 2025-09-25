@@ -1,5 +1,5 @@
-@attribute [Microsoft.AspNetCore.Authorization.Authorize(Policy = "AdminOnly")]
 @page "/admin/rate-limits/summary"
+@attribute [Microsoft.AspNetCore.Authorization.Authorize(Policy = "AdminOnly")]
 @inject IHttpClientFactory ClientFactory
 @using System.Net.Http.Json
 

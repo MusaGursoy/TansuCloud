@@ -1,5 +1,5 @@
-@attribute [Microsoft.AspNetCore.Authorization.Authorize(Policy = "AdminOnly")]
 @page "/admin/providers"
+@attribute [Microsoft.AspNetCore.Authorization.Authorize(Policy = "AdminOnly")]
 @inject HttpClient Http
 
 <h3>External Providers</h3>

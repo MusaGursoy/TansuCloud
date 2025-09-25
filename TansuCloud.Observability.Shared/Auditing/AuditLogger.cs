@@ -40,7 +40,14 @@ internal sealed class HttpAuditLogger(
             var count = 0;
             if (_channel.IsValueCreated)
             {
-                try { count = _channel.Value.Reader.Count; } catch { count = 0; }
+                try
+                {
+                    count = _channel.Value.Reader.Count;
+                }
+                catch
+                {
+                    count = 0;
+                }
             }
             return new[] { new Measurement<int>(count) };
         }
@@ -257,8 +264,12 @@ internal sealed class AuditBackgroundWriter(
     private static readonly Counter<long> WriteFailures = Meter.CreateCounter<long>(
         "audit_write_failures"
     );
+    private static readonly Counter<long> DroppedOnFailure = Meter.CreateCounter<long>(
+        "audit_dropped_on_failure"
+    );
     private readonly AuditOptions _opts = options.Value;
     private readonly ILogger<AuditBackgroundWriter> _logger = logger;
+
     // Touch lifetime to avoid unused parameter warning and to ensure service binds to app lifetime.
     private readonly IHostApplicationLifetime _lifetime = lifetime;
 
@@ -266,6 +277,25 @@ internal sealed class AuditBackgroundWriter(
     {
         try
         {
+            // Diagnostic: Log the effective connection target (host:port/db) for troubleshooting configuration precedence.
+            try
+            {
+                var csb = new NpgsqlConnectionStringBuilder(_opts.ConnectionString);
+                var host = csb.Host;
+                var port = csb.Port;
+                var db = csb.Database;
+                _logger.LogInformation(
+                    "[AuditWriter] Using connection target {Host}:{Port}/{Database}",
+                    host,
+                    port,
+                    db
+                );
+            }
+            catch
+            {
+                // Swallow parse errors; EnsureTableAsync will surface connection issues.
+            }
+
             await EnsureTableAsync(stoppingToken);
         }
         catch (Exception ex)
@@ -298,7 +328,21 @@ internal sealed class AuditBackgroundWriter(
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Audit batch write failed");
-                try { WriteFailures.Add(batch.Count); } catch { }
+                try
+                {
+                    WriteFailures.Add(batch.Count);
+                }
+                catch { }
+                // Drop the accumulated batch on failure to avoid unbounded memory growth.
+                // The bounded channel limits backlog on the producer side; here we must also bound the consumer-side buffer.
+                var dropped = batch.Count;
+                batch.Clear();
+                try
+                {
+                    if (dropped > 0)
+                        DroppedOnFailure.Add(dropped);
+                }
+                catch { }
                 await Task.Delay(TimeSpan.FromSeconds(2), stoppingToken);
             }
         }

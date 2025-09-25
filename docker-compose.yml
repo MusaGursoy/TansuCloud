@@ -255,6 +255,7 @@ services:
       OpenTelemetry__Otlp__Endpoint: http://signoz-otel-collector:4317
       ConnectionStrings__Default: "Host=pgcat;Port=6432;Database=tansu_identity;Username=${POSTGRES_USER};Password=${POSTGRES_PASSWORD}"
       Cache__Redis: redis:6379
+      Audit__ConnectionString: "Host=pgcat;Port=6432;Database=postgres;Username=${POSTGRES_USER};Password=${POSTGRES_PASSWORD}"
     healthcheck:
       test: ["CMD", "/bin/busybox", "wget", "-q", "-O", "-", "http://localhost:8080/health/ready"]
       interval: 10s
@@ -279,6 +280,8 @@ services:
       PublicBaseUrl: http://127.0.0.1:8080
       OpenTelemetry__Otlp__Endpoint: http://signoz-otel-collector:4317
       Cache__Redis: redis:6379
+      # Route audit writes via PgCat; avoid localhost inside container
+      Audit__ConnectionString: "Host=pgcat;Port=6432;Database=postgres;Username=${POSTGRES_USER};Password=${POSTGRES_PASSWORD}"
       Oidc__Authority: http://127.0.0.1:8080/identity
       # Use in-cluster gateway for backchannel discovery; browser-facing Authority stays on 127.0.0.1
       Oidc__MetadataAddress: http://gateway:8080/identity/.well-known/openid-configuration
@@ -325,6 +328,7 @@ services:
       Provisioning__AdminConnectionString: "Host=postgres;Port=5432;Database=postgres;Username=${POSTGRES_USER};Password=${POSTGRES_PASSWORD}"
       Provisioning__RuntimeConnectionString: "Host=pgcat;Port=6432;Database=postgres;Username=${POSTGRES_USER};Password=${POSTGRES_PASSWORD}"
       Dev__ProvisionBypassKey: letmein
+      Audit__ConnectionString: "Host=pgcat;Port=6432;Database=postgres;Username=${POSTGRES_USER};Password=${POSTGRES_PASSWORD}"
     healthcheck:
       test: ["CMD", "/bin/busybox", "wget", "-q", "-O", "-", "http://localhost:8080/health/ready"]
       interval: 10s
@@ -359,6 +363,7 @@ services:
       Storage__PresignSecret: dev-presign
       # Enforce a max per-part size for multipart uploads (1 MiB) to validate E2E behavior
       Storage__MultipartMaxPartSizeBytes: 1048576
+      Audit__ConnectionString: "Host=pgcat;Port=6432;Database=postgres;Username=${POSTGRES_USER};Password=${POSTGRES_PASSWORD}"
     healthcheck:
       test: ["CMD", "/bin/busybox", "wget", "-q", "-O", "-", "http://localhost:8080/health/ready"]
       interval: 10s
@@ -388,6 +393,7 @@ services:
       OpenTelemetry__Otlp__Endpoint: http://signoz-otel-collector:4317
       Cache__Redis: redis:6379
       Dev__ProvisionBypassKey: letmein
+      Audit__ConnectionString: "Host=pgcat;Port=6432;Database=postgres;Username=${POSTGRES_USER};Password=${POSTGRES_PASSWORD}"
     ports:
       - "80:8080"
       - "8080:8080"

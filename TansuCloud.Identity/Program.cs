@@ -1,19 +1,19 @@
 // Tansu.Cloud Public Repository:    https://github.com/MusaGursoy/TansuCloud
 
 using System.Threading.Tasks;
+using Microsoft.AspNetCore.Authentication.Cookies;
+using Microsoft.AspNetCore.Diagnostics.HealthChecks;
 using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Caching.Hybrid;
 using Microsoft.Extensions.Caching.StackExchangeRedis;
 using Microsoft.Extensions.Diagnostics.HealthChecks;
-using Microsoft.AspNetCore.Diagnostics.HealthChecks;
 using Microsoft.Extensions.Options;
 using Microsoft.IdentityModel.Tokens;
 using OpenIddict.Abstractions;
 using OpenIddict.Server;
 using OpenIddict.Server.AspNetCore;
-using Microsoft.AspNetCore.Authentication.Cookies;
 using OpenTelemetry.Logs;
 using OpenTelemetry.Metrics;
 using OpenTelemetry.Resources;
@@ -220,9 +220,15 @@ builder.Services.ConfigureApplicationCookie(options =>
                     CorrelationId = context.HttpContext.TraceIdentifier
                 };
                 // Minimal allowlisted details
-                audit.TryEnqueueRedacted(ev, new { Path = context.Request?.Path.Value }, new[] { "Path" });
+                audit.TryEnqueueRedacted(
+                    ev,
+                    new { Path = context.Request?.Path.Value },
+                    new[] { "Path" }
+                );
             }
-            catch { /* never throw from auth events */ }
+            catch
+            { /* never throw from auth events */
+            }
             return Task.CompletedTask;
         },
         OnSigningOut = context =>
@@ -238,7 +244,11 @@ builder.Services.ConfigureApplicationCookie(options =>
                     Outcome = "Success",
                     CorrelationId = context.HttpContext.TraceIdentifier
                 };
-                audit.TryEnqueueRedacted(ev, new { Path = context.Request?.Path.Value }, new[] { "Path" });
+                audit.TryEnqueueRedacted(
+                    ev,
+                    new { Path = context.Request?.Path.Value },
+                    new[] { "Path" }
+                );
             }
             catch { }
             return Task.CompletedTask;
@@ -322,13 +332,18 @@ builder
 
         // Audit successful sign-ins (token issuance) via OpenIddict ProcessSignIn
         options.AddEventHandler<OpenIddictServerEvents.ProcessSignInContext>(builder =>
-            builder.UseScopedHandler<AuthAuditHandlers.ProcessSignInAuditHandler>().Build());
+            builder.UseScopedHandler<AuthAuditHandlers.ProcessSignInAuditHandler>().Build()
+        );
 
         options.AddEventHandler<OpenIddictServerEvents.ApplyAuthorizationResponseContext>(builder =>
-            builder.UseScopedHandler<AuthAuditHandlers.ApplyAuthorizationResponseAuditHandler>().Build());
+            builder
+                .UseScopedHandler<AuthAuditHandlers.ApplyAuthorizationResponseAuditHandler>()
+                .Build()
+        );
 
         options.AddEventHandler<OpenIddictServerEvents.ApplyTokenResponseContext>(builder =>
-            builder.UseScopedHandler<AuthAuditHandlers.ApplyTokenResponseAuditHandler>().Build());
+            builder.UseScopedHandler<AuthAuditHandlers.ApplyTokenResponseAuditHandler>().Build()
+        );
 
         // Handlers above will emit audit entries for success/failure paths
 
