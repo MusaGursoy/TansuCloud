@@ -237,9 +237,12 @@ public sealed class ObjectsController(
     {
         // Normalize key from route (decode % escapes like %2F)
         key = RouteKeyNormalizer.Normalize(key);
-        // Try cache for HEAD metadata
+        // Try cache for HEAD metadata (disabled temporarily to ensure correct tenant context flows during E2E)
+        // Reason: factory delegates may run without ambient HttpContext, leading to default-tenant resolution.
+        // We'll bypass cache for HEAD until context flow is guaranteed in HybridCache.
         var headKey = CacheKey("head", bucket, key);
-        if (cache is not null)
+        const bool headCacheEnabled = false;
+        if (cache is not null && headCacheEnabled)
         {
             var cached = await cache.GetOrCreateWithMetricsAsync(
                 headKey,

@@ -145,7 +145,7 @@ services:
     container_name: signoz-schema-migrator-sync
     # In single-node dev, run all migrations once and exit successfully.
     # Avoid --dev to prevent skipping squashed migrations in local runs.
-    command: ["sync", "--dsn=tcp://admin:admin@clickhouse:9000", "--up="]
+    command: ["sync", "--dsn=tcp://admin:admin@clickhouse:9000"]
     restart: on-failure
     deploy:
       resources:
@@ -198,17 +198,34 @@ services:
       clickhouse:
         condition: service_healthy
       schema-migrator-sync:
-        condition: service_started
+        condition: service_completed_successfully
     networks:
       - tansucloud-network
     entrypoint: ["bash","-lc"]
+    volumes:
+      - ./dev/clickhouse/patches:/patches:ro
     command:
       - >-
-        clickhouse-client --host clickhouse --port 9000 --user admin --password admin
+        set -euo pipefail; \
+        # Create a compatibility view used by some SigNoz queries
+        clickhouse-client --host clickhouse --port 9000 --user admin --password admin \
         -q "CREATE VIEW IF NOT EXISTS signoz_traces.distributed_top_level_operations ON CLUSTER cluster AS
         SELECT name, serviceName, toDateTime(timestamp) AS time
         FROM signoz_traces.distributed_signoz_index_v3
-        WHERE (parent_span_id = '' OR length(parent_span_id) = 0);"
+        WHERE (parent_span_id = '' OR length(parent_span_id) = 0);" \
+        && \
+        # Ensure root_operations view exists before migrator attempts to ALTER it
+        clickhouse-client --host clickhouse --port 9000 --user admin --password admin \
+        -q "CREATE VIEW IF NOT EXISTS signoz_traces.root_operations ON CLUSTER cluster AS
+        SELECT DISTINCT name, resource_string_service$$name AS serviceName
+        FROM signoz_traces.signoz_index_v3
+        WHERE parent_span_id = ''" \
+        && \
+        # Apply all dev ClickHouse schema patches (idempotent)
+        for f in /patches/*.sql; do \
+          echo "Applying patch: $f"; \
+          clickhouse-client --host clickhouse --port 9000 --user admin --password admin -n < "$f"; \
+        done
 
   redis:
     image: redis:latest
@@ -226,8 +243,6 @@ services:
       timeout: 3s
       retries: 10
       start_period: 5s
-    ports:
-      - "6379:6379" # Expose Redis for host E2E tests
     volumes:
       - tansu-redisdata:/data
     networks:

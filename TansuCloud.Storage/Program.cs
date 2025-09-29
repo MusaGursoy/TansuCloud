@@ -120,6 +120,8 @@ builder
         metrics.AddHttpClientInstrumentation();
         metrics.AddMeter("tansu.storage");
         metrics.AddMeter("TansuCloud.Audit");
+        // Export OTLP diagnostics/gauges
+        metrics.AddMeter("tansu.otel.exporter");
         metrics.AddTansuOtlpExporter(builder.Configuration, builder.Environment);
     });
 
@@ -130,6 +132,22 @@ builder.Logging.AddOpenTelemetry(o =>
 {
     o.IncludeFormattedMessage = true;
     o.ParseStateValues = true;
+    // Ensure logs carry the same Resource attributes (service.name, version, environment)
+    o.SetResourceBuilder(
+        ResourceBuilder
+            .CreateDefault()
+            .AddService(
+                serviceName: storageName,
+                serviceVersion: storageVersion,
+                serviceInstanceId: Environment.MachineName
+            )
+            .AddAttributes(
+                new KeyValuePair<string, object>[]
+                {
+                    new("deployment.environment", (object)builder.Environment.EnvironmentName)
+                }
+            )
+    );
     o.AddTansuOtlpExporter(builder.Configuration, builder.Environment);
 });
 builder

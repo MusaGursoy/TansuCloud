@@ -118,6 +118,8 @@ builder
         // Export custom Outbox meter so SigNoz records outbox_* counters via OTLP
         metrics.AddMeter("TansuCloud.Database.Outbox");
         metrics.AddMeter("TansuCloud.Audit");
+        // Export OTLP diagnostics/gauges
+        metrics.AddMeter("tansu.otel.exporter");
         metrics.AddTansuOtlpExporter(builder.Configuration, builder.Environment);
     });
 

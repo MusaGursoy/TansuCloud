@@ -145,11 +145,13 @@ public static class OpenTelemetryExtensions
             endpointRaw = ResolveDefaultOtlpEndpoint();
         }
 
+        Uri? endpointUri = null;
         if (
             !string.IsNullOrWhiteSpace(endpointRaw)
-            && Uri.TryCreate(endpointRaw, UriKind.Absolute, out var endpointUri)
+            && Uri.TryCreate(endpointRaw, UriKind.Absolute, out var parsed)
         )
         {
+            endpointUri = parsed;
             exporterOptions.Endpoint = endpointUri;
         }
 
@@ -172,6 +174,20 @@ public static class OpenTelemetryExtensions
 
         var timeout = section.GetValue<int?>("TimeoutMilliseconds");
         exporterOptions.TimeoutMilliseconds = timeout ?? ResolveTimeout(environment);
+
+        // Emit configuration diagnostics (EventSource + metrics)
+        OtlpExporterDiagnostics.RecordConfigured(
+            endpointUri,
+            exporterOptions.Protocol,
+            exporterOptions.TimeoutMilliseconds
+        );
+
+        // Optional: enable a lightweight gRPC Activity diagnostics listener for exporter failures (dev/testing)
+        var diagEnabled = section.GetValue<bool>("Diagnostics:EnableGrpcActivityListener");
+        if (diagEnabled)
+        {
+            OtlpGrpcActivityDiagnostics.TryEnable();
+        }
 
         ConfigureRetry(exporterOptions, section.GetSection("Retry"));
 
@@ -237,6 +253,14 @@ public static class OpenTelemetryExtensions
             var channelOptions = dynOptions.GrpcChannelOptions ?? new GrpcChannelOptions();
             channelOptions.ServiceConfig = new ServiceConfig { MethodConfigs = { methodConfig } };
             dynOptions.GrpcChannelOptions = channelOptions;
+
+            // Record diagnostics once retry policy successfully applied
+            OtlpExporterDiagnostics.RecordRetryPolicy(
+                maxAttempts,
+                initialBackoffMilliseconds,
+                maxBackoffMilliseconds,
+                backoffMultiplier
+            );
         }
         catch (Microsoft.CSharp.RuntimeBinder.RuntimeBinderException)
         {
@@ -265,7 +289,15 @@ public static class OpenTelemetryExtensions
         batchOptions.MaxQueueSize = maxQueue;
         batchOptions.ScheduledDelayMilliseconds = scheduledDelay;
         batchOptions.MaxExportBatchSize = maxExportBatch;
-        batchOptions.ExportTimeoutMilliseconds = exporterTimeout;
+        // The correct property name on BatchExport*Options is ExporterTimeoutMilliseconds
+        try
+        {
+            batchOptions.ExporterTimeoutMilliseconds = exporterTimeout;
+        }
+        catch (Microsoft.CSharp.RuntimeBinder.RuntimeBinderException)
+        {
+            // Fallback for any older types (no-op)
+        }
     } // End of Method ApplyBatchDefaults
 
     private static void TrySetRouteTemplate(Activity activity, HttpContext context)

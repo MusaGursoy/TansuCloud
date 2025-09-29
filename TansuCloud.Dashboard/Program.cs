@@ -114,6 +114,8 @@ builder
         metrics.AddAspNetCoreInstrumentation();
         metrics.AddHttpClientInstrumentation();
         metrics.AddMeter("TansuCloud.Audit");
+        // Export OTLP diagnostics/gauges
+        metrics.AddMeter("tansu.otel.exporter");
         metrics.AddTansuOtlpExporter(builder.Configuration, builder.Environment);
     });
 

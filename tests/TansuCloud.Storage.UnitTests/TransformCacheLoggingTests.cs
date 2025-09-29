@@ -24,7 +24,10 @@ public class TransformCacheLoggingTests
     public async Task CacheHit_Sampled_By_Percent_When_Configured()
     {
         var logger = new TestLogger<TransformController>();
-        var (controller, cache, conf, storage, tenant) = CreateController(logger, samplePercent: 100);
+        var (controller, cache, conf, storage, tenant) = CreateController(
+            logger,
+            samplePercent: 100
+        );
 
         // Arrange a cache entry
         var key = "a/b";
@@ -46,6 +49,16 @@ public class TransformCacheLoggingTests
         cache.Set(cacheKeyPrefix, new byte[] { 1, 2, 3 }, new MemoryCacheEntryOptions());
 
         // Act
+        // Setup HttpContext with tenant header and a valid-looking presign (uses CreateTransformSignature mock)
+        controller.ControllerContext.HttpContext.Request.Headers["X-Tansu-Tenant"] = tenant
+            .Object
+            .TenantId;
+        var exp = DateTimeOffset.UtcNow.ToUnixTimeSeconds() + 3600;
+        var sig = "sig"; // matches presign.CreateTransformSignature mock
+        controller.ControllerContext.HttpContext.Request.QueryString = new QueryString(
+            $"?exp={exp}&sig={sig}&fmt=webp"
+        );
+
         var res = await controller.Get(
             "buck",
             key,
@@ -64,7 +77,7 @@ public class TransformCacheLoggingTests
     public async Task CacheMiss_Always_Logged()
     {
         var logger = new TestLogger<TransformController>();
-        var (controller, _, _, storage, _) = CreateController(logger, samplePercent: 0);
+        var (controller, _, _, storage, tenant) = CreateController(logger, samplePercent: 0);
         var head = new ObjectInfo(
             Bucket: "buck",
             Key: "a/b",
@@ -80,6 +93,15 @@ public class TransformCacheLoggingTests
         storage
             .Setup(s => s.GetObjectAsync("buck", "a/b", It.IsAny<CancellationToken>()))
             .ReturnsAsync((head, (Stream)new MemoryStream(new byte[] { 1, 2, 3 })));
+
+        controller.ControllerContext.HttpContext.Request.Headers["X-Tansu-Tenant"] = tenant
+            .Object
+            .TenantId;
+        var exp = DateTimeOffset.UtcNow.ToUnixTimeSeconds() + 3600;
+        var sig = "sig"; // matches mock
+        controller.ControllerContext.HttpContext.Request.QueryString = new QueryString(
+            $"?exp={exp}&sig={sig}&fmt=webp"
+        );
 
         var res = await controller.Get(
             "buck",
@@ -163,7 +185,7 @@ public class TransformCacheLoggingTests
     {
         public List<(int Id, string Message)> Events { get; } = new();
 
-    IDisposable ILogger.BeginScope<TState>(TState state) => new Dummy();
+        IDisposable ILogger.BeginScope<TState>(TState state) => new Dummy();
 
         public bool IsEnabled(LogLevel logLevel) => true;
 

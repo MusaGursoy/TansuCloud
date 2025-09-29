@@ -24,12 +24,14 @@ exporters:
   clickhousetraces:
     datasource: tcp://admin:admin@clickhouse:9000/signoz_traces
     low_cardinal_exception_grouping: ${env:LOW_CARDINAL_EXCEPTION_GROUPING}
+    # Use new schema to avoid legacy table dependencies
     use_new_schema: true
   signozclickhousemetrics:
     dsn: tcp://admin:admin@clickhouse:9000/signoz_metrics
   clickhouselogsexporter:
     dsn: tcp://admin:admin@clickhouse:9000/signoz_logs
     timeout: 10s
+    # Use new schema to avoid legacy table dependencies
     use_new_schema: true
 
 processors:
@@ -49,9 +51,10 @@ service:
       exporters: [clickhousetraces]
     logs:
       receivers: [otlp]
-      processors: [batch]
+      processors: [resourcedetection, batch]
       exporters: [clickhouselogsexporter]
-    metrics:
-      receivers: [otlp, hostmetrics]
-      processors: [batch]
-      exporters: [signozclickhousemetrics]
+    # Temporarily disable metrics pipeline until schema alignment is finalized
+    # metrics:
+    #   receivers: [otlp, hostmetrics]
+    #   processors: [batch]
+    #   exporters: [signozclickhousemetrics]

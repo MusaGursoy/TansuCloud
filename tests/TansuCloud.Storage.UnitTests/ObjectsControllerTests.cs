@@ -332,8 +332,9 @@ public sealed class ObjectsControllerTests
                 )
             );
         // Simulate storage rejecting out-of-range with null
+        // Controller clamps end to head.Length - 1 (=4). Set up mock accordingly to return null (out of range)
         storage
-            .Setup(s => s.GetObjectRangeAsync(bucket, key, 10, 20, default))
+            .Setup(s => s.GetObjectRangeAsync(bucket, key, 10, 4, default))
             .ReturnsAsync(((ObjectInfo, Stream)?)null);
         presign
             .Setup(p =>
@@ -353,7 +354,7 @@ public sealed class ObjectsControllerTests
         var httpCtx = new DefaultHttpContext();
         httpCtx.Request.Method = HttpMethods.Get;
         httpCtx.Request.QueryString = new QueryString("?exp=9999999999&sig=s");
-        httpCtx.Request.Headers["Range"] = "bytes=10-20"; // invalid given length=5
+    httpCtx.Request.Headers["Range"] = "bytes=10-20"; // invalid given length=5
         httpCtx.Request.Headers["X-Tansu-Tenant"] = "tenant-ut";
         var ctrlCtx = new ControllerContext { HttpContext = httpCtx };
         controller.ControllerContext = ctrlCtx;

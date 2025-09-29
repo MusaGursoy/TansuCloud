@@ -129,6 +129,8 @@ builder
         // Export custom gateway proxy meter so SigNoz captures our series via OTLP
         metrics.AddMeter("TansuCloud.Gateway.Proxy");
         metrics.AddMeter("TansuCloud.Audit");
+        // Export OTLP diagnostics/gauges
+        metrics.AddMeter("tansu.otel.exporter");
         metrics.AddTansuOtlpExporter(builder.Configuration, builder.Environment);
     });
 

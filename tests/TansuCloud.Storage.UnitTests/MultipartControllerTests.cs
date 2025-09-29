@@ -73,7 +73,8 @@ public sealed class MultipartControllerTests
         var http = new DefaultHttpContext();
         http.Request.Method = HttpMethods.Post;
         http.Request.QueryString = new QueryString("?exp=9999999999&sig=s");
-        controller.ControllerContext = new ControllerContext { HttpContext = http };
+    http.Request.Headers["X-Tansu-Tenant"] = "tenant-ut";
+    controller.ControllerContext = new ControllerContext { HttpContext = http };
 
         var res = await controller.Complete(
             bucket,
@@ -115,7 +116,8 @@ public sealed class MultipartControllerTests
         var http = new DefaultHttpContext();
         http.Request.Method = HttpMethods.Post;
         http.Request.QueryString = new QueryString("?exp=9999999999&sig=s");
-        controller.ControllerContext = new ControllerContext { HttpContext = http };
+    http.Request.Headers["X-Tansu-Tenant"] = "tenant-ut";
+    controller.ControllerContext = new ControllerContext { HttpContext = http };
 
         var res = await controller.Complete(
             bucket,
@@ -157,7 +159,8 @@ public sealed class MultipartControllerTests
         var http = new DefaultHttpContext();
         http.Request.Method = HttpMethods.Post;
         http.Request.QueryString = new QueryString("?exp=9999999999&sig=s");
-        controller.ControllerContext = new ControllerContext { HttpContext = http };
+    http.Request.Headers["X-Tansu-Tenant"] = "tenant-ut";
+    controller.ControllerContext = new ControllerContext { HttpContext = http };
 
         // Duplicate part number 2 provided
         var res = await controller.Complete(
@@ -199,7 +202,8 @@ public sealed class MultipartControllerTests
         http.Request.QueryString = new QueryString("?exp=9999999999&sig=bad");
         http.Request.ContentLength = 10;
         http.Request.Body = new MemoryStream(new byte[10]);
-        controller.ControllerContext = new ControllerContext { HttpContext = http };
+    http.Request.Headers["X-Tansu-Tenant"] = "tenant-ut";
+    controller.ControllerContext = new ControllerContext { HttpContext = http };
 
         var res = await controller.UploadPart(bucket, key, partNumber: 1, uploadId, default);
         var pr = Assert.IsType<ObjectResult>(res);

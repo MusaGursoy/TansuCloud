@@ -80,7 +80,7 @@ internal static class TestEnvironment
                 var wasQuoted = false;
                 if (value.Length >= 2)
                 {
-                    if ((value[0] == '"' && value[^1] == '"') || (value[0] == '\'' && value[^1] == '\'))
+                    if ((value[0] == '"' && value[^1] == '"') || (value[0] == '\'' && value[^1] == '\''))
                     {
                         value = value[1..^1];
                         wasQuoted = true;

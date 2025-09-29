@@ -2,6 +2,7 @@
 using System.Text;
 using System.Text.Json;
 using Microsoft.AspNetCore.Hosting;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
 namespace TansuCloud.Storage.Services;
@@ -9,7 +10,8 @@ namespace TansuCloud.Storage.Services;
 internal sealed class FilesystemObjectStorage(
     IWebHostEnvironment env,
     IOptions<StorageOptions> options,
-    ITenantContext tenant
+    ITenantContext tenant,
+    ILogger<FilesystemObjectStorage> logger
 ) : IObjectStorage
 {
     private readonly string _root = EnsureRoot(
@@ -84,12 +86,22 @@ internal sealed class FilesystemObjectStorage(
         CancellationToken ct
     )
     {
-        Directory.CreateDirectory(Path.GetDirectoryName(ObjectPath(bucket, key))!);
         var path = ObjectPath(bucket, key);
+        var dir = Path.GetDirectoryName(path)!;
+        try
+        {
+            Directory.CreateDirectory(dir);
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(ex, "CreateDirectory failed for {Dir} (tenantRoot={TenantRoot})", dir, TenantRoot);
+            throw;
+        }
         using (var fs = File.Create(path))
         {
             await content.CopyToAsync(fs, ct);
         }
+        logger.LogInformation("PutObject: {Bucket}/{Key} -> {Path}", bucket, key, path);
         var info = await HeadObjectAsync(bucket, key, ct);
         var meta = new Dictionary<string, string>(
             metadata ?? new Dictionary<string, string>(),
@@ -121,7 +133,14 @@ internal sealed class FilesystemObjectStorage(
     {
         var path = ObjectPath(bucket, key);
         if (!File.Exists(path))
+        {
+            logger.LogWarning("HeadObject: MISSING {Bucket}/{Key} at {Path} (tenantRoot={TenantRoot})", bucket, key, path, TenantRoot);
             return null;
+        }
+        else
+        {
+            logger.LogDebug("HeadObject: FOUND {Bucket}/{Key} at {Path}", bucket, key, path);
+        }
         var bytes = await File.ReadAllBytesAsync(path, ct);
         var etag = StorageEtags.ComputeWeak(bytes);
         var fi = new FileInfo(path);
@@ -198,14 +217,20 @@ internal sealed class FilesystemObjectStorage(
         var results = new List<ObjectInfo>();
         var root = BucketPath(bucket);
         if (!Directory.Exists(root))
+        {
+            logger.LogDebug("ListObjects: bucket root missing {Root}", root);
             return results;
+        }
         var searchRoot = root;
         var normalizePrefix = prefix?.Replace('/', Path.DirectorySeparatorChar) ?? string.Empty;
         if (!string.IsNullOrEmpty(normalizePrefix))
         {
             searchRoot = Path.Combine(root, normalizePrefix);
             if (!Directory.Exists(searchRoot))
+            {
+                logger.LogDebug("ListObjects: prefix root missing {SearchRoot}", searchRoot);
                 return results;
+            }
         }
         foreach (var file in Directory.EnumerateFiles(searchRoot, "*", SearchOption.AllDirectories))
         {
