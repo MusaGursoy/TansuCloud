@@ -64,9 +64,8 @@ public sealed class TestInfrastructureFixture : IAsyncLifetime
 
     private static async Task WaitForIdentityJwks()
     {
-        // Public base URL may be gateway or localhost per config; default to http://localhost:8080
-        var baseUrl =
-            Environment.GetEnvironmentVariable("PUBLIC_BASE_URL") ?? "http://localhost:8080";
+        // Use shared helper to resolve base URLs from environment/.env defaults.
+        var baseUrl = TestUrls.PublicBaseUrl;
         if (!baseUrl.EndsWith('/'))
             baseUrl += "/";
         var jwksUrl = new Uri(new Uri(baseUrl), "identity/.well-known/jwks").ToString();

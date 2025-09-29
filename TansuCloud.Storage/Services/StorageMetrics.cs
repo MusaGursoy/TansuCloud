@@ -36,23 +36,4 @@ internal static class StorageMetrics
         unit: "ms",
         description: "Request duration in milliseconds"
     );
-
-    // Cache metrics for HybridCache usage on list/head operations (no high-cardinality labels like tenant)
-    public static readonly Counter<long> CacheAttempts = Meter.CreateCounter<long>(
-        name: "tansu_storage_cache_attempts_total",
-        unit: "attempts",
-        description: "Number of cache lookups attempted"
-    );
-
-    public static readonly Counter<long> CacheHits = Meter.CreateCounter<long>(
-        name: "tansu_storage_cache_hits_total",
-        unit: "hits",
-        description: "Number of cache hits"
-    );
-
-    public static readonly Counter<long> CacheMisses = Meter.CreateCounter<long>(
-        name: "tansu_storage_cache_misses_total",
-        unit: "misses",
-        description: "Number of cache misses (factory executed)"
-    );
-}
+} // End of Class StorageMetrics

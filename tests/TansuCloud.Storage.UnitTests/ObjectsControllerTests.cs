@@ -1,4 +1,5 @@
 // Tansu.Cloud Public Repository:    https://github.com/MusaGursoy/TansuCloud
+using System.Security.Claims;
 using System.Text;
 using FluentAssertions;
 using Microsoft.AspNetCore.Http;
@@ -53,7 +54,7 @@ public sealed class ObjectsControllerTests
         versions.Setup(v => v.Get(It.IsAny<string>())).Returns(0);
         var audit = new Mock<IAuditLogger>(MockBehavior.Loose);
         audit.Setup(a => a.TryEnqueue(It.IsAny<AuditEvent>())).Returns(true);
-        return new ObjectsController(
+        var controller = new ObjectsController(
             storage.Object,
             tenant.Object,
             presign.Object,
@@ -64,6 +65,21 @@ public sealed class ObjectsControllerTests
             audit.Object,
             cache: null
         );
+
+        var httpCtx = new DefaultHttpContext();
+        httpCtx.Request.Headers["X-Tansu-Tenant"] = "tenant-ut";
+        httpCtx.User = new ClaimsPrincipal(
+            new ClaimsIdentity(
+                new[]
+                {
+                    new Claim("scope", "storage.read storage.write"),
+                    new Claim("aud", "tansu.storage")
+                },
+                authenticationType: "unit-test"
+            )
+        );
+        controller.ControllerContext = new ControllerContext { HttpContext = httpCtx };
+        return controller;
     }
 
     [Fact]
@@ -275,6 +291,7 @@ public sealed class ObjectsControllerTests
         httpCtx.Request.Method = HttpMethods.Get;
         httpCtx.Request.QueryString = new QueryString("?exp=9999999999&sig=s");
         httpCtx.Request.Headers["Range"] = "bytes=0-3";
+        httpCtx.Request.Headers["X-Tansu-Tenant"] = "tenant-ut";
         var ctrlCtx = new ControllerContext { HttpContext = httpCtx };
         controller.ControllerContext = ctrlCtx;
 
@@ -337,6 +354,7 @@ public sealed class ObjectsControllerTests
         httpCtx.Request.Method = HttpMethods.Get;
         httpCtx.Request.QueryString = new QueryString("?exp=9999999999&sig=s");
         httpCtx.Request.Headers["Range"] = "bytes=10-20"; // invalid given length=5
+        httpCtx.Request.Headers["X-Tansu-Tenant"] = "tenant-ut";
         var ctrlCtx = new ControllerContext { HttpContext = httpCtx };
         controller.ControllerContext = ctrlCtx;
 
@@ -389,6 +407,7 @@ public sealed class ObjectsControllerTests
         httpCtx.Request.ContentType = "text/plain";
         httpCtx.Request.ContentLength = 30;
         httpCtx.Request.Body = new MemoryStream(Encoding.UTF8.GetBytes(new string('x', 30)));
+        httpCtx.Request.Headers["X-Tansu-Tenant"] = "tenant-ut";
         var ctrlCtx = new ControllerContext { HttpContext = httpCtx };
         controller.ControllerContext = ctrlCtx;
 
@@ -453,6 +472,7 @@ public sealed class ObjectsControllerTests
         httpCtx.Request.Method = HttpMethods.Get;
         httpCtx.Request.QueryString = new QueryString("?exp=9999999999&sig=s");
         httpCtx.Request.Headers["If-None-Match"] = etag;
+        httpCtx.Request.Headers["X-Tansu-Tenant"] = "tenant-ut";
         var user = new System.Security.Claims.ClaimsPrincipal(); // unauthenticated -> presign path
         httpCtx.User = user;
         var ctrlCtx = new ControllerContext { HttpContext = httpCtx };
@@ -509,6 +529,7 @@ public sealed class ObjectsControllerTests
         httpCtx.Request.Method = HttpMethods.Get;
         httpCtx.Request.QueryString = new QueryString("?exp=9999999999&sig=s");
         httpCtx.Request.Headers["If-Match"] = "\"strong\""; // mismatch
+        httpCtx.Request.Headers["X-Tansu-Tenant"] = "tenant-ut";
         var ctrlCtx = new ControllerContext { HttpContext = httpCtx };
         controller.ControllerContext = ctrlCtx;
 
@@ -553,6 +574,7 @@ public sealed class ObjectsControllerTests
         httpCtx.Request.ContentType = "application/json; charset=utf-8"; // mismatch to text/plain
         httpCtx.Request.ContentLength = 2;
         httpCtx.Request.Body = new MemoryStream(Encoding.UTF8.GetBytes("{}"));
+        httpCtx.Request.Headers["X-Tansu-Tenant"] = "tenant-ut";
         var ctrlCtx = new ControllerContext { HttpContext = httpCtx };
         controller.ControllerContext = ctrlCtx;
 
@@ -636,6 +658,7 @@ public sealed class ObjectsControllerTests
         httpCtx.Request.ContentType = "text/plain";
         httpCtx.Request.ContentLength = 2;
         httpCtx.Request.Body = new MemoryStream(Encoding.UTF8.GetBytes("hi"));
+        httpCtx.Request.Headers["X-Tansu-Tenant"] = "tenant-ut";
         var ctrlCtx = new ControllerContext { HttpContext = httpCtx };
         controller.ControllerContext = ctrlCtx;
 

@@ -20,9 +20,7 @@ public sealed class CorrelationSmokeTests
         // If local dev services are running (dev: up) and writing gateway-out.log/database-out.log,
         // it also verifies the correlation ID appears in at least one of them.
 
-    var baseUrl = Environment.GetEnvironmentVariable("GATEWAY_BASE_URL")?.TrimEnd('/')
-             // Canonical dev base per repo guidance
-             ?? "http://127.0.0.1:8080";
+        var baseUrl = TestUrls.GatewayBaseUrl;
 
         using var http = new HttpClient { BaseAddress = new Uri(baseUrl) };
         http.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
@@ -39,11 +37,11 @@ public sealed class CorrelationSmokeTests
         var resp = await http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead);
         resp.EnsureSuccessStatusCode();
 
-    // Assert the echo header is present (provided by RequestEnrichmentMiddleware)
-    resp.Headers.TryGetValues("X-Correlation-ID", out var echoedValues).Should().BeTrue();
-    // Some stacks may add the header twice with the same value. Accept duplicates as long as all equal our corrId.
-    echoedValues!.Should().Contain(corrId);
-    echoedValues!.Should().OnlyContain(v => v == corrId);
+        // Assert the echo header is present (provided by RequestEnrichmentMiddleware)
+        resp.Headers.TryGetValues("X-Correlation-ID", out var echoedValues).Should().BeTrue();
+        // Some stacks may add the header twice with the same value. Accept duplicates as long as all equal our corrId.
+        echoedValues!.Should().Contain(corrId);
+        echoedValues!.Should().OnlyContain(v => v == corrId);
         _output.WriteLine($"Echoed X-Correlation-ID matched: {corrId}");
 
         // Try to locate repo root (contains TansuCloud.sln), then check dev log files.

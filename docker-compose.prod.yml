@@ -19,6 +19,11 @@ services:
     image: tansu/citus-pgvector:local
     container_name: tansu-postgres
     restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 2G
     environment:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
@@ -32,6 +37,11 @@ services:
     image: redis:latest
     container_name: tansu-redis
     restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 2G
     command: ["redis-server", "--appendonly", "yes"]
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
@@ -39,6 +49,10 @@ services:
       timeout: 3s
       retries: 10
       start_period: 5s
+    # In production, keep Redis internal-only by default. If you need external access for tests or ops,
+    # uncomment the following port mapping and restrict exposure via firewall/security groups.
+    # ports:
+    #   - "6379:6379"
     volumes:
       - tansu-redisdata:/data
     networks:
@@ -48,6 +62,11 @@ services:
     image: ghcr.io/postgresml/pgcat:latest
     container_name: tansu-pgcat
     restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 2G
     environment:
       PGCAT_ADMIN_USER: ${PGCAT_ADMIN_USER}
       PGCAT_ADMIN_PASSWORD: ${PGCAT_ADMIN_PASSWORD}
@@ -75,6 +94,11 @@ services:
       dockerfile: Dev.PgcatConfigurator/Dockerfile
     container_name: tansu-pgcat-config
     restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 2G
     environment:
       PG_ADMIN: "Host=postgres;Port=5432;Database=postgres;Username=${POSTGRES_USER};Password=${POSTGRES_PASSWORD}"
       PG_HOST: postgres
@@ -97,10 +121,17 @@ services:
       dockerfile: TansuCloud.Identity/Dockerfile
     container_name: tansu-identity
     restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 2G
     environment:
       ASPNETCORE_ENVIRONMENT: Production
+      PublicBaseUrl: ${PUBLIC_BASE_URL}
+      GatewayBaseUrl: ${GATEWAY_BASE_URL}
       # Production issuer visible to browsers
-      Oidc__Issuer: ${PUBLIC_BASE_URL:-https://apps.example.com}/identity/
+      Oidc__Issuer: ${PUBLIC_BASE_URL}/identity/
       # Optional OTLP exporter endpoint (set when using observability profile)
       OpenTelemetry__Otlp__Endpoint: ${OTLP_ENDPOINT:-}
       # Dashboard client credentials
@@ -130,12 +161,17 @@ services:
       dockerfile: TansuCloud.Dashboard/Dockerfile
     container_name: tansu-dashboard
     restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 2G
     environment:
       ASPNETCORE_ENVIRONMENT: Production
-      PublicBaseUrl: ${PUBLIC_BASE_URL:-https://apps.example.com}
-      Oidc__Authority: ${PUBLIC_BASE_URL:-https://apps.example.com}/identity
+      PublicBaseUrl: ${PUBLIC_BASE_URL}
+      Oidc__Authority: ${PUBLIC_BASE_URL}/identity
       # Backchannel discovery should use the same public origin in production
-      Oidc__MetadataAddress: ${PUBLIC_BASE_URL:-https://apps.example.com}/identity/.well-known/openid-configuration
+      Oidc__MetadataAddress: ${PUBLIC_BASE_URL}/identity/.well-known/openid-configuration
       Oidc__RequireHttpsMetadata: true
       Oidc__ClientId: tansu-dashboard
       Oidc__ClientSecret: ${DASHBOARD_CLIENT_SECRET}
@@ -144,7 +180,7 @@ services:
       Cache__Redis: redis:6379
       # Route audit writes via PgCat; override via env in real deployments
       Audit__ConnectionString: "Host=pgcat;Port=6432;Database=postgres;Username=${POSTGRES_USER};Password=${POSTGRES_PASSWORD}"
-      GatewayBaseUrl: http://gateway:8080
+      GatewayBaseUrl: ${GATEWAY_BASE_URL}
     volumes:
       - tansu-dashboard-keys:/keys
     depends_on:
@@ -165,11 +201,18 @@ services:
       dockerfile: TansuCloud.Database/Dockerfile
     container_name: tansu-db
     restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 2G
     environment:
       ASPNETCORE_ENVIRONMENT: Production
-      Oidc__Issuer: ${PUBLIC_BASE_URL:-https://apps.example.com}/identity/
+      PublicBaseUrl: ${PUBLIC_BASE_URL}
+      GatewayBaseUrl: ${GATEWAY_BASE_URL}
+      Oidc__Issuer: ${PUBLIC_BASE_URL}/identity/
       # In production, prefer discovery at the public origin (HTTPS)
-      Oidc__MetadataAddress: ${PUBLIC_BASE_URL:-https://apps.example.com}/identity/.well-known/openid-configuration
+      Oidc__MetadataAddress: ${PUBLIC_BASE_URL}/identity/.well-known/openid-configuration
       # Optional OTLP exporter endpoint (set when using observability profile)
       OpenTelemetry__Otlp__Endpoint: ${OTLP_ENDPOINT:-}
       Cache__Redis: redis:6379
@@ -200,11 +243,18 @@ services:
       dockerfile: TansuCloud.Storage/Dockerfile
     container_name: tansu-storage
     restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 2G
     environment:
       ASPNETCORE_ENVIRONMENT: Production
-      Oidc__Issuer: ${PUBLIC_BASE_URL:-https://apps.example.com}/identity/
+      PublicBaseUrl: ${PUBLIC_BASE_URL}
+      GatewayBaseUrl: ${GATEWAY_BASE_URL}
+      Oidc__Issuer: ${PUBLIC_BASE_URL}/identity/
       # In production, prefer discovery at the public origin (HTTPS)
-      Oidc__MetadataAddress: ${PUBLIC_BASE_URL:-https://apps.example.com}/identity/.well-known/openid-configuration
+      Oidc__MetadataAddress: ${PUBLIC_BASE_URL}/identity/.well-known/openid-configuration
       # Optional OTLP exporter endpoint (set when using observability profile)
       OpenTelemetry__Otlp__Endpoint: ${OTLP_ENDPOINT:-}
       Cache__Redis: redis:6379
@@ -232,8 +282,17 @@ services:
       dockerfile: TansuCloud.Gateway/Dockerfile
     container_name: tansu-gateway
     restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 2G
     environment:
       ASPNETCORE_ENVIRONMENT: Production
+      PublicBaseUrl: ${PUBLIC_BASE_URL}
+      GatewayBaseUrl: ${GATEWAY_BASE_URL}
+      GATEWAY_URLS: http://0.0.0.0:8080
+      Kestrel__Endpoints__Http__Url: http://0.0.0.0:8080
       Services__DashboardBaseUrl: http://dashboard:8080
       Services__IdentityBaseUrl: http://identity:8080
       Services__DatabaseBaseUrl: http://db:8080
@@ -273,6 +332,11 @@ services:
     image: bitnami/zookeeper:latest
     container_name: signoz-zookeeper
     restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 2G
     environment:
       - ZOO_SERVER_ID=1
       - ALLOW_ANONYMOUS_LOGIN=yes
@@ -294,6 +358,11 @@ services:
     image: clickhouse/clickhouse-server:latest
     container_name: signoz-clickhouse
     restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 2G
     environment:
       CLICKHOUSE_DB: signoz
       CLICKHOUSE_USER: admin
@@ -321,6 +390,11 @@ services:
     image: signoz/signoz:latest
     container_name: signoz
     restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 2G
     environment:
       - SIGNOZ_TELEMETRYSTORE_PROVIDER=clickhouse
       - SIGNOZ_TELEMETRYSTORE_CLICKHOUSE_DSN=tcp://admin:admin@clickhouse:9000
@@ -340,6 +414,11 @@ services:
     image: signoz/signoz-otel-collector:latest
     container_name: signoz-otel-collector
     restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 2G
     command:
       - --config=/etc/otel-collector-config.yaml
     environment:
@@ -362,6 +441,11 @@ services:
     container_name: signoz-schema-migrator-sync
     command: ["sync", "--dsn=tcp://admin:admin@clickhouse:9000", "--up="]
     restart: on-failure
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 2G
     environment:
       - SIGNOZ_TELEMETRYSTORE_CLICKHOUSE_CLUSTER=cluster
     depends_on:
@@ -376,6 +460,11 @@ services:
     container_name: signoz-schema-migrator-async
     command: ["async", "--dsn=tcp://admin:admin@clickhouse:9000"]
     restart: on-failure
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 2G
     environment:
       - SIGNOZ_TELEMETRYSTORE_CLICKHOUSE_CLUSTER=cluster
     depends_on:

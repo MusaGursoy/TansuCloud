@@ -1,5 +1,6 @@
 // Tansu.Cloud Public Repository:    https://github.com/MusaGursoy/TansuCloud
 
+using System.Linq;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.AspNetCore.Diagnostics.HealthChecks;
@@ -26,12 +27,75 @@ using TansuCloud.Identity.Infrastructure.Options;
 using TansuCloud.Identity.Infrastructure.Security;
 using TansuCloud.Observability;
 using TansuCloud.Observability.Auditing;
+using TansuCloud.Observability.Shared.Configuration;
 
 var builder = WebApplication.CreateBuilder(args);
+
+var appUrls = AppUrlsOptions.FromConfiguration(builder.Configuration);
+builder.Services.AddSingleton(appUrls);
+
+static string BuildServiceBase(string baseUrl, int port, string? hostOverride = null)
+{
+    var source = new Uri(baseUrl);
+    var builder = new UriBuilder(source)
+    {
+        Host = hostOverride ?? source.Host,
+        Port = port,
+        Path = string.Empty,
+        Query = string.Empty,
+        Fragment = string.Empty,
+    };
+    return builder.Uri.GetLeftPart(UriPartial.Authority);
+}
+
+var identityLoopbackBase = BuildServiceBase(appUrls.PublicBaseUrl!, 5095);
+var identityLocalhostBase = BuildServiceBase(appUrls.PublicBaseUrl!, 5095, "localhost");
+
+var runningInContainer = string.Equals(
+    Environment.GetEnvironmentVariable("DOTNET_RUNNING_IN_CONTAINER"),
+    "true",
+    StringComparison.OrdinalIgnoreCase
+);
+if (!runningInContainer)
+{
+    var devLoopbackUrl = identityLoopbackBase;
+    var devLocalhostUrl = identityLocalhostBase;
+    var urlsRaw = builder.Configuration["ASPNETCORE_URLS"];
+
+    if (string.IsNullOrWhiteSpace(urlsRaw))
+    {
+        builder.WebHost.UseUrls(devLoopbackUrl, devLocalhostUrl);
+    }
+    else
+    {
+        var urls = urlsRaw
+            .Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .ToList();
+        var shouldAugment = false;
+
+        if (
+            urls.Any(url => string.Equals(url, devLocalhostUrl, StringComparison.OrdinalIgnoreCase))
+            && !urls.Any(url =>
+                string.Equals(url, devLoopbackUrl, StringComparison.OrdinalIgnoreCase)
+            )
+        )
+        {
+            urls.Add(devLoopbackUrl);
+            shouldAugment = true;
+        }
+
+        if (shouldAugment)
+        {
+            builder.WebHost.UseUrls(urls.ToArray());
+        }
+    }
+}
 
 // OpenTelemetry baseline: traces, metrics, logs
 var svcName = "tansu.identity";
 var svcVersion = typeof(Program).Assembly.GetName().Version?.ToString() ?? "0.0.0";
+
+// Centralize public/gateway base URL resolution (issuer/authority/backchannel)
 builder
     .Services.AddOpenTelemetry()
     .ConfigureResource(rb =>
@@ -49,16 +113,10 @@ builder
     )
     .WithTracing(tracing =>
     {
-        tracing.AddAspNetCoreInstrumentation(o => o.RecordException = true);
+        tracing.AddTansuAspNetCoreInstrumentation();
         tracing.AddHttpClientInstrumentation();
-        tracing.AddOtlpExporter(otlp =>
-        {
-            var endpoint = builder.Configuration["OpenTelemetry:Otlp:Endpoint"];
-            if (!string.IsNullOrWhiteSpace(endpoint))
-            {
-                otlp.Endpoint = new Uri(endpoint);
-            }
-        });
+        tracing.AddTansuDataInstrumentation();
+        tracing.AddTansuOtlpExporter(builder.Configuration, builder.Environment);
     })
     .WithMetrics(metrics =>
     {
@@ -66,14 +124,7 @@ builder
         metrics.AddAspNetCoreInstrumentation();
         metrics.AddHttpClientInstrumentation();
         metrics.AddMeter("TansuCloud.Audit");
-        metrics.AddOtlpExporter(otlp =>
-        {
-            var endpoint = builder.Configuration["OpenTelemetry:Otlp:Endpoint"];
-            if (!string.IsNullOrWhiteSpace(endpoint))
-            {
-                otlp.Endpoint = new Uri(endpoint);
-            }
-        });
+        metrics.AddTansuOtlpExporter(builder.Configuration, builder.Environment);
     });
 
 // Observability core (Task 38)
@@ -83,14 +134,7 @@ builder.Logging.AddOpenTelemetry(o =>
 {
     o.IncludeFormattedMessage = true;
     o.ParseStateValues = true;
-    o.AddOtlpExporter(otlp =>
-    {
-        var endpoint = builder.Configuration["OpenTelemetry:Otlp:Endpoint"];
-        if (!string.IsNullOrWhiteSpace(endpoint))
-        {
-            otlp.Endpoint = new Uri(endpoint);
-        }
-    });
+    o.AddTansuOtlpExporter(builder.Configuration, builder.Environment);
 });
 builder
     .Services.AddHealthChecks()
@@ -265,24 +309,9 @@ builder
     })
     .AddServer(options =>
     {
-        // Explicit issuer so discovery and endpoints include the gateway path base ("/identity")
-        // dev default: go through gateway HTTP endpoint
-        var issuer = builder.Configuration["Oidc:Issuer"] ?? "http://localhost:8080/identity/";
-        if (!issuer.EndsWith('/'))
-            issuer += "/";
-        // Development normalization: align localhost host with 127.0.0.1 so Dashboard authority host matches token issuer
-        try
-        {
-            var issuerUri = new Uri(issuer);
-            if (issuerUri.Host.Equals("localhost", StringComparison.OrdinalIgnoreCase))
-            {
-                var ub = new UriBuilder(issuerUri) { Host = "127.0.0.1" };
-                issuer = ub.Uri.ToString();
-            }
-        }
-        catch
-        { /* ignore */
-        }
+        // Explicit issuer so discovery and endpoints include the gateway path base ("/identity").
+        // Resolve from centralized AppUrlsOptions to avoid hard-coded hosts.
+        var issuer = appUrls.GetIssuer("identity");
         options.SetIssuer(new Uri(issuer));
 
         // Default relative endpoints; PathBase and Issuer ensure advertised URLs include "/identity"
@@ -358,7 +387,7 @@ builder
                 .UseInlineHandler(context =>
                 {
                     var issuerUri =
-                        context.Options.Issuer ?? new Uri("http://localhost:8080/identity/");
+                        context.Options.Issuer ?? new Uri(appUrls.GetIssuer("identity"));
                     if (!issuerUri.AbsoluteUri.EndsWith('/'))
                     {
                         issuerUri = new Uri(issuerUri.AbsoluteUri + "/");
@@ -431,7 +460,12 @@ builder.Services.AddHttpClient(
     "local",
     c =>
     {
-        c.BaseAddress = new Uri("http://127.0.0.1:5095");
+        // Use the first configured ASPNETCORE_URLS (dev: 127.0.0.1/localhost) as base for internal calls
+        var urls = builder
+            .Configuration["ASPNETCORE_URLS"]
+            ?.Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+    var self = urls?.FirstOrDefault() ?? identityLoopbackBase;
+        c.BaseAddress = new Uri(self);
     }
 );
 

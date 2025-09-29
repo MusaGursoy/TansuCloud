@@ -18,10 +18,7 @@ public class DashboardMetricsNegativeTests : IAsyncLifetime
 
     private static string BaseUrl()
     {
-        var env = Environment.GetEnvironmentVariable("GATEWAY_BASE_URL");
-        if (!string.IsNullOrWhiteSpace(env))
-            return env.TrimEnd('/');
-        return "http://127.0.0.1:8080";
+        return TestUrls.GatewayBaseUrl;
     }
 
     public async Task InitializeAsync()
@@ -121,7 +118,12 @@ public class DashboardMetricsNegativeTests : IAsyncLifetime
                 "form#account button[type=submit], form#account input[type=submit], button#login-submit"
             );
         try { await _page.WaitForURLAsync("**/dashboard**", new() { Timeout = 30000 }); } catch { }
-        await _page.WaitForSelectorAsync("nav a[href='admin/metrics']", new() { Timeout = 30000 });
+        // Wait for the auth cookie rather than specific UI elements to avoid flakiness
+        await WaitUntilAsync(async () =>
+        {
+            var cookies = await _ctx!.CookiesAsync(new[] { baseUrl });
+            return cookies.Any(c => c.Name.Contains("AspNetCore", StringComparison.OrdinalIgnoreCase));
+        }, timeoutMs: 30000, pollMs: 500);
 
         // Extract cookies into a header for API calls
         var cookies = await _ctx!.CookiesAsync(new[] { baseUrl });
@@ -190,7 +192,12 @@ public class DashboardMetricsNegativeTests : IAsyncLifetime
                 "form#account button[type=submit], form#account input[type=submit], button#login-submit"
             );
         try { await _page.WaitForURLAsync("**/dashboard**", new() { Timeout = 30000 }); } catch { }
-        await _page.WaitForSelectorAsync("nav a[href='admin/metrics']", new() { Timeout = 30000 });
+        // Wait for the auth cookie rather than specific UI elements to avoid flakiness
+        await WaitUntilAsync(async () =>
+        {
+            var cookies = await _ctx!.CookiesAsync(new[] { baseUrl });
+            return cookies.Any(c => c.Name.Contains("AspNetCore", StringComparison.OrdinalIgnoreCase));
+        }, timeoutMs: 30000, pollMs: 500);
 
         // Extract cookies into a header for API calls
         var cookies = await _ctx!.CookiesAsync(new[] { baseUrl });

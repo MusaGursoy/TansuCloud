@@ -1,10 +1,17 @@
 param(
-    [string]$OtlpHost = $env:OTLP_GRPC_HOST,
-    [int]$OtlpPort = [int]($env:OTLP_GRPC_PORT),
-    [string]$ClickHouseHttp = $env:CLICKHOUSE_HTTP
+    [string]$OtlpHost,
+    [int]$OtlpPort,
+    [string]$ClickHouseHttp
 )
 
 $ErrorActionPreference = 'Stop'
+
+. (Join-Path $PSScriptRoot 'common.ps1')
+Import-TansuDotEnv | Out-Null
+
+if ([string]::IsNullOrWhiteSpace($OtlpHost)) { $OtlpHost = $env:OTLP_GRPC_HOST }
+if (-not $OtlpPort) { $OtlpPort = [int]($env:OTLP_GRPC_PORT) }
+if ([string]::IsNullOrWhiteSpace($ClickHouseHttp)) { $ClickHouseHttp = $env:CLICKHOUSE_HTTP }
 
 if ([string]::IsNullOrWhiteSpace($OtlpHost)) { $OtlpHost = '127.0.0.1' }
 if (-not $OtlpPort) { $OtlpPort = 4317 }

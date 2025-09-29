@@ -3,6 +3,7 @@ using System.Text.Json;
 using FluentAssertions;
 using Microsoft.AspNetCore.Http;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Storage;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -22,15 +23,16 @@ public class OutboxDispatcherFullE2ERedisTests
 {
     private sealed class SingleTenantFactory : ITenantDbContextFactory
     {
-        private readonly TansuDbContext _ctx;
+        private readonly DbContextOptions<TansuDbContext> _options;
 
-        public SingleTenantFactory(TansuDbContext ctx) => _ctx = ctx;
+        public SingleTenantFactory(DbContextOptions<TansuDbContext> options) => _options = options;
 
+        // Always return a fresh context instance backed by the same in-memory database root.
         public Task<TansuDbContext> CreateAsync(HttpContext httpContext, CancellationToken ct) =>
-            Task.FromResult(_ctx);
+            Task.FromResult(new TansuDbContext(_options));
 
         public Task<TansuDbContext> CreateAsync(string tenantId, CancellationToken ct) =>
-            Task.FromResult(_ctx);
+            Task.FromResult(new TansuDbContext(_options));
     } // End of Class SingleTenantFactory
 
     [RedisFact(DisplayName = "Full dispatcher loop publishes to Redis and marks dispatched (E2E)")]
@@ -38,14 +40,16 @@ public class OutboxDispatcherFullE2ERedisTests
     {
         var redisUrl = Environment.GetEnvironmentVariable("REDIS_URL")!; // guaranteed by RedisFactAttribute
 
-        // EF in-memory context seeded with two events
-        var dbOpts = new DbContextOptionsBuilder<TansuDbContext>().UseInMemoryDatabase(
-            Guid.NewGuid().ToString()
-        );
-        await using var ctx = new TansuDbContext(dbOpts.Options);
+        // EF in-memory context seeded with two events. Use a shared root so multiple contexts see the same store.
+        var dbName = Guid.NewGuid().ToString();
+        var dbRoot = new InMemoryDatabaseRoot();
+        var dbOpts = new DbContextOptionsBuilder<TansuDbContext>()
+            .UseInMemoryDatabase(dbName, dbRoot)
+            .Options;
+        await using var seedCtx = new TansuDbContext(dbOpts);
         using var p1 = JsonDocument.Parse("{\"name\":\"alpha\"}");
         using var p2 = JsonDocument.Parse("{\"name\":\"beta\"}");
-        ctx.OutboxEvents.Add(
+        seedCtx.OutboxEvents.Add(
             new OutboxEvent
             {
                 Id = Guid.NewGuid(),
@@ -55,7 +59,7 @@ public class OutboxDispatcherFullE2ERedisTests
                 Status = OutboxStatus.Pending
             }
         );
-        ctx.OutboxEvents.Add(
+        seedCtx.OutboxEvents.Add(
             new OutboxEvent
             {
                 Id = Guid.NewGuid(),
@@ -65,11 +69,11 @@ public class OutboxDispatcherFullE2ERedisTests
                 Status = OutboxStatus.Pending
             }
         );
-        await ctx.SaveChangesAsync();
+        await seedCtx.SaveChangesAsync();
 
         var services = new ServiceCollection();
         services.AddLogging(b => b.AddFilter(_ => true));
-        services.AddSingleton<ITenantDbContextFactory>(new SingleTenantFactory(ctx));
+    services.AddSingleton<ITenantDbContextFactory>(new SingleTenantFactory(dbOpts));
         services.AddSingleton<IHttpContextAccessor, HttpContextAccessor>();
         var opts = new OutboxOptions
         {
@@ -124,7 +128,9 @@ public class OutboxDispatcherFullE2ERedisTests
         lock (received)
             finalCount = received.Count;
         finalCount.Should().BeGreaterThanOrEqualTo(2);
-        (await ctx.OutboxEvents.CountAsync(e => e.Status == OutboxStatus.Dispatched))
+        // Use a fresh context instance for verification to avoid disposed instance issues.
+        await using var verifyCtx = new TansuDbContext(dbOpts);
+        (await verifyCtx.OutboxEvents.CountAsync(e => e.Status == OutboxStatus.Dispatched))
             .Should()
             .Be(2);
     }

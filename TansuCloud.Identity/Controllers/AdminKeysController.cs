@@ -9,7 +9,10 @@ namespace TansuCloud.Identity.Controllers;
 
 [ApiController]
 [Route("admin/keys")] 
-[Authorize(Roles = "Admin")]
+[Authorize(
+    Roles = "Admin",
+    AuthenticationSchemes = AuthenticationSchemeConstants.AdminCookieAndBearer
+)]
 public sealed class AdminKeysController(
     IOptions<IdentityPolicyOptions> options,
     IKeyRotationCoordinator rotation

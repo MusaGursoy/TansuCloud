@@ -18,10 +18,7 @@ public class HeadfulAdminPagesSmoke : IAsyncLifetime
 
     private static string BaseUrl()
     {
-        var env = Environment.GetEnvironmentVariable("GATEWAY_BASE_URL");
-        if (!string.IsNullOrWhiteSpace(env))
-            return env.TrimEnd('/');
-        return "http://127.0.0.1:8080";
+        return TestUrls.GatewayBaseUrl;
     }
 
     public async Task InitializeAsync()

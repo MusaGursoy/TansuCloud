@@ -9,35 +9,6 @@ namespace TansuCloud.E2E.Tests;
 [Collection("Global")]
 public class DashboardLoginE2E : IAsyncLifetime
 {
-    private static string GetGatewayBaseUrl()
-    {
-        var env = Environment.GetEnvironmentVariable("GATEWAY_BASE_URL");
-        if (!string.IsNullOrWhiteSpace(env))
-        {
-            try
-            {
-                var uri = new Uri(env);
-                // Normalize localhost/::1 to IPv4 loopback for Kestrel bindings
-                var host =
-                    (
-                        uri.Host.Equals("localhost", StringComparison.OrdinalIgnoreCase)
-                        || uri.Host == "::1"
-                    )
-                        ? "127.0.0.1"
-                        : uri.Host;
-                var builder = new UriBuilder(uri) { Host = host };
-                return builder.Uri.ToString().TrimEnd('/');
-            }
-            catch
-            {
-                // Fallback to raw value trimmed
-                return env.TrimEnd('/');
-            }
-        }
-        // Prefer IPv4 loopback to avoid cases where localhost resolves to ::1 but Kestrel is bound to IPv4 only
-        return "http://127.0.0.1:8080";
-    }
-
     private IPlaywright? _playwright;
     private IBrowser? _browser;
     private IBrowserContext? _context;
@@ -116,13 +87,13 @@ public class DashboardLoginE2E : IAsyncLifetime
         }
 
         // Gateway root: try HTTPS then HTTP; accept 2xx/3xx as ready
-        var baseUrl = GetGatewayBaseUrl();
+            var baseUrl = TestUrls.GatewayBaseUrl;
         await WaitUntilAsync(async () => await ReachableAsync($"{baseUrl}/", okOnly: false));
         // Identity discovery: require 200; try HTTPS then HTTP via gateway
         await WaitUntilAsync(async () =>
         {
             var disco = await ReachableAsync(
-                $"{baseUrl}/identity/.well-known/openid-configuration",
+                    $"{TestUrls.GatewayBaseUrl}/identity/.well-known/openid-configuration",
                 okOnly: true
             );
             return disco;
@@ -411,9 +382,9 @@ public class DashboardLoginE2E : IAsyncLifetime
         var api = await _playwright!.APIRequest.NewContextAsync(
             new APIRequestNewContextOptions { IgnoreHTTPSErrors = true }
         );
-        var db = await api.GetAsync($"{GetGatewayBaseUrl()}/db/health");
+            var db = await api.GetAsync($"{TestUrls.GatewayBaseUrl}/db/health");
         db.Status.Should().Be(401);
-        var storage = await api.GetAsync($"{GetGatewayBaseUrl()}/storage/health");
+            var storage = await api.GetAsync($"{TestUrls.GatewayBaseUrl}/storage/health");
         storage.Status.Should().Be(401);
     }
 }

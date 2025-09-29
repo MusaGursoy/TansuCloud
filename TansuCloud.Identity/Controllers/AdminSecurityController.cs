@@ -9,7 +9,10 @@ namespace TansuCloud.Identity.Controllers;
 
 [ApiController]
 [Route("admin/security/events")]
-[Authorize(Roles = "Admin")]
+[Authorize(
+    Roles = "Admin",
+    AuthenticationSchemes = AuthenticationSchemeConstants.AdminCookieAndBearer
+)]
 public sealed class AdminSecurityController(AppDbContext db) : ControllerBase
 {
     [HttpGet]

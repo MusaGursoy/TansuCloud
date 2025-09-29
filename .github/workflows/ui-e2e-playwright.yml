@@ -25,25 +25,29 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
+      - name: Load base URLs from .env
+        shell: pwsh
+        run: |
+          . ./dev/tools/common.ps1
+          Import-TansuDotEnv -Overwrite | Out-Null
+          $urls = Resolve-TansuBaseUrls -PreferLoopbackForGateway
+          "PUBLIC_BASE_URL=$($urls.PublicBaseUrl)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "GATEWAY_BASE_URL=$($urls.GatewayBaseUrl)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
       - name: Docker Compose up (infra)
         run: |
-          echo "POSTGRES_USER=postgres" >> $GITHUB_ENV
-          echo "POSTGRES_PASSWORD=postgres" >> $GITHUB_ENV
-          echo "PGCAT_ADMIN_USER=admin" >> $GITHUB_ENV
-          echo "PGCAT_ADMIN_PASSWORD=admin" >> $GITHUB_ENV
-          echo "DASHBOARD_CLIENT_SECRET=dev-secret" >> $GITHUB_ENV
-          docker compose up -d postgres redis pgcat pgcat-config
+          docker compose --env-file ./.env up -d postgres redis pgcat pgcat-config
 
       - name: Docker Compose up (apps)
         run: |
-          docker compose up -d identity dashboard db storage gateway
+          docker compose --env-file ./.env up -d identity dashboard db storage gateway
 
       - name: Wait for readiness (gateway)
         run: |
           for i in {1..50}; do
-            if curl -fsS http://127.0.0.1:8080/health/ready >/dev/null; then
+            if curl -fsS "$PUBLIC_BASE_URL/health/ready" >/dev/null; then
               echo "Gateway ready"; break; fi; sleep 3; done
-          curl -fsS http://127.0.0.1:8080/identity/.well-known/openid-configuration >/dev/null
+          curl -fsS "$PUBLIC_BASE_URL/identity/.well-known/openid-configuration" >/dev/null
 
       - name: Install Playwright browsers
         run: |
@@ -53,7 +57,7 @@ jobs:
       - name: Run AdminRateLimits UI E2E (headless)
         env:
           PW_HEADFUL: '0'
-          GATEWAY_BASE_URL: 'http://127.0.0.1:8080'
+          GATEWAY_BASE_URL: ${{ env.GATEWAY_BASE_URL }}
         run: |
           dotnet test ./tests/TansuCloud.E2E.Tests/TansuCloud.E2E.Tests.csproj -c Debug --filter FullyQualifiedName~TansuCloud.E2E.Tests.AdminRateLimitsUiE2E
         continue-on-error: true
@@ -63,7 +67,7 @@ jobs:
         if: always()
         run: |
           mkdir -p test-results
-          docker compose logs gateway > test-results/gateway-logs.txt || true
+          docker compose --env-file ./.env logs gateway > test-results/gateway-logs.txt || true
 
       - name: Upload Playwright artifacts
         if: always()

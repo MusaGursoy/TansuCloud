@@ -10,7 +10,10 @@ namespace TansuCloud.Identity.Controllers;
 
 [ApiController]
 [Route("admin/providers")]
-[Authorize(Roles = "Admin")]
+[Authorize(
+    Roles = "Admin",
+    AuthenticationSchemes = AuthenticationSchemeConstants.AdminCookieAndBearer
+)]
 public sealed class AdminProvidersController(AppDbContext db, ISecurityAuditLogger audit)
     : ControllerBase
 {

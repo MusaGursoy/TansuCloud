@@ -9,21 +9,7 @@ public class DashboardWebsocketSoak
 {
     private static string GetGatewayBaseUrl()
     {
-        var env = Environment.GetEnvironmentVariable("GATEWAY_BASE_URL");
-        if (!string.IsNullOrWhiteSpace(env))
-        {
-            try
-            {
-                var uri = new Uri(env);
-                // Respect provided host (no rewrite). Only normalize trailing slash.
-                return uri.ToString().TrimEnd('/');
-            }
-            catch
-            {
-                return env.TrimEnd('/');
-            }
-        }
-        return "http://localhost:8080";
+            return TestUrls.GatewayBaseUrl;
     }
 
     [Fact(DisplayName = "Dashboard WebSocket soak: 50 sessions hold 3 minutes (dev quick-run)")]

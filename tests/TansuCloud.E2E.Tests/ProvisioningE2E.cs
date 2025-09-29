@@ -25,29 +25,7 @@ public class ProvisioningE2E
 
     private static string GetGatewayBaseUrl()
     {
-        // Prefer env var override, fallback to the dev Kestrel HTTP endpoint
-        var env = Environment.GetEnvironmentVariable("GATEWAY_BASE_URL");
-        if (!string.IsNullOrWhiteSpace(env))
-        {
-            try
-            {
-                var uri = new Uri(env);
-                var host =
-                    (
-                        uri.Host.Equals("localhost", StringComparison.OrdinalIgnoreCase)
-                        || uri.Host == "::1"
-                    )
-                        ? "127.0.0.1"
-                        : uri.Host;
-                var builder = new UriBuilder(uri) { Host = host };
-                return builder.Uri.ToString().TrimEnd('/');
-            }
-            catch
-            {
-                return env.TrimEnd('/');
-            }
-        }
-        return "http://127.0.0.1:8080";
+        return TestUrls.GatewayBaseUrl;
     }
 
     private static async Task WaitForGatewayAsync(HttpClient client, CancellationToken ct)

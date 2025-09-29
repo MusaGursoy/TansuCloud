@@ -15,9 +15,8 @@ public class SigNozExceptionCaptureE2E
     public async Task Storage_Throw_Emits_ErrorSpan_And_ErrorLog()
     {
         // Arrange: enable the dev throw route via env in compose before running this test.
-        // We assume gateway is exposed at http://127.0.0.1:8080 and ClickHouse HTTP at http://127.0.0.1:8123
-        var gatewayBase =
-            Environment.GetEnvironmentVariable("GATEWAY_BASE_URL") ?? "http://127.0.0.1:8080";
+        // Resolve gateway via shared helper to honor PUBLIC_BASE_URL overrides.
+        var gatewayBase = TestUrls.GatewayBaseUrl;
         var clickhouseHttp =
             Environment.GetEnvironmentVariable("CLICKHOUSE_HTTP") ?? "http://127.0.0.1:8123";
 

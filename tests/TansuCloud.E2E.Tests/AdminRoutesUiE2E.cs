@@ -18,8 +18,7 @@ public class AdminRoutesUiE2E
             return; // not running UI tests in this environment
         }
 
-        var baseUrl =
-            Environment.GetEnvironmentVariable("GATEWAY_BASE_URL") ?? "http://127.0.0.1:8080";
+        var baseUrl = TestUrls.GatewayBaseUrl;
 
         // Try to ensure browsers are installed (best-effort)
         try

@@ -20,10 +20,7 @@ public class DashboardMetricsSmoke : IAsyncLifetime
 
     private static string BaseUrl()
     {
-        var env = Environment.GetEnvironmentVariable("GATEWAY_BASE_URL");
-        if (!string.IsNullOrWhiteSpace(env))
-            return env.TrimEnd('/');
-        return "http://127.0.0.1:8080";
+        return TestUrls.GatewayBaseUrl;
     }
 
     public async Task InitializeAsync()
@@ -186,7 +183,13 @@ public class DashboardMetricsSmoke : IAsyncLifetime
                 File.AppendAllText(readinessLogPath, line + Environment.NewLine);
             }
         }
-        var probeBases = new[] { baseUrl, "http://127.0.0.1:8080", "http://localhost:8080" }
+        var localhostAlias = baseUrl.Replace(
+            "127.0.0.1",
+            "localhost",
+            StringComparison.OrdinalIgnoreCase
+        );
+        var probeBases = new[] { baseUrl, TestUrls.PublicBaseUrl, localhostAlias }
+            .Where(b => !string.IsNullOrWhiteSpace(b))
             .Distinct()
             .ToArray();
         foreach (var b in probeBases)

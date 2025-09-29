@@ -35,28 +35,7 @@ public class VectorSearchE2E
 
     private static string GetGatewayBaseUrl()
     {
-        var env = Environment.GetEnvironmentVariable("GATEWAY_BASE_URL");
-        if (!string.IsNullOrWhiteSpace(env))
-        {
-            try
-            {
-                var uri = new Uri(env);
-                var host =
-                    (
-                        uri.Host.Equals("localhost", StringComparison.OrdinalIgnoreCase)
-                        || uri.Host == "::1"
-                    )
-                        ? "127.0.0.1"
-                        : uri.Host;
-                var b = new UriBuilder(uri) { Host = host };
-                return b.Uri.ToString().TrimEnd('/');
-            }
-            catch
-            {
-                return env.TrimEnd('/');
-            }
-        }
-        return "http://127.0.0.1:8080";
+        return TestUrls.GatewayBaseUrl;
     }
 
     private static async Task WaitForAllAsync(HttpClient client, CancellationToken ct)

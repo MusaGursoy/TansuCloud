@@ -5,9 +5,13 @@ using System.Collections.Generic;
 using System.Diagnostics.Metrics;
 using System.IO;
 using System.Linq;
+using System.Net.Http;
+using System.Net.Sockets;
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 using System.Text;
+using System.Text.Json;
+using System.Threading;
 using System.Threading.RateLimiting;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.DataProtection;
@@ -19,17 +23,48 @@ using Microsoft.Extensions.Caching.Hybrid;
 using Microsoft.Extensions.Caching.StackExchangeRedis;
 using Microsoft.Extensions.Diagnostics.HealthChecks;
 using Microsoft.IdentityModel.Tokens;
+using OpenTelemetry.Instrumentation.StackExchangeRedis;
 using OpenTelemetry.Logs;
 using OpenTelemetry.Metrics;
 using OpenTelemetry.Resources;
 using OpenTelemetry.Trace;
+using StackExchange.Redis;
 using TansuCloud.Gateway.Services;
 using TansuCloud.Observability;
 using TansuCloud.Observability.Auditing;
+using TansuCloud.Observability.Shared.Configuration;
 using Yarp.ReverseProxy.Configuration;
-using StackExchange.Redis;
 
 var builder = WebApplication.CreateBuilder(args);
+
+var appUrls = AppUrlsOptions.FromConfiguration(builder.Configuration);
+builder.Services.AddSingleton(appUrls);
+
+// Explicitly bind Gateway listen URL early to avoid surprises from machine-wide ASPNETCORE_URLS
+// Priority order: env GATEWAY_URLS > appsettings Kestrel:Endpoints:Http:Url > fallback
+// Note: ASPNETCORE_URLS tends to override Kestrel endpoints; we counter by setting UseUrls explicitly.
+var aspnetUrlsEnv = Environment.GetEnvironmentVariable("ASPNETCORE_URLS");
+var gatewayUrlsEnv = Environment.GetEnvironmentVariable("GATEWAY_URLS");
+var configuredKestrelUrl = builder.Configuration["Kestrel:Endpoints:Http:Url"];
+var fallbackListenUrl = !string.IsNullOrWhiteSpace(configuredKestrelUrl)
+    ? configuredKestrelUrl!
+    : appUrls.PublicBaseUrl!;
+var desiredListenUrl = !string.IsNullOrWhiteSpace(gatewayUrlsEnv)
+    ? gatewayUrlsEnv
+    : fallbackListenUrl;
+
+// Apply explicit binding; Kestrel will log that Urls override endpoint config, which is intended here.
+builder.WebHost.UseUrls(desiredListenUrl);
+
+if (
+    !string.IsNullOrWhiteSpace(aspnetUrlsEnv)
+    && !aspnetUrlsEnv.Equals(desiredListenUrl, StringComparison.OrdinalIgnoreCase)
+)
+{
+    Console.WriteLine(
+        $"[Gateway] ASPNETCORE_URLS='{aspnetUrlsEnv}' detected but overridden by '{desiredListenUrl}'. Set GATEWAY_URLS to change."
+    );
+}
 
 // Kestrel: enable HTTP/2 TCP keepalive pings for long-lived connections
 builder.WebHost.ConfigureKestrel(kestrel =>
@@ -80,21 +115,11 @@ builder
     )
     .WithTracing(tracing =>
     {
-        tracing.AddAspNetCoreInstrumentation(o =>
-        {
-            o.RecordException = true;
-            o.Filter = ctx => true;
-        });
+        tracing.AddTansuAspNetCoreInstrumentation();
         tracing.AddHttpClientInstrumentation();
         tracing.AddSource("Yarp.ReverseProxy");
-        tracing.AddOtlpExporter(otlp =>
-        {
-            var endpoint = builder.Configuration["OpenTelemetry:Otlp:Endpoint"];
-            if (!string.IsNullOrWhiteSpace(endpoint))
-            {
-                otlp.Endpoint = new Uri(endpoint);
-            }
-        });
+        tracing.AddRedisInstrumentation();
+        tracing.AddTansuOtlpExporter(builder.Configuration, builder.Environment);
     })
     .WithMetrics(metrics =>
     {
@@ -104,14 +129,7 @@ builder
         // Export custom gateway proxy meter so SigNoz captures our series via OTLP
         metrics.AddMeter("TansuCloud.Gateway.Proxy");
         metrics.AddMeter("TansuCloud.Audit");
-        metrics.AddOtlpExporter(otlp =>
-        {
-            var endpoint = builder.Configuration["OpenTelemetry:Otlp:Endpoint"];
-            if (!string.IsNullOrWhiteSpace(endpoint))
-            {
-                otlp.Endpoint = new Uri(endpoint);
-            }
-        });
+        metrics.AddTansuOtlpExporter(builder.Configuration, builder.Environment);
     });
 
 // Shared observability core (Task 38): dynamic log level overrides, etc.
@@ -126,14 +144,7 @@ builder.Logging.AddOpenTelemetry(logging =>
 {
     logging.IncludeFormattedMessage = true;
     logging.ParseStateValues = true;
-    logging.AddOtlpExporter(otlp =>
-    {
-        var endpoint = builder.Configuration["OpenTelemetry:Otlp:Endpoint"];
-        if (!string.IsNullOrWhiteSpace(endpoint))
-        {
-            otlp.Endpoint = new Uri(endpoint);
-        }
-    });
+    logging.AddTansuOtlpExporter(builder.Configuration, builder.Environment);
 });
 
 // Health checks
@@ -165,30 +176,25 @@ builder
         options =>
         {
             // Derive Authority/Metadata per repo guidance
-            var issuer = builder.Configuration["Oidc:Issuer"] ?? "http://127.0.0.1:8080/identity/";
+            var configuredIssuer = builder.Configuration["Oidc:Issuer"];
+            var issuer = string.IsNullOrWhiteSpace(configuredIssuer)
+                ? appUrls.GetIssuer("identity")
+                : configuredIssuer!;
             var issuerTrim = issuer.TrimEnd('/');
             options.Authority = issuerTrim;
 
             var metadataAddress = builder.Configuration["Oidc:MetadataAddress"];
-            if (!string.IsNullOrWhiteSpace(metadataAddress))
+            if (string.IsNullOrWhiteSpace(metadataAddress))
             {
-                options.MetadataAddress = metadataAddress;
-            }
-            else if (
-                string.Equals(
+                var inContainer = string.Equals(
                     Environment.GetEnvironmentVariable("DOTNET_RUNNING_IN_CONTAINER"),
                     "true",
                     StringComparison.OrdinalIgnoreCase
-                )
-            )
-            {
-                options.MetadataAddress =
-                    "http://gateway:8080/identity/.well-known/openid-configuration";
+                );
+                metadataAddress = appUrls.GetBackchannelMetadataAddress(inContainer, "identity");
             }
-            else
-            {
-                options.MetadataAddress = issuerTrim + "/.well-known/openid-configuration";
-            }
+
+            options.MetadataAddress = metadataAddress;
 
             options.RequireHttpsMetadata = !builder.Environment.IsDevelopment();
             options.MapInboundClaims = false; // keep raw JWT claim types
@@ -299,7 +305,9 @@ if (!string.IsNullOrWhiteSpace(redisConn) && !disableCache)
 }
 
 // Persist Data Protection keys for affinity cookies and other encrypted payloads so they remain valid across restarts
-var dataProtectionBuilder = builder.Services.AddDataProtection().SetApplicationName("TansuCloud.Gateway");
+var dataProtectionBuilder = builder
+    .Services.AddDataProtection()
+    .SetApplicationName("TansuCloud.Gateway");
 if (!string.IsNullOrWhiteSpace(redisConn))
 {
     try
@@ -307,7 +315,9 @@ if (!string.IsNullOrWhiteSpace(redisConn))
         var mux = ConnectionMultiplexer.Connect(redisConn);
         builder.Services.AddSingleton<IConnectionMultiplexer>(mux);
         dataProtectionBuilder.PersistKeysToStackExchangeRedis(mux, "DataProtection-Keys:Gateway");
-        Console.WriteLine("[DataProtection] Using Redis key ring at 'DataProtection-Keys:Gateway' (StackExchange.Redis)");
+        Console.WriteLine(
+            "[DataProtection] Using Redis key ring at 'DataProtection-Keys:Gateway' (StackExchange.Redis)"
+        );
     }
     catch
     {
@@ -322,7 +332,9 @@ if (!string.IsNullOrWhiteSpace(redisConn))
         }
 
         dataProtectionBuilder.PersistKeysToFileSystem(new DirectoryInfo(fallback));
-        Console.WriteLine($"[DataProtection] Redis connect failed; using filesystem key ring at '{fallback}'");
+        Console.WriteLine(
+            $"[DataProtection] Redis connect failed; using filesystem key ring at '{fallback}'"
+        );
     }
 }
 else
@@ -340,6 +352,7 @@ else
     dataProtectionBuilder.PersistKeysToFileSystem(new DirectoryInfo(keysPath));
     Console.WriteLine($"[DataProtection] Using filesystem key ring at '{keysPath}'");
 }
+
 // End of DataProtection configuration
 
 // Gateway knobs: rate limit window for Retry-After, and static assets cache TTL
@@ -539,12 +552,31 @@ builder.Services.AddOutputCache(options =>
     );
 });
 
+string ResolveServiceBaseUrl(string key, int defaultPort, IConfiguration? overrideConfig = null)
+{
+    var configSource = overrideConfig ?? builder.Configuration;
+    var configured = configSource[key];
+    if (!string.IsNullOrWhiteSpace(configured))
+    {
+        return configured!;
+    }
+
+    var baseUri = new Uri(appUrls.PublicBaseUrl!);
+    var uriBuilder = new UriBuilder(baseUri)
+    {
+        Port = defaultPort,
+        Path = string.Empty,
+        Query = string.Empty,
+        Fragment = string.Empty,
+    };
+    return uriBuilder.Uri.GetLeftPart(UriPartial.Authority);
+}
+
 // Resolve downstream service base URLs from configuration/environment for Aspire wiring
-// Use 127.0.0.1 instead of localhost to avoid IPv6/loopback divergence in dev
-var dashboardBase = builder.Configuration["Services:DashboardBaseUrl"] ?? "http://127.0.0.1:5136";
-var identityBase = builder.Configuration["Services:IdentityBaseUrl"] ?? "http://127.0.0.1:5095";
-var dbBase = builder.Configuration["Services:DatabaseBaseUrl"] ?? "http://127.0.0.1:5278";
-var storageBase = builder.Configuration["Services:StorageBaseUrl"] ?? "http://127.0.0.1:5257";
+var dashboardBase = ResolveServiceBaseUrl("Services:DashboardBaseUrl", 5136);
+var identityBase = ResolveServiceBaseUrl("Services:IdentityBaseUrl", 5095);
+var dbBase = ResolveServiceBaseUrl("Services:DatabaseBaseUrl", 5278);
+var storageBase = ResolveServiceBaseUrl("Services:StorageBaseUrl", 5257);
 
 // Prepare initial YARP config in memory and register a dynamic provider
 var reverseProxyBuilder = builder.Services.AddReverseProxy();
@@ -1351,32 +1383,23 @@ app.UseCors("Default");
 try
 {
     var log = app.Services.GetRequiredService<ILoggerFactory>().CreateLogger("OIDC-Config");
-    var issuer = builder.Configuration["Oidc:Issuer"] ?? "http://127.0.0.1:8080/identity/";
+    var configuredIssuer = builder.Configuration["Oidc:Issuer"];
+    var issuer = string.IsNullOrWhiteSpace(configuredIssuer)
+        ? appUrls.GetIssuer("identity")
+        : configuredIssuer!;
     var issuerTrim = issuer.TrimEnd('/');
     var configuredMd = builder.Configuration["Oidc:MetadataAddress"];
-    string effectiveMd;
-    string source;
-    if (!string.IsNullOrWhiteSpace(configuredMd))
-    {
-        effectiveMd = configuredMd!;
-        source = "explicit-config";
-    }
-    else if (
-        string.Equals(
-            Environment.GetEnvironmentVariable("DOTNET_RUNNING_IN_CONTAINER"),
-            "true",
-            StringComparison.OrdinalIgnoreCase
-        )
-    )
-    {
-        effectiveMd = "http://gateway:8080/identity/.well-known/openid-configuration";
-        source = "container-gateway";
-    }
-    else
-    {
-        effectiveMd = issuerTrim + "/.well-known/openid-configuration";
-        source = "issuer-derived";
-    }
+    var inContainer = string.Equals(
+        Environment.GetEnvironmentVariable("DOTNET_RUNNING_IN_CONTAINER"),
+        "true",
+        StringComparison.OrdinalIgnoreCase
+    );
+    var effectiveMd = string.IsNullOrWhiteSpace(configuredMd)
+        ? appUrls.GetBackchannelMetadataAddress(inContainer, "identity")
+        : configuredMd!;
+    var source = string.IsNullOrWhiteSpace(configuredMd)
+        ? (inContainer ? "container-gateway" : "issuer-derived")
+        : "explicit-config";
     log.LogOidcMetadataChoice(source, issuerTrim, effectiveMd);
 }
 catch
@@ -1431,13 +1454,19 @@ app.Use(
     {
         var path = context.Request.Path;
         var requiresAuth = false;
-        if (path.StartsWithSegments("/db") || path.StartsWithSegments("/storage"))
+        if (
+            path.StartsWithSegments("/db", StringComparison.OrdinalIgnoreCase)
+            || path.StartsWithSegments("/storage", StringComparison.OrdinalIgnoreCase)
+        )
         {
             // Allow anonymous health endpoints for downstream services
             if (
                 !(
-                    path.StartsWithSegments("/db/health")
-                    || path.StartsWithSegments("/storage/health")
+                    path.StartsWithSegments("/db/health", StringComparison.OrdinalIgnoreCase)
+                    || path.StartsWithSegments(
+                        "/storage/health",
+                        StringComparison.OrdinalIgnoreCase
+                    )
                 )
             )
             {
@@ -1448,7 +1477,8 @@ app.Use(
         // Allow health endpoints unauthenticated for monitoring
         var isHealth =
             path.StartsWithSegments("/db/health", StringComparison.OrdinalIgnoreCase)
-            || path.StartsWithSegments("/storage/health", StringComparison.OrdinalIgnoreCase);
+            || path.StartsWithSegments("/storage/health", StringComparison.OrdinalIgnoreCase)
+            || path.StartsWithSegments("/identity/health", StringComparison.OrdinalIgnoreCase);
 
         // Dev-only: allow anonymous access to Storage diagnostic throw endpoint to validate SigNoz E2E
         var isStorageDevThrow =
@@ -1606,6 +1636,59 @@ if (app.Environment.IsDevelopment())
         >();
 
     // Helper to proxy and cache
+    static bool IsValidOidcPayload(string cacheKey, string payload, ILogger logger)
+    {
+        if (string.Equals(cacheKey, "jwks", StringComparison.Ordinal))
+        {
+            try
+            {
+                using var doc = JsonDocument.Parse(payload);
+                if (
+                    doc.RootElement.TryGetProperty("keys", out var keysProp)
+                    && keysProp.ValueKind == JsonValueKind.Array
+                    && keysProp.GetArrayLength() > 0
+                )
+                {
+                    return true;
+                }
+
+                logger.LogWarning("OIDC JWKS payload contains no signing keys");
+                return false;
+            }
+            catch (JsonException ex)
+            {
+                logger.LogWarning(ex, "OIDC JWKS payload deserialization failed");
+                return false;
+            }
+        }
+
+        if (string.Equals(cacheKey, "discovery", StringComparison.Ordinal))
+        {
+            try
+            {
+                using var doc = JsonDocument.Parse(payload);
+                if (
+                    doc.RootElement.TryGetProperty("jwks_uri", out var jwksProp)
+                    && jwksProp.ValueKind == JsonValueKind.String
+                    && !string.IsNullOrWhiteSpace(jwksProp.GetString())
+                )
+                {
+                    return true;
+                }
+
+                logger.LogWarning("OIDC discovery payload missing jwks_uri");
+                return false;
+            }
+            catch (JsonException ex)
+            {
+                logger.LogWarning(ex, "OIDC discovery payload deserialization failed");
+                return false;
+            }
+        }
+
+        return true;
+    } // End of Method IsValidOidcPayload
+
     async Task<IResult> ProxyWithCacheAsync(
         HttpContext http,
         string upstreamUrl,
@@ -1632,8 +1715,61 @@ if (app.Environment.IsDevelopment())
                 http.RequestAborted
             );
             var text = await resp.Content.ReadAsStringAsync(http.RequestAborted);
-            if (resp.IsSuccessStatusCode)
+            if (resp.IsSuccessStatusCode && IsValidOidcPayload(cacheKey, text, oidcCacheLogger))
             {
+                if (string.Equals(cacheKey, "discovery", StringComparison.Ordinal))
+                {
+                    var publicOrigin = string.Concat(http.Request.Scheme, "://", http.Request.Host);
+                    var issuerBase = string.Concat(publicOrigin, "/identity/");
+                    var authEndpoint = string.Concat(publicOrigin, "/connect/authorize");
+                    var tokenEndpoint = string.Concat(publicOrigin, "/connect/token");
+                    var introspectEndpoint = string.Concat(publicOrigin, "/connect/introspect");
+                    var jwksEndpoint = string.Concat(publicOrigin, "/.well-known/jwks");
+
+                    try
+                    {
+                        using var doc = JsonDocument.Parse(text);
+                        using var buffer = new MemoryStream();
+                        using (var writer = new Utf8JsonWriter(buffer))
+                        {
+                            writer.WriteStartObject();
+                            foreach (var prop in doc.RootElement.EnumerateObject())
+                            {
+                                switch (prop.Name)
+                                {
+                                    case "issuer":
+                                        writer.WriteString(prop.Name, issuerBase);
+                                        break;
+                                    case "authorization_endpoint":
+                                        writer.WriteString(prop.Name, authEndpoint);
+                                        break;
+                                    case "token_endpoint":
+                                        writer.WriteString(prop.Name, tokenEndpoint);
+                                        break;
+                                    case "introspection_endpoint":
+                                        writer.WriteString(prop.Name, introspectEndpoint);
+                                        break;
+                                    case "jwks_uri":
+                                        writer.WriteString(prop.Name, jwksEndpoint);
+                                        break;
+                                    default:
+                                        prop.WriteTo(writer);
+                                        break;
+                                }
+                            }
+                            writer.WriteEndObject();
+                        }
+                        text = Encoding.UTF8.GetString(buffer.ToArray());
+                    }
+                    catch (JsonException ex)
+                    {
+                        oidcCacheLogger.LogWarning(
+                            ex,
+                            "Failed to rewrite discovery payload for public endpoints"
+                        );
+                    }
+                }
+
                 var ttl = TimeSpan.FromSeconds(30); // short TTL in dev
                 cache[cacheKey] = (DateTimeOffset.UtcNow.Add(ttl), text, contentType);
                 return Results.Content(text, contentType);
@@ -1678,7 +1814,12 @@ if (app.Environment.IsDevelopment())
             "/identity/.well-known/openid-configuration",
             async (HttpContext http, IConfiguration cfg) =>
             {
-                var identityBase = cfg["Services:IdentityBaseUrl"] ?? "http://127.0.0.1:5095";
+                var identityBase = ResolveServiceBaseUrl("Services:IdentityBaseUrl", 5095, cfg);
+                await IdentityReadiness.EnsureReadyAsync(
+                    identityBase,
+                    oidcCacheLogger,
+                    http.RequestAborted
+                );
                 var url = identityBase.TrimEnd('/') + "/.well-known/openid-configuration";
                 return await ProxyWithCacheAsync(http, url, "discovery", "application/json");
             }
@@ -1686,17 +1827,58 @@ if (app.Environment.IsDevelopment())
         .WithDisplayName("Dev: OIDC discovery with cache")
         .AllowAnonymous();
 
+    // Root alias for discovery (/.well-known/openid-configuration)
+    app.MapGet(
+            "/.well-known/openid-configuration",
+            async (HttpContext http, IConfiguration cfg) =>
+            {
+                var identityBase = ResolveServiceBaseUrl("Services:IdentityBaseUrl", 5095, cfg);
+                await IdentityReadiness.EnsureReadyAsync(
+                    identityBase,
+                    oidcCacheLogger,
+                    http.RequestAborted
+                );
+                var url = identityBase.TrimEnd('/') + "/.well-known/openid-configuration";
+                return await ProxyWithCacheAsync(http, url, "discovery", "application/json");
+            }
+        )
+        .WithDisplayName("Dev: OIDC discovery alias with cache")
+        .AllowAnonymous();
+
     // JWKS endpoint
     app.MapGet(
             "/identity/.well-known/jwks",
             async (HttpContext http, IConfiguration cfg) =>
             {
-                var identityBase = cfg["Services:IdentityBaseUrl"] ?? "http://127.0.0.1:5095";
+                var identityBase = ResolveServiceBaseUrl("Services:IdentityBaseUrl", 5095, cfg);
+                await IdentityReadiness.EnsureReadyAsync(
+                    identityBase,
+                    oidcCacheLogger,
+                    http.RequestAborted
+                );
                 var url = identityBase.TrimEnd('/') + "/.well-known/jwks";
                 return await ProxyWithCacheAsync(http, url, "jwks", "application/json");
             }
         )
         .WithDisplayName("Dev: OIDC JWKS with cache")
+        .AllowAnonymous();
+
+    // Root alias for JWKS (/.well-known/jwks)
+    app.MapGet(
+            "/.well-known/jwks",
+            async (HttpContext http, IConfiguration cfg) =>
+            {
+                var identityBase = ResolveServiceBaseUrl("Services:IdentityBaseUrl", 5095, cfg);
+                await IdentityReadiness.EnsureReadyAsync(
+                    identityBase,
+                    oidcCacheLogger,
+                    http.RequestAborted
+                );
+                var url = identityBase.TrimEnd('/') + "/.well-known/jwks";
+                return await ProxyWithCacheAsync(http, url, "jwks", "application/json");
+            }
+        )
+        .WithDisplayName("Dev: OIDC JWKS alias with cache")
         .AllowAnonymous();
 }
 
@@ -2772,5 +2954,187 @@ static string HashKey(string value)
         return "hasherr";
     }
 } // End of Method HashKey
+
+static class IdentityReadiness
+{
+    internal static readonly SemaphoreSlim Lock = new(1, 1);
+    internal static int ReadyFlag;
+
+    internal static async Task EnsureReadyAsync(
+        string identityBase,
+        ILogger logger,
+        CancellationToken cancellationToken
+    )
+    {
+        if (Volatile.Read(ref ReadyFlag) == 1)
+        {
+            return;
+        }
+
+        await Lock.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            if (Volatile.Read(ref ReadyFlag) == 1)
+            {
+                return;
+            }
+
+            var trimmedBase = identityBase.TrimEnd('/');
+            var healthUrl = string.Concat(trimmedBase, "/health/live");
+            using var handler = new SocketsHttpHandler
+            {
+                AllowAutoRedirect = false,
+                AutomaticDecompression = System.Net.DecompressionMethods.None,
+                ConnectTimeout = TimeSpan.FromSeconds(2)
+            };
+            using var client = new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(3) };
+            client.DefaultRequestVersion = System.Net.HttpVersion.Version11;
+            client.DefaultVersionPolicy = HttpVersionPolicy.RequestVersionOrLower;
+
+            const int maxAttempts = 10;
+            for (var attempt = 1; attempt <= maxAttempts; attempt++)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+
+                try
+                {
+                    using var healthResp = await client
+                        .GetAsync(healthUrl, cancellationToken)
+                        .ConfigureAwait(false);
+                    if (!healthResp.IsSuccessStatusCode)
+                    {
+                        logger.LogDebug(
+                            "Identity health check attempt {Attempt} returned status {Status}",
+                            attempt,
+                            (int)healthResp.StatusCode
+                        );
+                        continue;
+                    }
+
+                    var configUrl = string.Concat(trimmedBase, "/.well-known/openid-configuration");
+                    using var configResp = await client
+                        .GetAsync(configUrl, cancellationToken)
+                        .ConfigureAwait(false);
+                    if (!configResp.IsSuccessStatusCode)
+                    {
+                        logger.LogDebug(
+                            "Identity discovery attempt {Attempt} returned status {Status}",
+                            attempt,
+                            (int)configResp.StatusCode
+                        );
+                        continue;
+                    }
+
+                    await using var configStream = await configResp
+                        .Content.ReadAsStreamAsync(cancellationToken)
+                        .ConfigureAwait(false);
+                    using var configDoc = await JsonDocument
+                        .ParseAsync(configStream, cancellationToken: cancellationToken)
+                        .ConfigureAwait(false);
+                    if (
+                        !configDoc.RootElement.TryGetProperty("jwks_uri", out var jwksProp)
+                        || jwksProp.ValueKind != JsonValueKind.String
+                        || string.IsNullOrWhiteSpace(jwksProp.GetString())
+                    )
+                    {
+                        logger.LogDebug(
+                            "Identity discovery attempt {Attempt} missing jwks_uri",
+                            attempt
+                        );
+                        continue;
+                    }
+
+                    var advertisedJwksUrl = jwksProp.GetString();
+                    var upstreamJwksUrl = string.Concat(trimmedBase, "/.well-known/jwks");
+                    if (
+                        !string.IsNullOrWhiteSpace(advertisedJwksUrl)
+                        && !string.Equals(
+                            advertisedJwksUrl,
+                            upstreamJwksUrl,
+                            StringComparison.OrdinalIgnoreCase
+                        )
+                    )
+                    {
+                        logger.LogDebug(
+                            "Identity advertised JWKS URL {Advertised} differs from upstream {Upstream}",
+                            advertisedJwksUrl,
+                            upstreamJwksUrl
+                        );
+                    }
+
+                    using var jwksResp = await client
+                        .GetAsync(upstreamJwksUrl, cancellationToken)
+                        .ConfigureAwait(false);
+                    if (!jwksResp.IsSuccessStatusCode)
+                    {
+                        logger.LogDebug(
+                            "Identity JWKS attempt {Attempt} returned status {Status}",
+                            attempt,
+                            (int)jwksResp.StatusCode
+                        );
+                        continue;
+                    }
+
+                    await using var jwksStream = await jwksResp
+                        .Content.ReadAsStreamAsync(cancellationToken)
+                        .ConfigureAwait(false);
+                    using var jwksDoc = await JsonDocument
+                        .ParseAsync(jwksStream, cancellationToken: cancellationToken)
+                        .ConfigureAwait(false);
+                    if (
+                        !jwksDoc.RootElement.TryGetProperty("keys", out var keysProp)
+                        || keysProp.ValueKind != JsonValueKind.Array
+                        || keysProp.GetArrayLength() == 0
+                    )
+                    {
+                        logger.LogDebug(
+                            "Identity JWKS attempt {Attempt} returned no signing keys",
+                            attempt
+                        );
+                        continue;
+                    }
+
+                    Volatile.Write(ref ReadyFlag, 1);
+                    logger.LogInformation(
+                        "Identity readiness confirmed after {Attempt} attempt(s); JWKS keys={KeyCount}",
+                        attempt,
+                        keysProp.GetArrayLength()
+                    );
+                    return;
+                }
+                catch (HttpRequestException ex)
+                    when (ex.InnerException is SocketException or IOException)
+                {
+                    logger.LogDebug(
+                        ex,
+                        "Identity readiness attempt {Attempt} failed to connect to {Url}",
+                        attempt,
+                        healthUrl
+                    );
+                }
+                catch (TaskCanceledException) when (!cancellationToken.IsCancellationRequested)
+                {
+                    logger.LogDebug(
+                        "Identity readiness attempt {Attempt} timed out for {Url}",
+                        attempt,
+                        healthUrl
+                    );
+                }
+
+                await Task.Delay(TimeSpan.FromSeconds(2), cancellationToken).ConfigureAwait(false);
+            }
+
+            logger.LogWarning(
+                "Identity readiness check for {Url} timed out after {Attempts} attempts",
+                healthUrl,
+                maxAttempts
+            );
+        }
+        finally
+        {
+            Lock.Release();
+        }
+    } // End of Method EnsureReadyAsync
+} // End of Class IdentityReadiness
 
 public sealed record LogOverrideRequest(string Category, LogLevel Level, int TtlSeconds);

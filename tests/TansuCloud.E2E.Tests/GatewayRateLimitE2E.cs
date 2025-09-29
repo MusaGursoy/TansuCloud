@@ -13,10 +13,7 @@ namespace TansuCloud.E2E.Tests
     {
         private static string GetGatewayBaseUrl()
         {
-            var env = Environment.GetEnvironmentVariable("GATEWAY_BASE_URL");
-            if (!string.IsNullOrWhiteSpace(env))
-                return env.TrimEnd('/');
-            return "http://localhost:8080";
+            return TestUrls.GatewayBaseUrl;
         }
 
         private sealed record RateLimitDefaults

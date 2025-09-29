@@ -23,6 +23,30 @@ Tansu.Cloud is a modern backend-as-a-service (BaaS) platform built on .NET, prov
 - Running with Docker Compose (gateway only exposed)
 - Health endpoints (/health/live and /health/ready)
 
+### 3.1 Load `.env` once across shells
+
+All automation (VS Code tasks, helper scripts, compose runs) now pulls public and gateway URLs from the shared `.env`. When you run one-off commands outside VS Code, hydrate your shell first so both Windows and macOS/Linux sessions stay in sync.
+
+- **PowerShell (Windows)**
+
+```powershell
+pwsh -NoProfile -Command ". \"${PWD}/dev/tools/common.ps1\"; Import-TansuDotEnv | Out-Null; docker compose --env-file \"${PWD}/.env\" up -d"
+```
+
+- **PowerShell (macOS/Linux)**
+
+```powershell
+pwsh -NoProfile -Command ". \"${PWD}/dev/tools/common.ps1\"; Import-TansuDotEnv | Out-Null; docker compose --env-file \"${PWD}/.env\" up -d"
+```
+
+Notes
+
+- `Import-TansuDotEnv` keeps existing process variables unless you pass `-Overwrite`; this means ad-hoc overrides survive.
+- Compose commands should always pass `--env-file ./ .env` (our tasks already do) so container-side substitutions stay aligned with the host values.
+- For Bash/zsh users, launch `pwsh` once to run the helper, or export variables manually by mirroring `.env`.
+- CI enforces the `.env`-first contract via `LoopbackLiteralGuardTests`. If you need to document loopback literals (as in this section), keep them in the documented allowlist to avoid test failures.
+- After editing `.env`, run the VS Code task **"Task 40 verification"** to execute the loopback guard test and validate both compose files against the refreshed settings.
+
 ## 4. Production Topology
 
 - Gateway-only exposure (80/443)
@@ -32,8 +56,11 @@ Tansu.Cloud is a modern backend-as-a-service (BaaS) platform built on .NET, prov
 ### 4.2 Running production with a single compose file
 
 We ship exactly two compose files:
+
 - `docker-compose.yml` — development stack (local conveniences, dev ports)
 - `docker-compose.prod.yml` — full production stack (gateway exposed) with an optional `observability` profile
+
+Before running any compose command, ensure `.env` contains the correct `PUBLIC_BASE_URL`, `GATEWAY_BASE_URL`, certificate secrets, and other overrides. Our VS Code tasks call `Import-TansuDotEnv` automatically; shells launched manually should do the same so compose sees the intended values.
 
 Run without observability (core services only):
 
@@ -80,7 +107,58 @@ services:
 ```
 
 Ensure X-Forwarded-Proto and X-Forwarded-Prefix headers are preserved when TLS terminates upstream to avoid OIDC issuer mismatches or cookie scope issues.
+
+### 4.3 Configure your public URLs (Task 40)
+
+TansuCloud derives all browser-visible links and OIDC issuers from configuration. Do not hardcode URLs in code. Set these two keys before starting any environment:
+
+- PUBLIC_BASE_URL — the single origin browsers see (e.g., <http://127.0.0.1:8080> in dev, <https://apps.example.com> in prod)
+- GATEWAY_BASE_URL — the internal or operator-friendly base for the gateway when different from PUBLIC_BASE_URL (often the same in dev)
+
+Recommended: define them in `.env` at the repo root. Our tasks and compose files automatically load `.env`.
+
+Example `.env` (development):
+
+```env
+PUBLIC_BASE_URL=http://127.0.0.1:8080
+GATEWAY_BASE_URL=http://127.0.0.1:8080
 ```
+
+Example `.env` (production):
+
+```env
+PUBLIC_BASE_URL=https://apps.example.com
+GATEWAY_BASE_URL=http://gateway:8080
+```
+
+Notes
+
+- Services compute OIDC values from these URLs. Identity issues tokens with issuer `${PUBLIC_BASE_URL}/identity/`.
+- Dashboard and APIs discover via the gateway when running in containers using MetadataAddress overrides as documented in the OIDC standard below.
+- If you change `.env`, re-run the VS Code task “Task 40 verification” to validate the loopback guard and compose files.
+- Keep loopback literals (127.0.0.1) in docs/examples only. Code should never inline them; derive from configuration.
+
+Quick validation
+
+1. Validate compose files with your `.env` values:
+
+- VS Code task: “compose: validate config” (dev)
+- VS Code task: “compose: validate prod config” (prod)
+
+2. Check Identity discovery at `${PUBLIC_BASE_URL}/identity/.well-known/openid-configuration`.
+
+3. Through the gateway, open:
+
+- `${PUBLIC_BASE_URL}/dashboard/health/ready`
+- `${PUBLIC_BASE_URL}/identity/health/ready`
+- `${PUBLIC_BASE_URL}/db/health/ready`
+- `${PUBLIC_BASE_URL}/storage/health/ready`
+
+Common pitfalls
+
+- Mismatch between Issuer and discovery host: ensure Identity’s advertised issuer matches `${PUBLIC_BASE_URL}/identity/` exactly (trailing slash included).
+- Missing X-Forwarded headers at the edge: proxies must preserve `Host`, and set `X-Forwarded-Proto`/`X-Forwarded-Prefix` so downstream apps compute correct redirects and cookie scopes.
+- Mixing localhost and 127.0.0.1: prefer 127.0.0.1 in dev to avoid IPv6/loopback divergence.
 
 ### 8.2 SigNoz metrics & dashboards (Unified Observability)
 
@@ -102,11 +180,13 @@ Quick start (dev)
 Legacy in-app charts (Prometheus proxy)
 
 - The Dashboard used to proxy Prometheus and render curated charts at `/dashboard/admin/metrics`.
-- That implementation has been fully removed. The Metrics page now only links to SigNoz.
+- That Prometheus proxy has been retired. The Metrics page now renders a curated SigNoz catalog using the configured base URL (default `http://127.0.0.1:3301/`).
+- Admin APIs under `/dashboard/api/metrics/*` remain available for smoke tests and integrations; they return SigNoz metadata (catalog entries and redirect URLs) instead of raw Prometheus payloads.
 
 Notes
 
-- The legacy endpoints under `/dashboard/api/metrics/*` no longer exist. All observability workflows should run through SigNoz.
+- Override the SigNoz base URL with `SigNoz:BaseUrl` (or env var `SigNoz__BaseUrl`) to align with your deployment.
+- `/dashboard/api/metrics/catalog` responds with JSON containing the normalized base URL plus the curated chart list, so automation can deep-link into SigNoz.
 
 ### SigNoz readiness and troubleshooting (dev)
 
@@ -145,6 +225,32 @@ Production notes
 
 - Keep `/storage/dev/throw` strictly Development-only.
 - For production, add TLS, SSO/RBAC for the SigNoz UI, retention/backups/HA for ClickHouse, and appropriate sampling/PII scrubbing policies.
+
+### Apply SigNoz governance defaults (Task 39)
+
+We ship opinionated governance defaults under `SigNoz/governance.defaults.json` (retention windows, sampling ratios, and SLO alert templates). These are applied via VS Code tasks and a helper script. By default, the script runs in a safe dry‑run mode and prints the planned actions.
+
+Prerequisites
+
+- Ensure the SigNoz stack is healthy (see readiness section above), or run the VS Code task “SigNoz: readiness probe”.
+- Set a ClickHouse HTTP endpoint in your environment (recommended in `.env`):
+  - Dev example: `CLICKHOUSE_HTTP=http://127.0.0.1:8123`
+  - Prod example: internal-only endpoint for ClickHouse HTTP on your cluster network (do not expose publicly)
+
+Run the tasks
+
+- Preview (dry‑run): VS Code task “SigNoz: governance (dry-run)”
+  - Loads `SigNoz/governance.defaults.json`
+  - Verifies `CLICKHOUSE_HTTP` is reachable
+  - Prints the planned retention/sampling/alert SLOs without making changes
+- Apply (when enabled): VS Code task “SigNoz: governance (apply)”
+  - The apply stage is intentionally not implemented yet to avoid accidental destructive changes. Use the dry‑run to validate values first; we’ll wire safe apply hooks once finalized.
+
+Notes
+
+- You can override the defaults by editing `SigNoz/governance.defaults.json` in your fork/overlay. Keep production values conservative (longer retention has storage cost implications).
+- The helper script `dev/tools/signoz-apply-governance.ps1` reads environment via `.env` using `Import-TansuDotEnv`. Prefer environment-driven endpoints to avoid hardcoding URLs.
+- Dashboard’s observability pages link to SigNoz for deep dives; thin status surfaces remain in-app.
 
 #### SigNoz UI validation (quick checks)
 
@@ -232,6 +338,7 @@ All core services implement standardized health endpoints and Compose startup ga
   - PgCat healthcheck uses a CMD-SHELL form that checks `/proc/1/cmdline` to avoid image differences (busybox vs bash) and flakiness.
 
 Tips
+
 - Check container health quickly with: `docker inspect --format "{{json .State.Health}}" <container>`
 - Readiness may intentionally be Unhealthy while a dependency is down; liveness should remain Healthy so restarts aren’t masked by dependency outages.
 
@@ -264,6 +371,7 @@ curl -fsS http://127.0.0.1:8080/dashboard/health/ready | jq .
 ```
 
 Notes
+
 - Replace 127.0.0.1:8080 with your PublicBaseUrl host/port in other environments.
 - jq is optional; omit it if not installed.
 
@@ -342,6 +450,7 @@ Notes
 
 Recommended settings
 
+- Populate `.env` with these keys first (VS Code tasks consume them automatically; `Import-TansuDotEnv` aligns manual shells).
 - In production, set `PUBLIC_BASE_URL` to your HTTPS origin in `.env`. The compose file maps this to:
   - Identity Issuer: `${PUBLIC_BASE_URL}/identity/`
   - Dashboard Authority/Metadata: `${PUBLIC_BASE_URL}/identity`
@@ -352,6 +461,7 @@ Recommended settings
     - `${PUBLIC_BASE_URL}/signin-oidc`
     - `${PUBLIC_BASE_URL}/signout-callback-oidc`
 - Set the Dashboard confidential client secret via `DASHBOARD_CLIENT_SECRET` in `.env`.
+- The Dashboard now skips the OIDC UserInfo endpoint and relies on the `id_token` for profile/role claims (`GetClaimsFromUserInfoEndpoint=false`). Ensure Identity emits required claims (subject, name, roles) in tokens; no `/connect/userinfo` handler is provisioned.
 - Ensure reverse proxy forwarding headers are correct at the gateway; Identity relies on them for issuer/redirects.
 
 Scopes (summary)
@@ -371,6 +481,7 @@ Gateway login alias
 Manage custom domains and TLS certificates centrally from the Dashboard or via the Gateway Admin API.
 
 Admin UI (canonical)
+
 - Navigate to `/dashboard/admin/domains`.
 - Actions available:
   - List current domain bindings and certificate metadata.
@@ -379,17 +490,19 @@ Admin UI (canonical)
     - PEM paste (certificate + private key; optional chain PEM for intermediates).
   - Rotate a binding: provide a new PFX or PEM pair. The API returns both the current and previous certificate metadata to verify rotation.
   - Delete a binding.
-- The UI shows non-secret metadata only (subject, issuer, thumbprint, validity window, hostname match). Secrets are never persisted.
-- Chain visibility: the table surfaces chain presence/count and whether the provided chain links to the leaf (linked/validated).
-- Rotate UX: the page requires confirmation and, after success, displays both the new and previous thumbprints and expirations inline.
+  - The UI shows non-secret metadata only (subject, issuer, thumbprint, validity window, hostname match). Secrets are never persisted.
+  - Chain visibility: the table surfaces chain presence/count and whether the provided chain links to the leaf (linked/validated).
+  - Rotate UX: the page requires confirmation and, after success, displays both the new and previous thumbprints and expirations inline.
 
 Admin API endpoints (under `/admin/api`) — Development vs. Production
+
 - Development: endpoints may be open for local testing.
 - Non-Development: protected by the `AdminOnly` policy (Admin role or `admin.full` scope); send a valid access token.
- - CSRF: when enabled at the Gateway, send `X-Tansu-Csrf: <token>` with state‑changing calls (POST/DELETE). The Dashboard attaches this header automatically when configured.
- - Audit: all mutations emit structured audit events (`DomainBind`, `DomainBindPem`, `DomainRotate`, `DomainUnbind`).
+  - CSRF: when enabled at the Gateway, send `X-Tansu-Csrf: <token>` with state‑changing calls (POST/DELETE). The Dashboard attaches this header automatically when configured.
+  - Audit: all mutations emit structured audit events (`DomainBind`, `DomainBindPem`, `DomainRotate`, `DomainUnbind`).
 
 Endpoints
+
 - List bindings
   - GET `/admin/api/domains`
   - 200 OK → `[{ host, subject, issuer, thumbprint, notBefore, notAfter, hasPrivateKey, hostnameMatches, chainProvided, chainValidated, chainCount }]`
@@ -417,15 +530,18 @@ Endpoints
   - 204 No Content when removed; 404 Not Found when missing (idempotent).
 
 Validation and behavior
+
 - Certificates are validated on upload (parsable, has private key, not before/after sanity, hostname match against SAN/CN).
 - Metadata includes a `hostnameMatches` flag to highlight mismatches (e.g., host doesn’t appear in SANs).
 - Only non-secret metadata is stored in-memory to drive UI and auditing; certificate materials are not persisted.
 
 CSRF protection
+
 - When the Gateway is configured with a CSRF secret (`Gateway:Admin:Csrf`), POST endpoints require header `X-Tansu-Csrf`.
 - The Dashboard admin UI provides an optional CSRF field on the Domains page. You can also set `DASHBOARD_CSRF` in the Dashboard environment to attach this header automatically.
 
 Auditing
+
 - Admin actions (bind, rotate, delete) create audit entries in the `Gateway.Admin` channel with non-secret summaries (host, thumbprint, validity window, hostname match).
 - In development without Postgres, audit writes may log transient connection errors; this does not affect the admin operation itself.
 
@@ -439,6 +555,7 @@ Auditing
 Audit logging is enabled in each service via the `Audit` configuration section. Defaults are safe for development; set explicit values in production.
 
 Keys (per service appsettings/environment)
+
 - `Audit:ConnectionString` — PostgreSQL connection string to the audit database (e.g., `Host=postgres;Port=5432;Database=tansu_audit;Username=postgres;Password=...`).
 - `Audit:Table` — Target table name, default `audit_events`.
 - `Audit:ChannelCapacity` — In-memory queue capacity for non-blocking writes, default `10000`.
@@ -447,6 +564,7 @@ Keys (per service appsettings/environment)
 - `Audit:ClientIpHashSalt` — Optional string; when set, client IPs are pseudonymized using HMAC-SHA256 with this salt.
 
 Operational notes
+
 - The background writer creates the `audit_events` table and indexes at startup if missing (dev-friendly). An EF migration will be introduced in a later phase for long-term governance.
 - Metrics are published under the `TansuCloud.Audit` meter: `audit_enqueued`, `audit_dropped`, and `audit_backlog`. Use SigNoz to observe ingestion health and backlog pressure.
 - The enqueue path is non-blocking; if the channel is saturated, events are dropped and `audit_dropped` increments. Size budgets on `Details` ensure inserts remain efficient.
@@ -455,11 +573,13 @@ Operational notes
 ### 7.2 Audit UI, Export, and Retention (Task 31 Phase 3)
 
 Admin Audit page
+
 - Navigate to `/dashboard/admin/audit` to view the central audit trail.
 - Use the filter panel to narrow by time range, tenant, subject, category, action, service, outcome, correlation id, and "Impersonation only".
 - Click a row to see details and correlation identifiers. A quick link to SigNoz is provided for deeper trace/log analysis.
 
 Export (admin-only)
+
 - CSV: `GET /db/api/audit/export/csv?startUtc=...&endUtc=...&tenantId=...&...`
 - JSON: `GET /db/api/audit/export/json?startUtc=...&endUtc=...&tenantId=...&...`
 - Access control: requires an access token with `admin.full` scope.
@@ -467,6 +587,7 @@ Export (admin-only)
 - The export action itself is audited with an allowlisted summary (kind, count, filters).
 
 Retention (Database service)
+
 - Configuration section: `AuditRetention`
   - `Days` (int, default 180): rows older than `now - Days` are removed (or redacted if configured).
   - `LegalHoldTenants` (string[]): tenants exempt from deletion/redaction.
@@ -475,6 +596,7 @@ Retention (Database service)
 - The retention worker emits an audit event with the number of affected rows and the cutoff.
 
 Notes
+
 - All audit Details are already redacted at write-time via the SDK; exports do not include raw PII.
 - In Development, non-admin users can still query their own tenant’s audit events via `/db/api/audit` when providing `X-Tansu-Tenant`.
 
@@ -660,7 +782,10 @@ This platform ships with lightweight health checks and end-to-end (E2E) tests th
 
 ### 13.2 Run E2E tests locally
 
-- The E2E test suite lives under `tests/TansuCloud.E2E.Tests` and targets the gateway at `http://localhost:8080` (default dev bind). If you enabled HTTPS on the gateway, adjust the base URL accordingly.
+- The E2E test suite lives under `tests/TansuCloud.E2E.Tests` and now resolves its base URLs directly from `.env` via the shared `TestUrls` helper. The default dev values are:
+  - `PUBLIC_BASE_URL=http://127.0.0.1:8080` (browser-visible gateway binding)
+  - `GATEWAY_BASE_URL=http://gateway:8080` (in-cluster backchannel; automatically rewritten to `127.0.0.1` when tests run on the host)
+  - Override by exporting either variable before invoking `dotnet test`; the helper honours existing environment variables and only falls back to `.env` when unset.
 - What is covered today:
   - Health endpoints across services.
   - Identity UI login alias via gateway.
@@ -669,6 +794,13 @@ This platform ships with lightweight health checks and end-to-end (E2E) tests th
   - Ensure services are up (see 13.1) and that a local PostgreSQL is reachable at `localhost:5432` (the default dev setup).
   - In VS Code, Run Task… → "Run all E2E tests"; or run tests from your IDE/test explorer.
   - Tip: you can run focused suites via provided VS Code tasks (e.g., "Run health E2E tests").
+- Inspect the effective base URLs from PowerShell with the shared script helper:
+
+  ```powershell
+  pwsh -NoProfile -Command "& { . ./dev/tools/common.ps1; $urls = Resolve-TansuBaseUrls -PreferLoopbackForGateway; $urls }"
+  ```
+
+  The same helper is used by VS Code tasks and CI workflows to keep host-facing URLs aligned with `.env`.
 - Notes:
   - Tests accept development HTTPS certificates; no extra trust steps needed for local runs.
   - The provisioning test obtains an access token using the dashboard client (scopes: `db.write admin.full`) and calls the Database provisioning API twice, asserting idempotency.
@@ -693,12 +825,13 @@ dotnet test .\tests\TansuCloud.E2E.Tests\TansuCloud.E2E.Tests.csproj -c Debug --
 
 Example skip output when not configured:
 
-```
+```text
 Full dispatcher loop publishes to Redis and marks dispatched (E2E) [SKIP]
   REDIS_URL not set; Redis-dependent test skipped
 ```
 
 Rationale:
+
 - Keeps CI fast and deterministic when Redis isn’t provisioned.
 - Avoids false negatives due to missing ephemeral infrastructure.
 - Local developers can opt-in for the extra signal when modifying outbox/Redis code paths.
@@ -857,10 +990,12 @@ Base path via gateway: `/db/api` (tenant required via `X-Tansu-Tenant` header). 
   - Indexing: HNSW indexes are created by migrations when `vector` extension is available; otherwise sequential scan is used.
 
 ETags and conditional requests
+
 - Lists and items return weak ETags. If the ETag you send in `If-None-Match` matches, you’ll get `304 Not Modified`.
 - `PUT`/`DELETE` accept `If-Match`; if it doesn’t match the current ETag, you’ll get `412 Precondition Failed`.
 
 Development diagnostics
+
 - During development and E2E, the Database service adds `X-Tansu-Db` to responses to surface the normalized tenant database name (e.g., `tansu_tenant_e2e_server_ank`). This header is not intended for production.
 
 ### 13.3 CI pipeline (GitHub Actions)

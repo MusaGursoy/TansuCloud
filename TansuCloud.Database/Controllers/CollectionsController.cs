@@ -8,6 +8,7 @@ using System.Text.Json;
 using Microsoft.Extensions.Caching.Hybrid;
 using TansuCloud.Database.Caching;
 using TansuCloud.Observability.Auditing;
+using TansuCloud.Observability.Caching;
 
 namespace TansuCloud.Database.Controllers;
 
@@ -132,19 +133,22 @@ public sealed class CollectionsController(
         }
 
         // Try cache for list page
-    var cacheKey = Key("list", page.ToString(), pageSize.ToString(), etag);
+        var cacheKey = Key("list", page.ToString(), pageSize.ToString(), etag);
         if (_cache is not null)
         {
-            var cached = await _cache.GetOrCreateAsync(
+            var cached = await _cache.GetOrCreateWithMetricsAsync(
                 cacheKey,
                 async token =>
                 {
                     var items = await q.Skip((page - 1) * pageSize)
                         .Take(pageSize)
                         .Select(c => new CollectionDto(c.Id, c.Name, c.CreatedAt))
-                        .ToListAsync(ct);
+                        .ToListAsync(token);
                     return new { total, page, pageSize, items } as object;
-                }
+                },
+                service: "database",
+                operation: "collections.list",
+                cancellationToken: ct
             );
             Response.Headers.ETag = etag;
             return Ok(cached);
@@ -200,7 +204,12 @@ public sealed class CollectionsController(
         }
         catch { }
         await db.SaveChangesAsync(ct);
-    try { _versions?.Increment(Tenant()); } catch { }
+        try
+        {
+            _versions?.Increment(Tenant());
+            HybridCacheMetrics.RecordEviction("database", "collections.create", "tenant_version_increment");
+        }
+        catch { }
         // Audit success
         _audit?.TryEnqueueRedacted(
             new AuditEvent
@@ -226,16 +235,21 @@ public sealed class CollectionsController(
     public async Task<ActionResult<CollectionDto>> Get([FromRoute] Guid id, CancellationToken ct)
     {
         await using var db = await _factory.CreateAsync(HttpContext, ct);
-    var cacheKey = Key("item", id.ToString());
+        var cacheKey = Key("item", id.ToString());
         if (_cache is not null)
         {
-            var cached = await _cache.GetOrCreateAsync(
+            var cached = await _cache.GetOrCreateWithMetricsAsync(
                 cacheKey,
                 async token =>
                 {
-                    var e0 = await db.Collections.AsNoTracking().FirstOrDefaultAsync(x => x.Id == id, ct);
+                    var e0 = await db.Collections
+                        .AsNoTracking()
+                        .FirstOrDefaultAsync(x => x.Id == id, token);
                     return e0 is null ? null : new CollectionDto(e0.Id, e0.Name, e0.CreatedAt);
-                }
+                },
+                service: "database",
+                operation: "collections.get",
+                cancellationToken: ct
             );
             if (cached is null) return NotFound();
             var etag0 = ETagHelper.ComputeWeakETag(cached.id.ToString(), cached.createdAt.ToUnixTimeMilliseconds().ToString());
@@ -326,7 +340,7 @@ public sealed class CollectionsController(
             );
             return StatusCode(StatusCodes.Status412PreconditionFailed);
         }
-    e.Name = input.name;
+        e.Name = input.name;
         try
         {
             var tenant = Request.Headers["X-Tansu-Tenant"].ToString();
@@ -336,8 +350,13 @@ public sealed class CollectionsController(
         }
         catch { }
         await db.SaveChangesAsync(ct);
-    // Invalidate cache for tenant via tag
-    try { _versions?.Increment(Tenant()); } catch { }
+        // Invalidate cache for tenant via tag
+        try
+        {
+            _versions?.Increment(Tenant());
+            HybridCacheMetrics.RecordEviction("database", "collections.update", "tenant_version_increment");
+        }
+        catch { }
         // Audit success
         _audit?.TryEnqueueRedacted(
             new AuditEvent
@@ -389,7 +408,7 @@ public sealed class CollectionsController(
             );
             return StatusCode(StatusCodes.Status412PreconditionFailed);
         }
-    db.Collections.Remove(e);
+        db.Collections.Remove(e);
         try
         {
             var tenant = Request.Headers["X-Tansu-Tenant"].ToString();
@@ -402,6 +421,7 @@ public sealed class CollectionsController(
         try
         {
             _versions?.Increment(Tenant());
+            HybridCacheMetrics.RecordEviction("database", "collections.delete", "tenant_version_increment");
         }
         catch { }
         // Audit success

@@ -12,8 +12,6 @@ jobs:
     env:
       DOTNET_SKIP_FIRST_TIME_EXPERIENCE: 1
       DOTNET_NOLOGO: 1
-      # Base URL used by tests; prefer 127.0.0.1 over localhost to avoid IPv6 quirks
-      GATEWAY_BASE_URL: http://127.0.0.1:8080
       # Enable soak and Redis-dependent tests in nightly runs
       RUN_SOAK: '1'
       SOAK_SESSIONS: '50'
@@ -37,20 +35,22 @@ jobs:
       - name: Install Playwright browsers (Chromium)
         run: npx playwright install --with-deps chromium
 
+      - name: Load base URLs from .env
+        shell: pwsh
+        run: |
+          . ./dev/tools/common.ps1
+          Import-TansuDotEnv -Overwrite | Out-Null
+          $urls = Resolve-TansuBaseUrls -PreferLoopbackForGateway
+          "PUBLIC_BASE_URL=$($urls.PublicBaseUrl)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "GATEWAY_BASE_URL=$($urls.GatewayBaseUrl)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
       - name: Docker Compose up (build)
-        env:
-          POSTGRES_USER: postgres
-          POSTGRES_PASSWORD: postgres
-          PGCAT_ADMIN_USER: admin
-          PGCAT_ADMIN_PASSWORD: admin
-          DASHBOARD_CLIENT_SECRET: dev-secret
-          PUBLIC_BASE_URL: http://127.0.0.1:8080
-        run: docker compose up -d --build
+        run: docker compose --env-file ./.env up -d --build
 
       - name: Wait for readiness - Gateway
         run: |
           for i in {1..60}; do
-            code=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:8080/health/live || true)
+            code=$(curl -s -o /dev/null -w "%{http_code}" "$PUBLIC_BASE_URL/health/live" || true)
             if [ "$code" -lt 500 ] && [ "$code" -ne 000 ]; then echo "Gateway ready ($code)"; break; fi
             sleep 1
           done
@@ -58,7 +58,7 @@ jobs:
       - name: Wait for readiness - Identity
         run: |
           for i in {1..90}; do
-            code=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:8080/identity/health/live || true)
+            code=$(curl -s -o /dev/null -w "%{http_code}" "$PUBLIC_BASE_URL/identity/health/live" || true)
             if [ "$code" -lt 500 ] && [ "$code" -ne 000 ]; then echo "Identity ready ($code)"; break; fi
             sleep 1
           done
@@ -66,7 +66,7 @@ jobs:
       - name: Wait for readiness - Database
         run: |
           for i in {1..90}; do
-            code=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:8080/db/health/live || true)
+            code=$(curl -s -o /dev/null -w "%{http_code}" "$PUBLIC_BASE_URL/db/health/live" || true)
             if [ "$code" -lt 500 ] && [ "$code" -ne 000 ]; then echo "Database ready ($code)"; break; fi
             sleep 1
           done
@@ -80,7 +80,7 @@ jobs:
             -H 'Content-Type: application/json' \
             -H 'X-Provision-Key: letmein' \
             -d "{\"tenantId\":\"$TENANT_ID\",\"displayName\":\"$TENANT_ID\"}" \
-            http://127.0.0.1:8080/db/api/provisioning/tenants || true
+            "$PUBLIC_BASE_URL/db/api/provisioning/tenants" || true
 
       - name: Wait for PgCat pool (nightly tenant)
         run: |
@@ -117,14 +117,14 @@ jobs:
         if: always()
         run: |
           mkdir -p artifacts
-          docker compose logs gateway > artifacts/gateway.log || true
-          docker compose logs identity > artifacts/identity.log || true
-          docker compose logs db > artifacts/db.log || true
-          docker compose logs storage > artifacts/storage.log || true
-          docker compose logs dashboard > artifacts/dashboard.log || true
-          docker compose logs redis > artifacts/redis.log || true
-          docker compose logs pgcat > artifacts/pgcat.log || true
-          docker compose logs pgcat-config > artifacts/pgcat-config.log || true
+          docker compose --env-file ./.env logs gateway > artifacts/gateway.log || true
+          docker compose --env-file ./.env logs identity > artifacts/identity.log || true
+          docker compose --env-file ./.env logs db > artifacts/db.log || true
+          docker compose --env-file ./.env logs storage > artifacts/storage.log || true
+          docker compose --env-file ./.env logs dashboard > artifacts/dashboard.log || true
+          docker compose --env-file ./.env logs redis > artifacts/redis.log || true
+          docker compose --env-file ./.env logs pgcat > artifacts/pgcat.log || true
+          docker compose --env-file ./.env logs pgcat-config > artifacts/pgcat-config.log || true
 
       - name: Upload service logs
         if: always()
@@ -136,4 +136,4 @@ jobs:
 
       - name: Docker Compose down
         if: always()
-        run: docker compose down -v
+        run: docker compose --env-file ./.env down -v

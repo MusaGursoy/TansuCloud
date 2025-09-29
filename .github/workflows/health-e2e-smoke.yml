@@ -52,24 +52,27 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+      - name: Load base URLs from .env
+        shell: pwsh
+        run: |
+          . ./dev/tools/common.ps1
+          Import-TansuDotEnv -Overwrite | Out-Null
+          $urls = Resolve-TansuBaseUrls -PreferLoopbackForGateway
+          "PUBLIC_BASE_URL=$($urls.PublicBaseUrl)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "GATEWAY_BASE_URL=$($urls.GatewayBaseUrl)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
       - name: Docker Compose up (dev)
         env:
-          POSTGRES_USER: postgres
-          POSTGRES_PASSWORD: postgres
-          PGCAT_ADMIN_USER: admin
-          PGCAT_ADMIN_PASSWORD: admin
-          DASHBOARD_CLIENT_SECRET: dev-secret
-          PUBLIC_BASE_URL: http://gateway:8080
           DOCKER_BUILDKIT: '1'
         run: |
-          docker compose -f docker-compose.yml up -d --build
+          docker compose --env-file ./.env -f docker-compose.yml up -d --build
 
       - name: Wait for gateway readiness
         run: |
           for i in {1..60}; do
-            if curl -fsS http://127.0.0.1:8080/health/ready >/dev/null; then
+            if curl -fsS "$PUBLIC_BASE_URL/health/ready" >/dev/null; then
               echo "Gateway is ready"; exit 0; fi; sleep 5; done
-          echo "Gateway did not become ready in time"; docker compose -f docker-compose.yml ps; docker compose -f docker-compose.yml logs --tail=200; exit 1
+          echo "Gateway did not become ready in time"; docker compose --env-file ./.env -f docker-compose.yml ps; docker compose --env-file ./.env -f docker-compose.yml logs --tail=200; exit 1
 
       - name: Run Health E2E tests (smoke)
         run: |
@@ -86,10 +89,10 @@ jobs:
       - name: Dump compose status on failure
         if: failure()
         run: |
-          docker compose -f docker-compose.yml ps
-          docker compose -f docker-compose.yml logs --tail=300
+          docker compose --env-file ./.env -f docker-compose.yml ps
+          docker compose --env-file ./.env -f docker-compose.yml logs --tail=300
 
       - name: Teardown
         if: always()
         run: |
-          docker compose -f docker-compose.yml down -v
+          docker compose --env-file ./.env -f docker-compose.yml down -v

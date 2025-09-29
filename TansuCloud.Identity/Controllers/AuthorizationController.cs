@@ -5,6 +5,7 @@ using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.Extensions.Logging;
 using OpenIddict.Abstractions;
 using OpenIddict.Server.AspNetCore;
 
@@ -15,14 +16,17 @@ public sealed class AuthorizationController : Controller
 {
     private readonly SignInManager<IdentityUser> _signInManager;
     private readonly UserManager<IdentityUser> _userManager;
+    private readonly ILogger<AuthorizationController> _logger;
 
     public AuthorizationController(
         SignInManager<IdentityUser> signInManager,
-        UserManager<IdentityUser> userManager
+        UserManager<IdentityUser> userManager,
+        ILogger<AuthorizationController> logger
     )
     {
         _signInManager = signInManager;
         _userManager = userManager;
+        _logger = logger;
     } // End of Constructor AuthorizationController
 
     [HttpGet]
@@ -46,6 +50,29 @@ public sealed class AuthorizationController : Controller
                 kvp.Value.ToString()
             ));
             var returnUrl = Request.Path + QueryString.Create(queryPairs);
+            try
+            {
+                var queryKeys = string.Join(",", Request.Query.Keys);
+                var hasClientId = Request.Query.ContainsKey(OpenIddictConstants.Parameters.ClientId);
+                _logger.LogInformation(
+                    "Authorize challenge triggered for unauthenticated user. Path={Path} QueryKeys={QueryKeys} HasClientId={HasClientId} ReturnUrlLength={ReturnUrlLength}",
+                    Request.Path,
+                    queryKeys,
+                    hasClientId,
+                    returnUrl?.Length ?? 0
+                );
+                if (!hasClientId)
+                {
+                    _logger.LogWarning(
+                        "Authorize challenge missing client_id parameter. RawQuery={Query}",
+                        Request.QueryString.ToString()
+                    );
+                }
+            }
+            catch
+            {
+                // Logging failures should not block authorization flow
+            }
             return Challenge(
                 new AuthenticationProperties { RedirectUri = returnUrl },
                 IdentityConstants.ApplicationScheme

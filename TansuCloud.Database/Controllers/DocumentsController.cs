@@ -10,6 +10,7 @@ using TansuCloud.Database.Caching;
 using TansuCloud.Database.EF;
 using TansuCloud.Database.Services;
 using TansuCloud.Observability.Auditing;
+using TansuCloud.Observability.Caching;
 
 namespace TansuCloud.Database.Controllers;
 
@@ -189,7 +190,7 @@ public sealed class DocumentsController(
         );
         if (_cache is not null)
         {
-            var cached = await _cache.GetOrCreateAsync(
+            var cached = await _cache.GetOrCreateWithMetricsAsync(
                 cacheKey,
                 async token =>
                 {
@@ -202,7 +203,7 @@ public sealed class DocumentsController(
                             d.Content,
                             d.CreatedAt
                         })
-                        .ToListAsync(ct);
+                        .ToListAsync(token);
                     var dto = list.Select(x => new DocumentDto(
                             x.Id,
                             x.CollectionId,
@@ -217,7 +218,10 @@ public sealed class DocumentsController(
                             pageSize,
                             items = dto
                         } as object;
-                }
+                },
+                service: "database",
+                operation: "documents.list",
+                cancellationToken: ct
             );
             Response.Headers.ETag = etag;
             return Ok(cached);
@@ -256,13 +260,13 @@ public sealed class DocumentsController(
         var cacheKeyItem = Key("item", id.ToString());
         if (_cache is not null)
         {
-            var cached = await _cache.GetOrCreateAsync(
+            var cached = await _cache.GetOrCreateWithMetricsAsync(
                 cacheKeyItem,
                 async token =>
                 {
-                    var e0 = await db
-                        .Documents.AsNoTracking()
-                        .FirstOrDefaultAsync(x => x.Id == id, ct);
+                    var e0 = await db.Documents
+                        .AsNoTracking()
+                        .FirstOrDefaultAsync(x => x.Id == id, token);
                     return e0 is null
                         ? null
                         : new DocumentDto(
@@ -271,7 +275,10 @@ public sealed class DocumentsController(
                             ToElement(e0.Content),
                             e0.CreatedAt
                         );
-                }
+                },
+                service: "database",
+                operation: "documents.get",
+                cancellationToken: ct
             );
             if (cached is null)
                 return NotFound();
@@ -435,6 +442,7 @@ public sealed class DocumentsController(
         try
         {
             _versions?.Increment(Tenant());
+            HybridCacheMetrics.RecordEviction("database", "documents.create", "tenant_version_increment");
         }
         catch { }
         // Audit success
@@ -557,6 +565,7 @@ public sealed class DocumentsController(
         try
         {
             _versions?.Increment(Tenant());
+            HybridCacheMetrics.RecordEviction("database", "documents.update", "tenant_version_increment");
         }
         catch { }
         // Audit success
@@ -657,6 +666,7 @@ public sealed class DocumentsController(
         try
         {
             _versions?.Increment(Tenant());
+            HybridCacheMetrics.RecordEviction("database", "documents.delete", "tenant_version_increment");
         }
         catch { }
         // Audit success

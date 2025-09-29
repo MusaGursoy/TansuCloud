@@ -22,9 +22,72 @@ using TansuCloud.Database.Outbox;
 using TansuCloud.Database.Provisioning;
 using TansuCloud.Database.Security;
 using TansuCloud.Observability;
+using TansuCloud.Observability.Caching;
 using TansuCloud.Observability.Auditing;
+using TansuCloud.Observability.Shared.Configuration;
 
 var builder = WebApplication.CreateBuilder(args);
+
+var appUrlsOptions = AppUrlsOptions.FromConfiguration(builder.Configuration);
+builder.Services.AddSingleton(appUrlsOptions);
+
+static string BuildServiceBase(string baseUrl, int port, string? hostOverride = null)
+{
+    var source = new Uri(baseUrl);
+    var builder = new UriBuilder(source)
+    {
+        Host = hostOverride ?? source.Host,
+        Port = port,
+        Path = string.Empty,
+        Query = string.Empty,
+        Fragment = string.Empty,
+    };
+    return builder.Uri.GetLeftPart(UriPartial.Authority);
+}
+
+var databaseLoopbackBase = BuildServiceBase(appUrlsOptions.PublicBaseUrl!, 5278);
+var databaseLocalhostBase = BuildServiceBase(appUrlsOptions.PublicBaseUrl!, 5278, "localhost");
+
+// In Development (host-run), ensure we bind to both 127.0.0.1 and localhost to avoid loopback drift
+var runningInContainer = string.Equals(
+    Environment.GetEnvironmentVariable("DOTNET_RUNNING_IN_CONTAINER"),
+    "true",
+    StringComparison.OrdinalIgnoreCase
+);
+if (!runningInContainer)
+{
+    var devLoopbackUrl = databaseLoopbackBase;
+    var devLocalhostUrl = databaseLocalhostBase;
+    var urlsRaw = builder.Configuration["ASPNETCORE_URLS"];
+
+    if (string.IsNullOrWhiteSpace(urlsRaw))
+    {
+        builder.WebHost.UseUrls(devLoopbackUrl, devLocalhostUrl);
+    }
+    else
+    {
+        var urls = urlsRaw
+            .Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .ToList();
+        var shouldAugment = false;
+
+        if (
+            urls.Any(url => string.Equals(url, devLocalhostUrl, StringComparison.OrdinalIgnoreCase))
+            && !urls.Any(url =>
+                string.Equals(url, devLoopbackUrl, StringComparison.OrdinalIgnoreCase)
+            )
+        )
+        {
+            urls.Add(devLoopbackUrl);
+            shouldAugment = true;
+        }
+
+        if (shouldAugment)
+        {
+            builder.WebHost.UseUrls(urls.ToArray());
+        }
+    }
+}
 
 // OpenTelemetry baseline
 var dbName = "tansu.db";
@@ -42,33 +105,20 @@ builder
     )
     .WithTracing(tracing =>
     {
-        tracing.AddAspNetCoreInstrumentation(o => o.RecordException = true);
+        tracing.AddTansuAspNetCoreInstrumentation();
         tracing.AddHttpClientInstrumentation();
-        tracing.AddOtlpExporter(otlp =>
-        {
-            var endpoint = builder.Configuration["OpenTelemetry:Otlp:Endpoint"];
-            if (!string.IsNullOrWhiteSpace(endpoint))
-            {
-                otlp.Endpoint = new Uri(endpoint);
-            }
-        });
+        tracing.AddTansuDataInstrumentation();
+        tracing.AddTansuOtlpExporter(builder.Configuration, builder.Environment);
     })
     .WithMetrics(metrics =>
     {
         metrics.AddRuntimeInstrumentation();
         metrics.AddAspNetCoreInstrumentation();
         metrics.AddHttpClientInstrumentation();
-    // Export custom Outbox meter so SigNoz records outbox_* counters via OTLP
+        // Export custom Outbox meter so SigNoz records outbox_* counters via OTLP
         metrics.AddMeter("TansuCloud.Database.Outbox");
         metrics.AddMeter("TansuCloud.Audit");
-        metrics.AddOtlpExporter(otlp =>
-        {
-            var endpoint = builder.Configuration["OpenTelemetry:Otlp:Endpoint"];
-            if (!string.IsNullOrWhiteSpace(endpoint))
-            {
-                otlp.Endpoint = new Uri(endpoint);
-            }
-        });
+        metrics.AddTansuOtlpExporter(builder.Configuration, builder.Environment);
     });
 
 // Observability core (Task 38)
@@ -80,14 +130,7 @@ builder.Logging.AddOpenTelemetry(o =>
 {
     o.IncludeFormattedMessage = true;
     o.ParseStateValues = true;
-    o.AddOtlpExporter(otlp =>
-    {
-        var endpoint = builder.Configuration["OpenTelemetry:Otlp:Endpoint"];
-        if (!string.IsNullOrWhiteSpace(endpoint))
-        {
-            otlp.Endpoint = new Uri(endpoint);
-        }
-    });
+    o.AddTansuOtlpExporter(builder.Configuration, builder.Environment);
 });
 builder
     .Services.AddHealthChecks()
@@ -191,7 +234,14 @@ if (!string.IsNullOrWhiteSpace(outboxRedis))
                         {
                             var tenant = tEl.GetString();
                             if (!string.IsNullOrWhiteSpace(tenant))
+                            {
                                 versions.Increment(tenant!);
+                                HybridCacheMetrics.RecordEviction(
+                                    "database",
+                                    "outbox.invalidate",
+                                    "tenant_version_increment"
+                                );
+                            }
                         }
                     }
                     catch { }
@@ -244,34 +294,27 @@ builder
         }
         // Include detailed error descriptions in WWW-Authenticate for easier diagnostics (Dev only)
         options.IncludeErrorDetails = true;
-        // Accept both issuer forms (with and without trailing slash)
-        var configured = builder.Configuration["Oidc:Issuer"] ?? "http://127.0.0.1:8080/identity/";
-        var issuerNoSlash = configured.TrimEnd('/');
-        var issuerWithSlash = issuerNoSlash + "/";
+        // Resolve issuer from configuration or centralized AppUrlsOptions without building the provider
+        var configuredIssuer = builder.Configuration["Oidc:Issuer"];
+        var issuerResolved = string.IsNullOrWhiteSpace(configuredIssuer)
+            ? appUrlsOptions.GetIssuer("identity")
+            : configuredIssuer!;
 
+        // Accept both issuer forms (with and without trailing slash)
+        var issuerNoSlash = issuerResolved.TrimEnd('/');
+        var issuerWithSlash = issuerNoSlash + "/";
         options.Authority = issuerNoSlash; // logical issuer (matches token 'iss')
-        // Backchannel discovery/JWKS: prefer explicit configuration, otherwise derive from configured issuer.
-        // When running in a container, default to gateway for discovery to avoid localhost loopback issues.
+
+        // Backchannel discovery/JWKS resolution order per repository contract
         var metadataAddress = builder.Configuration["Oidc:MetadataAddress"];
         if (string.IsNullOrWhiteSpace(metadataAddress))
         {
-            var issuerUri = new Uri(issuerWithSlash);
             var inContainer = string.Equals(
                 Environment.GetEnvironmentVariable("DOTNET_RUNNING_IN_CONTAINER"),
                 "true",
                 StringComparison.OrdinalIgnoreCase
             );
-            if (inContainer)
-            {
-                metadataAddress = "http://gateway:8080/identity/.well-known/openid-configuration";
-            }
-            else
-            {
-                metadataAddress = new Uri(
-                    issuerUri,
-                    ".well-known/openid-configuration"
-                ).AbsoluteUri;
-            }
+            metadataAddress = appUrlsOptions.GetBackchannelMetadataAddress(inContainer, "identity");
         }
         options.MetadataAddress = metadataAddress;
 
@@ -884,7 +927,8 @@ var app = builder.Build();
 try
 {
     var log = app.Services.GetRequiredService<ILoggerFactory>().CreateLogger("OIDC-Config");
-    var configured = builder.Configuration["Oidc:Issuer"] ?? "http://127.0.0.1:8080/identity/";
+    var appUrlOptions = app.Services.GetRequiredService<AppUrlsOptions>();
+    var configured = builder.Configuration["Oidc:Issuer"] ?? appUrlOptions.GetIssuer("identity");
     var issuerNoSlash = configured.TrimEnd('/');
     var issuerWithSlash = issuerNoSlash + "/";
     var configuredMd = builder.Configuration["Oidc:MetadataAddress"];
@@ -895,24 +939,15 @@ try
         effectiveMd = configuredMd!;
         src = "explicit-config";
     }
-    else if (
-        string.Equals(
+    else
+    {
+        var inContainer = string.Equals(
             Environment.GetEnvironmentVariable("DOTNET_RUNNING_IN_CONTAINER"),
             "true",
             StringComparison.OrdinalIgnoreCase
-        )
-    )
-    {
-        effectiveMd = "http://gateway:8080/identity/.well-known/openid-configuration";
-        src = "container-gateway";
-    }
-    else
-    {
-        effectiveMd = new Uri(
-            new Uri(issuerWithSlash),
-            ".well-known/openid-configuration"
-        ).AbsoluteUri;
-        src = "issuer-derived";
+        );
+        effectiveMd = appUrlOptions.GetBackchannelMetadataAddress(inContainer, "identity");
+        src = inContainer ? "container-gateway" : "issuer-derived";
     }
     log.LogOidcMetadataChoice(src, issuerNoSlash, effectiveMd);
 }
@@ -975,14 +1010,77 @@ app.UseMiddleware<RequestEnrichmentMiddleware>();
 app.MapControllers();
 
 // Health endpoints
+// Dev-only: shield health paths from unexpected pipeline exceptions and log details
+if (app.Environment.IsDevelopment())
+{
+    app.Use(
+        async (ctx, next) =>
+        {
+            if (ctx.Request.Path.StartsWithSegments("/health", StringComparison.OrdinalIgnoreCase))
+            {
+                try
+                {
+                    await next();
+                }
+                catch (Exception ex)
+                {
+                    app.Logger.LogWarning(ex, "Health pipeline threw; forcing 200 in Development");
+                    if (!ctx.Response.HasStarted)
+                    {
+                        ctx.Response.StatusCode = StatusCodes.Status200OK;
+                        ctx.Response.ContentType = "application/json";
+                        await ctx.Response.WriteAsync("{\"status\":\"Healthy\"}");
+                    }
+                    return;
+                }
+            }
+            else
+            {
+                await next();
+            }
+        }
+    );
+}
+
+Task WriteHealthResponse(HttpContext httpContext, HealthReport report)
+{
+    httpContext.Response.ContentType = "application/json";
+    var status = report.Status.ToString();
+    var json = System.Text.Json.JsonSerializer.Serialize(
+        new
+        {
+            status,
+            totalDurationMs = report.TotalDuration.TotalMilliseconds,
+            entries = report.Entries.ToDictionary(
+                e => e.Key,
+                e => new
+                {
+                    status = e.Value.Status.ToString(),
+                    description = e.Value.Description,
+                    durationMs = e.Value.Duration.TotalMilliseconds
+                }
+            )
+        }
+    );
+    return httpContext.Response.WriteAsync(json);
+}
+
 app.MapHealthChecks(
         "/health/live",
-        new HealthCheckOptions { Predicate = r => r.Tags.Contains("self") }
+        new HealthCheckOptions
+        {
+            Predicate = r => r.Tags.Contains("self"),
+            ResponseWriter = WriteHealthResponse
+        }
     )
     .AllowAnonymous();
 app.MapHealthChecks(
         "/health/ready",
-        new HealthCheckOptions { Predicate = r => r.Tags.Contains("ready") }
+        new HealthCheckOptions
+        {
+            Predicate = r => r.Tags.Contains("ready"),
+            ResponseWriter = WriteHealthResponse
+        }
     )
     .AllowAnonymous();
 

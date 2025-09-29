@@ -1,6 +1,6 @@
 // Tansu.Cloud Public Repository:    https://github.com/MusaGursoy/TansuCloud
-using System.Security.Claims;
 using System.Collections.Generic;
+using System.Security.Claims;
 using OpenIddict.Abstractions;
 using OpenIddict.Server;
 using OpenIddict.Server.AspNetCore;
@@ -49,23 +49,38 @@ public sealed class ClientCredentialsHandler
         if (requestedScopes.Length == 0)
         {
             // Dev-friendly fallback: grant read scopes for db and storage so E2E can proceed.
-            requestedScopes = System.Collections.Immutable.ImmutableArray.CreateRange(new[] { "db.read", "storage.read" });
+            requestedScopes = System.Collections.Immutable.ImmutableArray.CreateRange(
+                new[] { "db.read", "storage.read" }
+            );
         }
         principal.SetScopes(requestedScopes);
 
         // Ensure audiences/resources are set based on requested scopes, so resource servers can enforce aud checks.
-    var scopes = principal.GetScopes();
+        var scopes = principal.GetScopes();
         var audiences = new List<string>(2);
         var resources = new List<string>(2);
-        if (scopes.Contains("db.read") || scopes.Contains("db.write") || scopes.Contains("admin.full"))
+        if (
+            scopes.Contains("db.read")
+            || scopes.Contains("db.write")
+            || scopes.Contains("admin.full")
+        )
         {
             audiences.Add("tansu.db");
             resources.Add("tansu.db");
         }
-        if (scopes.Contains("storage.read") || scopes.Contains("storage.write") || scopes.Contains("admin.full"))
+        if (
+            scopes.Contains("storage.read")
+            || scopes.Contains("storage.write")
+            || scopes.Contains("admin.full")
+        )
         {
             audiences.Add("tansu.storage");
             resources.Add("tansu.storage");
+        }
+        if (scopes.Contains("admin.full"))
+        {
+            audiences.Add("tansu.identity");
+            resources.Add("tansu.identity");
         }
         if (audiences.Count > 0)
         {
@@ -73,9 +88,9 @@ public sealed class ClientCredentialsHandler
             principal.SetResources(resources);
         }
 
-    // Principal prepared for sign-in; TokenClaimsHandler may add more claims, but aud/resources are already set.
-    // Sign in to let OpenIddict generate the access token for the client_credentials flow.
-    context.SignIn(principal);
-    return default;
+        // Principal prepared for sign-in; TokenClaimsHandler may add more claims, but aud/resources are already set.
+        // Sign in to let OpenIddict generate the access token for the client_credentials flow.
+        context.SignIn(principal);
+        return default;
     }
 } // End of Class ClientCredentialsHandler

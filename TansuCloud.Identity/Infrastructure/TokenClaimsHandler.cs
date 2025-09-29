@@ -1,12 +1,17 @@
 // Tansu.Cloud Public Repository:    https://github.com/MusaGursoy/TansuCloud
+using System;
+using System.Collections.Generic;
+using System.Linq;
 using System.Security.Claims;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using OpenIddict.Abstractions;
 using OpenIddict.Server;
 using TansuCloud.Identity.Infrastructure.Security;
+using AspNetClaimTypes = System.Security.Claims.ClaimTypes;
 
 namespace TansuCloud.Identity.Infrastructure;
 
@@ -18,13 +23,15 @@ public sealed class TokenClaimsHandler
     private readonly IConfiguration _config;
     private readonly ISecurityAuditLogger _audit;
     private readonly IOptions<Options.IdentityPolicyOptions> _policy;
+    private readonly ILogger<TokenClaimsHandler>? _logger;
 
     public TokenClaimsHandler(
         IHttpContextAccessor httpContextAccessor,
         UserManager<IdentityUser> userManager,
         IConfiguration config,
         ISecurityAuditLogger audit,
-        IOptions<Options.IdentityPolicyOptions> policy
+        IOptions<Options.IdentityPolicyOptions> policy,
+        ILogger<TokenClaimsHandler>? logger = null
     )
     {
         _httpContextAccessor = httpContextAccessor;
@@ -32,12 +39,19 @@ public sealed class TokenClaimsHandler
         _config = config;
         _audit = audit;
         _policy = policy;
+        _logger = logger;
     }
 
     public async ValueTask HandleAsync(OpenIddictServerEvents.ProcessSignInContext context)
     {
         var principal =
             context.Principal ?? throw new InvalidOperationException("Missing principal");
+
+        _logger?.LogInformation(
+            "ProcessSignIn for {Subject} initial scopes={Scopes}",
+            principal.GetClaim(OpenIddictConstants.Claims.Subject) ?? "unknown",
+            string.Join(' ', principal.GetScopes())
+        );
 
         // Tenant id from gateway header if present
         var tenant = _httpContextAccessor.HttpContext?.Request.Headers["X-Tansu-Tenant"].ToString();
@@ -64,6 +78,12 @@ public sealed class TokenClaimsHandler
             audiences.Add("tansu.storage");
             resources.Add("tansu.storage");
         }
+
+        if (principal.HasScope("admin.full"))
+        {
+            audiences.Add("tansu.identity");
+            resources.Add("tansu.identity");
+        }
         if (audiences.Count > 0)
         {
             principal.SetAudiences(audiences);
@@ -80,9 +100,29 @@ public sealed class TokenClaimsHandler
                 if (user is not null)
                 {
                     var roles = await _userManager.GetRolesAsync(user);
-                    foreach (var role in roles)
+                    if (roles.Count > 0 && principal.Identity is ClaimsIdentity identity)
                     {
-                        principal.SetClaim(OpenIddictConstants.Claims.Role, role);
+                        var openIddictRoleClaims = new HashSet<string>(
+                            identity.FindAll(OpenIddictConstants.Claims.Role).Select(c => c.Value),
+                            StringComparer.OrdinalIgnoreCase
+                        );
+                        var aspNetRoleClaims = new HashSet<string>(
+                            identity.FindAll(AspNetClaimTypes.Role).Select(c => c.Value),
+                            StringComparer.OrdinalIgnoreCase
+                        );
+
+                        foreach (var role in roles)
+                        {
+                            if (openIddictRoleClaims.Add(role))
+                            {
+                                identity.AddClaim(new Claim(OpenIddictConstants.Claims.Role, role));
+                            }
+
+                            if (aspNetRoleClaims.Add(role))
+                            {
+                                identity.AddClaim(new Claim(AspNetClaimTypes.Role, role));
+                            }
+                        }
                     }
                 }
             }
@@ -146,6 +186,14 @@ public sealed class TokenClaimsHandler
                             OpenIddictConstants.Destinations.IdentityToken
                         }
                         : Array.Empty<string>(),
+                AspNetClaimTypes.Role
+                    => principal.HasScope(OpenIddictConstants.Scopes.Roles)
+                        ? new[]
+                        {
+                            OpenIddictConstants.Destinations.AccessToken,
+                            OpenIddictConstants.Destinations.IdentityToken
+                        }
+                        : Array.Empty<string>(),
                 ClaimTypes.TenantId
                     => new[]
                     {
@@ -170,6 +218,12 @@ public sealed class TokenClaimsHandler
 
         // Audit token issuance
         var sub = principal.GetClaim(OpenIddictConstants.Claims.Subject);
+        _logger?.LogInformation(
+            "Token prepared for {Subject} scopes={Scopes} audiences={Audiences}",
+            sub ?? "unknown",
+            string.Join(' ', principal.GetScopes()),
+            string.Join(',', principal.GetAudiences())
+        );
         await _audit.LogAsync("TokenIssued", userId: sub, details: null);
     } // End of Method HandleAsync
 } // End of Class TokenClaimsHandler

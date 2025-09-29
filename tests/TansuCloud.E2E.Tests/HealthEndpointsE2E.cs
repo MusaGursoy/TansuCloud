@@ -12,10 +12,7 @@ public class HealthEndpointsE2E
 {
     private static string GetGatewayBaseUrl()
     {
-        var env = Environment.GetEnvironmentVariable("GATEWAY_BASE_URL");
-        if (!string.IsNullOrWhiteSpace(env)) return env.TrimEnd('/');
-        // Default to repo's dev gateway binding
-        return "http://localhost:8080";
+        return TestUrls.GatewayBaseUrl;
     }
 
     private static HttpClient CreateClient()
@@ -32,19 +29,19 @@ public class HealthEndpointsE2E
     private static async Task WaitForGatewayAsync(HttpClient client, CancellationToken ct)
     {
         var baseUrl = GetGatewayBaseUrl();
-        for (var i = 0; i < 12; i++)
+        while (!ct.IsCancellationRequested)
         {
             try
             {
                 using var ping = await client.GetAsync($"{baseUrl}/", ct);
                 if ((int)ping.StatusCode < 500)
                 {
-                    return;
+                    return; // Gateway is up enough to route health requests
                 }
             }
             catch
             {
-                // swallow and retry
+                // swallow and retry until cancellation
             }
             await Task.Delay(500, ct);
         }
@@ -63,7 +60,7 @@ public class HealthEndpointsE2E
         await WaitForGatewayAsync(client, cts.Token);
 
         var trimmed = basePath.EndsWith('/') ? basePath[..^1] : basePath;
-    var url = $"{GetGatewayBaseUrl()}{trimmed}/health/live";
+        var url = $"{GetGatewayBaseUrl()}{trimmed}/health/live";
         using var res = await client.GetAsync(url, cts.Token);
         Assert.Equal(HttpStatusCode.OK, res.StatusCode);
     }

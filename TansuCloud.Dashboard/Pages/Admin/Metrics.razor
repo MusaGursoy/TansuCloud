@@ -1,12 +1,18 @@
 @page "/admin/metrics"
+@layout TansuCloud.Dashboard.Pages.Admin.AdminLayout
 @attribute [Microsoft.AspNetCore.Authorization.Authorize(Policy = "AdminOnly")]
+@using TansuCloud.Dashboard.Observability.SigNoz
+@implements IDisposable
+
+@inject SigNozMetricsCatalog Catalog
+@inject Microsoft.Extensions.Options.IOptionsMonitor<SigNozOptions> OptionsMonitor
 
 <h1 data-testid="metrics-title">Metrics</h1>
 
 <div class="alert alert-info" role="alert">
     <strong>SigNoz is now the source of truth for observability.</strong>
     <p class="mb-0">Charts and dashboards previously embedded here have been retired. Open SigNoz to explore service metrics, traces, and logs.</p>
-    <a class="btn btn-sm btn-outline-primary mt-2" href="http://127.0.0.1:3301/" target="_blank" rel="noopener">Open SigNoz UI</a>
+    <a class="btn btn-sm btn-outline-primary mt-2" href="@_sigNozBaseUrl" target="_blank" rel="noopener">Open SigNoz UI</a>
 </div>
 
 <section class="mt-4">
@@ -19,6 +25,73 @@
 </section>
 
 <section class="mt-4">
+    <h2 class="h5">Curated SigNoz dashboards</h2>
+    @if (_catalog?.Charts.Count > 0)
+    {
+        <div class="table-responsive">
+            <table class="table align-middle" data-testid="metrics-table">
+                <thead>
+                    <tr>
+                        <th scope="col">Category</th>
+                        <th scope="col">Chart</th>
+                        <th scope="col">Details</th>
+                        <th scope="col" class="text-end">Action</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var chart in _catalog!.Charts)
+                    {
+                        <tr>
+                            <td class="fw-semibold">@chart.Category</td>
+                            <td>@chart.Title</td>
+                            <td class="small text-body-secondary">@chart.Description</td>
+                            <td class="text-end">
+                                <a class="btn btn-sm btn-outline-secondary" href="@chart.SigNozUrl" target="_blank" rel="noopener">
+                                    View in SigNoz
+                                </a>
+                            </td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+    }
+    else
+    {
+        <div class="alert alert-warning" data-testid="metrics-table">
+            No SigNoz dashboards are currently cataloged. Update configuration to expose links here.
+        </div>
+    }
+</section>
+
+<section class="mt-4">
     <h2 class="h5">Need historical data?</h2>
     <p>All historical time-series, logs, and tracing information remain available in SigNoz. Export or share dashboards directly from that UI.</p>
 </section>
+
+@code {
+    private SigNozCatalogResponse? _catalog;
+    private string _sigNozBaseUrl = string.Empty;
+    private IDisposable? _optionsReload;
+
+    protected override void OnInitialized()
+    {
+        Hydrate();
+        _optionsReload = OptionsMonitor.OnChange((_, _) =>
+        {
+            Hydrate();
+            _ = InvokeAsync(StateHasChanged);
+        });
+    } // End of Method OnInitialized
+
+    private void Hydrate()
+    {
+        _catalog = Catalog.CreateCatalog();
+        _sigNozBaseUrl = _catalog.BaseUrl;
+    } // End of Method Hydrate
+
+    public void Dispose()
+    {
+        _optionsReload?.Dispose();
+    } // End of Method Dispose
+}

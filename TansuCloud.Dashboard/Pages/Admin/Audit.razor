@@ -1,5 +1,6 @@
 // Tansu.Cloud Public Repository:    https://github.com/MusaGursoy/TansuCloud
 @page "/admin/audit"
+@layout TansuCloud.Dashboard.Pages.Admin.AdminLayout
 @attribute [Microsoft.AspNetCore.Authorization.Authorize(Policy = "AdminOnly")]
 
 <h3>Audit</h3>
@@ -135,7 +136,7 @@ else
                             <pre class="small" style="white-space:pre-wrap">@detailsText</pre>
                         </div>
                         <div class="mt-2">
-                            <a class="btn btn-sm btn-outline-secondary" href="http://127.0.0.1:3301/" target="_blank" rel="noopener">Open SigNoz</a>
+                            <a class="btn btn-sm btn-outline-secondary" href="@_sigNozBaseUrl" target="_blank" rel="noopener">Open SigNoz</a>
                         </div>
                     </div>
                 </div>
@@ -176,6 +177,11 @@ else
     }
 
     [Inject] private HttpClient Http { get; set; } = default!;
+    [Inject] private TansuCloud.Dashboard.Observability.SigNoz.SigNozMetricsCatalog Catalog { get; set; } = default!;
+    [Inject] private Microsoft.Extensions.Options.IOptionsMonitor<TansuCloud.Dashboard.Observability.SigNoz.SigNozOptions> OptionsMonitor { get; set; } = default!;
+
+    private string _sigNozBaseUrl = string.Empty;
+    private IDisposable? _optionsReload;
 
     protected override async Task OnInitializedAsync()
     {
@@ -299,5 +305,19 @@ else
         public System.Text.Json.JsonDocument? Details { get; set; }
         public string? ImpersonatedBy { get; set; }
         public string? SourceHost { get; set; }
+    }
+    protected override void OnInitialized()
+    {
+        _sigNozBaseUrl = Catalog.CreateCatalog().BaseUrl;
+        _optionsReload = OptionsMonitor.OnChange((_, _) =>
+        {
+            _sigNozBaseUrl = Catalog.CreateCatalog().BaseUrl;
+            _ = InvokeAsync(StateHasChanged);
+        });
+    }
+
+    public void Dispose()
+    {
+        _optionsReload?.Dispose();
     }
 }

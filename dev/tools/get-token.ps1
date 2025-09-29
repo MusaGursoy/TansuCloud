@@ -1,11 +1,26 @@
 param(
     [string]$ClientId = 'tansu-dashboard',
-    [string]$ClientSecret = 'dev-secret',
+    [string]$ClientSecret,
     [string]$Scope = 'storage.write storage.read admin.full',
-    [string]$TokenUrl = 'http://127.0.0.1:8080/identity/connect/token'
+    [string]$TokenUrl
 )
 
 $ErrorActionPreference = 'Stop'
+
+. (Join-Path $PSScriptRoot 'common.ps1')
+Import-TansuDotEnv | Out-Null
+$urls = Resolve-TansuBaseUrls
+
+if (-not $PSBoundParameters.ContainsKey('ClientSecret') -or [string]::IsNullOrWhiteSpace($ClientSecret)) {
+    $ClientSecret = [Environment]::GetEnvironmentVariable('DASHBOARD_CLIENT_SECRET', [EnvironmentVariableTarget]::Process)
+    if ([string]::IsNullOrWhiteSpace($ClientSecret)) {
+        $ClientSecret = 'dev-secret'
+    }
+}
+
+if (-not $PSBoundParameters.ContainsKey('TokenUrl') -or [string]::IsNullOrWhiteSpace($TokenUrl)) {
+    $TokenUrl = "$($urls.PublicBaseUrl)/identity/connect/token"
+}
 
 Write-Host "Requesting token from $TokenUrl for client '$ClientId' with scope '$Scope'..."
 

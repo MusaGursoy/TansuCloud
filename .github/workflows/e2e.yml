@@ -38,22 +38,24 @@ jobs:
       - name: Build
         run: dotnet build ./TansuCloud.sln -c Debug --no-restore
 
-      - name: Compose up (infra + apps)
-        env:
-          POSTGRES_USER: postgres
-          POSTGRES_PASSWORD: postgres
-          PGCAT_ADMIN_USER: admin
-          PGCAT_ADMIN_PASSWORD: admin
-          DASHBOARD_CLIENT_SECRET: dev-secret
-          PUBLIC_BASE_URL: http://127.0.0.1:8080
+      - name: Load base URLs from .env
+        shell: pwsh
         run: |
-          docker compose -f ./docker-compose.yml up -d --build
+          . ./dev/tools/common.ps1
+          Import-TansuDotEnv -Overwrite | Out-Null
+          $urls = Resolve-TansuBaseUrls -PreferLoopbackForGateway
+          "PUBLIC_BASE_URL=$($urls.PublicBaseUrl)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "GATEWAY_BASE_URL=$($urls.GatewayBaseUrl)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Compose up (infra + apps)
+        run: |
+          docker compose --env-file ./.env -f ./docker-compose.yml up -d --build
 
       - name: Wait for Identity discovery
         run: |
           set -e
           for i in {1..60}; do
-            if curl -fsS http://127.0.0.1:8080/identity/.well-known/openid-configuration > /dev/null; then
+            if curl -fsS "$PUBLIC_BASE_URL/identity/.well-known/openid-configuration" > /dev/null; then
               echo "Identity discovery is ready"; exit 0;
             fi
             echo "Waiting for identity discovery... ($i)"; sleep 2;
@@ -61,14 +63,10 @@ jobs:
           echo "Identity discovery did not become ready in time" >&2; exit 1
 
       - name: Run alias test
-        env:
-          PUBLIC_BASE_URL: http://127.0.0.1:8080
         run: |
           dotnet test ./tests/TansuCloud.E2E.Tests/TansuCloud.E2E.Tests.csproj -c Debug --filter "FullyQualifiedName~TansuCloud.E2E.Tests.GatewayAliasTests.Gateway_LoginAlias_Returns_LoginForm" --logger "trx;LogFileName=alias.trx"
 
       - name: Run login test
-        env:
-          PUBLIC_BASE_URL: http://127.0.0.1:8080
         run: |
           dotnet test ./tests/TansuCloud.E2E.Tests/TansuCloud.E2E.Tests.csproj -c Debug --filter "FullyQualifiedName~TansuCloud.E2E.Tests.DashboardLoginE2E.Dashboard_Login_And_Circuit_Works" --logger "trx;LogFileName=login.trx"
 

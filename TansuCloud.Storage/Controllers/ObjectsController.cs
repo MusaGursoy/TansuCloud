@@ -4,6 +4,7 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Caching.Hybrid;
 using Microsoft.Net.Http.Headers;
 using TansuCloud.Observability.Auditing;
+using TansuCloud.Observability.Caching;
 using TansuCloud.Storage.Services;
 
 namespace TansuCloud.Storage.Controllers;
@@ -43,22 +44,11 @@ public sealed class ObjectsController(
         var listKey = CacheKey("list", bucket, prefix ?? string.Empty);
         if (cache is not null)
         {
-            StorageMetrics.CacheAttempts.Add(
-                1,
-                new System.Collections.Generic.KeyValuePair<string, object?>("op", "list")
-            );
-            var miss = false;
-            var cached = await cache.GetOrCreateAsync(
+            var cached = await cache.GetOrCreateWithMetricsAsync(
                 listKey,
                 async token =>
                 {
-                    // miss path (factory executed)
-                    miss = true;
-                    StorageMetrics.CacheMisses.Add(
-                        1,
-                        new System.Collections.Generic.KeyValuePair<string, object?>("op", "list")
-                    );
-                    var list = await storage.ListObjectsAsync(bucket, prefix, ct);
+                    var list = await storage.ListObjectsAsync(bucket, prefix, token);
                     var dto = list.Select(o => new
                         {
                             o.Key,
@@ -70,13 +60,11 @@ public sealed class ObjectsController(
                         .ToArray();
                     return dto as object;
                 },
-                new HybridCacheEntryOptions { Expiration = TimeSpan.FromSeconds(30) }
+                service: "storage",
+                operation: "objects.list",
+                options: new HybridCacheEntryOptions { Expiration = TimeSpan.FromSeconds(30) },
+                cancellationToken: ct
             );
-            if (!miss)
-                StorageMetrics.CacheHits.Add(
-                    1,
-                    new System.Collections.Generic.KeyValuePair<string, object?>("op", "list")
-                );
             return Ok(cached);
         }
 
@@ -215,6 +203,7 @@ public sealed class ObjectsController(
         try
         {
             _ = versions.Increment(tenant.TenantId);
+            HybridCacheMetrics.RecordEviction("storage", "objects.put", "tenant_version_increment");
         }
         catch { }
         // Audit (Storage:ObjectPut)
@@ -252,31 +241,16 @@ public sealed class ObjectsController(
         var headKey = CacheKey("head", bucket, key);
         if (cache is not null)
         {
-            StorageMetrics.CacheAttempts.Add(
-                1,
-                new System.Collections.Generic.KeyValuePair<string, object?>("op", "head")
-            );
-            var miss = false;
-            var cached = await cache.GetOrCreateAsync(
+            var cached = await cache.GetOrCreateWithMetricsAsync(
                 headKey,
-                async token =>
-                {
-                    miss = true;
-                    StorageMetrics.CacheMisses.Add(
-                        1,
-                        new System.Collections.Generic.KeyValuePair<string, object?>("op", "head")
-                    );
-                    return await storage.HeadObjectAsync(bucket, key, ct);
-                },
-                new HybridCacheEntryOptions { Expiration = TimeSpan.FromSeconds(60) }
+                async token => await storage.HeadObjectAsync(bucket, key, token),
+                service: "storage",
+                operation: "objects.head",
+                options: new HybridCacheEntryOptions { Expiration = TimeSpan.FromSeconds(60) },
+                cancellationToken: ct
             );
             if (cached is null)
                 return NotFound();
-            if (!miss)
-                StorageMetrics.CacheHits.Add(
-                    1,
-                    new System.Collections.Generic.KeyValuePair<string, object?>("op", "head")
-                );
             Response.Headers.ETag = cached.ETag;
             Response.Headers["Last-Modified"] = cached.LastModified.ToString("R");
             Response.Headers["Content-Length"] = cached.Length.ToString();
@@ -469,6 +443,7 @@ public sealed class ObjectsController(
             try
             {
                 _ = versions.Increment(tenant.TenantId);
+                HybridCacheMetrics.RecordEviction("storage", "objects.delete", "tenant_version_increment");
             }
             catch { }
             // Audit (Storage:ObjectDelete)

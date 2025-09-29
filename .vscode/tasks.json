@@ -36,14 +36,24 @@
 		{
 			"label": "dev: up",
 			"type": "shell",
-			"command": "$ErrorActionPreference='Stop'; dotnet build .\\TansuCloud.sln -c Debug; Start-Job -Name tansu-identity -ScriptBlock { dotnet run --no-build --project .\\TansuCloud.Identity\\TansuCloud.Identity.csproj -c Debug } | Out-Null; Start-Job -Name tansu-dashboard -ScriptBlock { dotnet run --no-build --project .\\TansuCloud.Dashboard\\TansuCloud.Dashboard.csproj -c Debug } | Out-Null; Start-Job -Name tansu-database -ScriptBlock { dotnet run --no-build --project .\\TansuCloud.Database\\TansuCloud.Database.csproj -c Debug } | Out-Null; Start-Job -Name tansu-storage -ScriptBlock { dotnet run --no-build --project .\\TansuCloud.Storage\\TansuCloud.Storage.csproj -c Debug } | Out-Null; Start-Sleep -Seconds 15; dotnet run --no-build --project .\\TansuCloud.Gateway\\TansuCloud.Gateway.csproj -c Debug",
+			"command": "pwsh",
+			"args": [
+				"-NoProfile",
+				"-Command",
+				"$ErrorActionPreference='Stop'; . \"${workspaceFolder}/dev/tools/common.ps1\"; Import-TansuDotEnv | Out-Null; dotnet build .\\TansuCloud.sln -c Debug; Start-Job -Name tansu-identity -ScriptBlock { dotnet run --no-build --project .\\TansuCloud.Identity\\TansuCloud.Identity.csproj -c Debug } | Out-Null; Start-Job -Name tansu-dashboard -ScriptBlock { dotnet run --no-build --project .\\TansuCloud.Dashboard\\TansuCloud.Dashboard.csproj -c Debug } | Out-Null; Start-Job -Name tansu-database -ScriptBlock { dotnet run --no-build --project .\\TansuCloud.Database\\TansuCloud.Database.csproj -c Debug } | Out-Null; Start-Job -Name tansu-storage -ScriptBlock { dotnet run --no-build --project .\\TansuCloud.Storage\\TansuCloud.Storage.csproj -c Debug } | Out-Null; Start-Sleep -Seconds 15; dotnet run --no-build --project .\\TansuCloud.Gateway\\TansuCloud.Gateway.csproj -c Debug"
+			],
 			"group": "build",
 			"isBackground": true
 		},
 		{
 			"label": "dev: down",
 			"type": "shell",
-			"command": "$jobs = Get-Job | Where-Object { $_.Name -like 'tansu-*' }; if ($jobs) { $jobs | Stop-Job -Force; $jobs | Remove-Job }; Get-Process -Name 'TansuCloud.Gateway' -ErrorAction SilentlyContinue | Stop-Process -Force",
+			"command": "pwsh",
+			"args": [
+				"-NoProfile",
+				"-Command",
+				"$ErrorActionPreference='Stop'; $jobs = Get-Job | Where-Object { $_.Name -like 'tansu-*' }; if ($jobs) { $jobs | Stop-Job -Force; $jobs | Remove-Job }; Get-Process -Name 'TansuCloud.Gateway' -ErrorAction SilentlyContinue | Stop-Process -Force"
+			],
 			"group": "build"
 		},
 		{
@@ -53,7 +63,7 @@
 			"args": [
 				"-NoProfile",
 				"-Command",
-				"$ErrorActionPreference=\"Stop\"; $u=$env:POSTGRES_USER; $p=$env:POSTGRES_PASSWORD; if (-not $u -or -not $p) { throw 'Set POSTGRES_USER and POSTGRES_PASSWORD in your environment or .env' }; $cmd=\"PGPASSWORD=$p psql -h tansu-pgcat -p 6432 -U $u -d postgres -c 'SHOW DATABASES;'\"; docker exec tansu-postgres bash -lc $cmd"
+				"$ErrorActionPreference='Stop'; . \"${workspaceFolder}/dev/tools/common.ps1\"; Import-TansuDotEnv | Out-Null; $u=$env:POSTGRES_USER; $p=$env:POSTGRES_PASSWORD; if (-not $u -or -not $p) { throw 'Set POSTGRES_USER and POSTGRES_PASSWORD in your environment or .env'; }; $cmd=\"PGPASSWORD=$p psql -h tansu-pgcat -p 6432 -U $u -d postgres -c 'SHOW DATABASES;'\"; docker exec tansu-postgres bash -lc $cmd"
 			]
 		},
 		{
@@ -63,7 +73,7 @@
 			"args": [
 				"-NoProfile",
 				"-Command",
-				"Invoke-RestMethod -Method Post -Uri 'http://localhost/db/api/provisioning/tenants' -Headers @{ 'X-Provision-Key'='letmein'; 'Content-Type'='application/json' } -Body '{\"tenantId\":\"acme-dev\",\"displayName\":\"Acme Dev\"}' | ConvertTo-Json -Depth 5"
+				"$ErrorActionPreference='Stop'; . \"${workspaceFolder}/dev/tools/common.ps1\"; Import-TansuDotEnv | Out-Null; $urls = Resolve-TansuBaseUrls -PreferLoopbackForGateway; $gateway = $urls.GatewayBaseUrl; if ([string]::IsNullOrWhiteSpace($gateway)) { throw 'GATEWAY_BASE_URL not set. Update .env.' }; $uri = $gateway.TrimEnd('/') + '/db/api/provisioning/tenants'; Invoke-RestMethod -Method Post -Uri $uri -Headers @{ 'X-Provision-Key'='letmein'; 'Content-Type'='application/json' } -Body '{\"tenantId\":\"acme-dev\",\"displayName\":\"Acme Dev\"}' | ConvertTo-Json -Depth 5"
 			]
 		},
 		{
@@ -73,7 +83,7 @@
 			"args": [
 				"-NoProfile",
 				"-Command",
-				"$ErrorActionPreference=\"Stop\"; docker compose up -d --build"
+				"$ErrorActionPreference='Stop'; . \"${workspaceFolder}/dev/tools/common.ps1\"; Import-TansuDotEnv | Out-Null; docker compose --env-file \"${workspaceFolder}/.env\" up -d --build"
 			],
 			"group": "build"
 		},
@@ -84,7 +94,7 @@
 			"args": [
 				"-NoProfile",
 				"-Command",
-				"docker compose down -v"
+				"$ErrorActionPreference='Stop'; . \"${workspaceFolder}/dev/tools/common.ps1\"; Import-TansuDotEnv | Out-Null; docker compose --env-file \"${workspaceFolder}/.env\" down -v"
 			],
 			"group": "build"
 		},
@@ -95,7 +105,7 @@
 			"args": [
 				"-NoProfile",
 				"-Command",
-				"docker compose logs -f gateway"
+				"$ErrorActionPreference='Stop'; . \"${workspaceFolder}/dev/tools/common.ps1\"; Import-TansuDotEnv | Out-Null; docker compose --env-file \"${workspaceFolder}/.env\" logs -f gateway"
 			],
 			"isBackground": true
 		},
@@ -106,7 +116,7 @@
 			"args": [
 				"-NoProfile",
 				"-Command",
-				"$ErrorActionPreference=\"Stop\"; $env:POSTGRES_USER='postgres'; $env:POSTGRES_PASSWORD='postgres'; $env:PGCAT_ADMIN_USER='admin'; $env:PGCAT_ADMIN_PASSWORD='admin'; $env:DASHBOARD_CLIENT_SECRET='dev-secret'; $env:PUBLIC_BASE_URL='http://gateway:8080'; docker compose -f .\\docker-compose.prod.yml up -d --build"
+				"$ErrorActionPreference=\"Stop\"; . \"${workspaceFolder}/dev/tools/common.ps1\"; Import-TansuDotEnv | Out-Null; docker compose -f .\\docker-compose.prod.yml up -d --build"
 			],
 			"group": "build"
 		},
@@ -117,7 +127,7 @@
 			"args": [
 				"-NoProfile",
 				"-Command",
-				"$ErrorActionPreference=\"Stop\"; $env:POSTGRES_USER='postgres'; $env:POSTGRES_PASSWORD='postgres'; $env:PGCAT_ADMIN_USER='admin'; $env:PGCAT_ADMIN_PASSWORD='admin'; $env:DASHBOARD_CLIENT_SECRET='dev-secret'; $env:PUBLIC_BASE_URL='http://gateway:8080'; $env:OTLP_ENDPOINT='http://signoz-otel-collector:4317'; docker compose -f .\\docker-compose.prod.yml --profile observability up -d --build"
+				"$ErrorActionPreference=\"Stop\"; . \"${workspaceFolder}/dev/tools/common.ps1\"; Import-TansuDotEnv | Out-Null; docker compose -f .\\docker-compose.prod.yml --profile observability up -d --build"
 			],
 			"group": "build"
 		},
@@ -128,7 +138,7 @@
 			"args": [
 				"-NoProfile",
 				"-Command",
-				"$ErrorActionPreference=\"Stop\"; docker compose -f .\\docker-compose.prod.yml down -v"
+				"$ErrorActionPreference='Stop'; . \"${workspaceFolder}/dev/tools/common.ps1\"; Import-TansuDotEnv | Out-Null; docker compose --env-file \"${workspaceFolder}/.env\" -f .\\docker-compose.prod.yml down -v"
 			],
 			"group": "build"
 		},
@@ -146,14 +156,24 @@
 		{
 			"label": "compose: up infra (pg + redis + pgcat)",
 			"type": "shell",
-			"command": "docker compose up -d postgres redis pgcat pgcat-config",
+			"command": "pwsh",
+			"args": [
+				"-NoProfile",
+				"-Command",
+				"$ErrorActionPreference='Stop'; . \"${workspaceFolder}/dev/tools/common.ps1\"; Import-TansuDotEnv | Out-Null; docker compose --env-file \"${workspaceFolder}/.env\" up -d postgres redis pgcat pgcat-config"
+			],
 			"isBackground": false,
 			"group": "build"
 		},
 		{
 			"label": "compose: up apps",
 			"type": "shell",
-			"command": "docker compose up -d identity dashboard db storage gateway",
+			"command": "pwsh",
+			"args": [
+				"-NoProfile",
+				"-Command",
+				"$ErrorActionPreference='Stop'; . \"${workspaceFolder}/dev/tools/common.ps1\"; Import-TansuDotEnv | Out-Null; docker compose --env-file \"${workspaceFolder}/.env\" up -d identity dashboard db storage gateway"
+			],
 			"isBackground": false,
 			"group": "build"
 		},
@@ -169,7 +189,43 @@
 			"args": [
 				"-NoProfile",
 				"-Command",
-				"{ $ErrorActionPreference=\"Stop\"; $env:POSTGRES_USER='postgres'; $env:POSTGRES_PASSWORD='postgres'; $env:PGCAT_ADMIN_USER='admin'; $env:PGCAT_ADMIN_PASSWORD='admin'; $env:DASHBOARD_CLIENT_SECRET='dev-secret'; $env:PUBLIC_BASE_URL='http://gateway:8080'; docker compose -f .\\docker-compose.yml config | Out-String -Width 4096 }"
+				"{ $ErrorActionPreference=\"Stop\"; . \"${workspaceFolder}/dev/tools/common.ps1\"; Import-TansuDotEnv | Out-Null; docker compose -f .\\docker-compose.yml config | Out-String -Width 4096 }"
+			]
+		},
+		{
+			"label": "compose: validate prod config",
+			"type": "shell",
+			"command": "pwsh",
+			"args": [
+				"-NoProfile",
+				"-Command",
+				"{ $ErrorActionPreference=\"Stop\"; . \"${workspaceFolder}/dev/tools/common.ps1\"; Import-TansuDotEnv | Out-Null; docker compose -f .\\docker-compose.prod.yml config | Out-String -Width 4096 }"
+			]
+		},
+		{
+			"label": "Loopback guard test",
+			"type": "shell",
+			"command": "pwsh",
+			"args": [
+				"-NoProfile",
+				"-Command",
+				"$ErrorActionPreference='Stop'; dotnet test .\\tests\\TansuCloud.E2E.Tests\\TansuCloud.E2E.Tests.csproj -c Debug --filter FullyQualifiedName~TansuCloud.E2E.Tests.LoopbackLiteralGuardTests.Loopback_literals_are_not_reintroduced_outside_allowlist"
+			]
+		},
+		{
+			"label": "Task 40 verification",
+			"type": "shell",
+			"dependsOn": [
+				"Loopback guard test",
+				"compose: validate config",
+				"compose: validate prod config"
+			],
+			"dependsOrder": "sequence",
+			"command": "pwsh",
+			"args": [
+				"-NoProfile",
+				"-Command",
+				"$ErrorActionPreference='Stop'; . \"${workspaceFolder}/dev/tools/common.ps1\"; Import-TansuDotEnv | Out-Null; Write-Host 'Task 40 verification completed.'"
 			]
 		},
 		{
@@ -212,22 +268,16 @@
 		{
 			"label": "Run dashboard WS soak (50x, 3min)",
 			"type": "shell",
-			"command": "dotnet test .\\tests\\TansuCloud.E2E.Tests\\TansuCloud.E2E.Tests.csproj -c Debug --filter FullyQualifiedName~TansuCloud.E2E.Tests.DashboardWebsocketSoak.Soak_50_Sessions_3_Minutes",
-			"options": {
-				"env": {
-					"RUN_SOAK": "1",
-					"SOAK_SESSIONS": "50",
-					"SOAK_MINUTES": "3",
-					"GATEWAY_BASE_URL": "http://localhost:8080"
-				}
-			},
-			"group": "build"
-		},
-		{
-			"label": "build-sln",
-			"type": "shell",
-			"command": "dotnet build .\\TansuCloud.sln -c Debug",
-			"isBackground": false,
+			"command": "pwsh",
+			"args": [
+				"-NoProfile",
+				"-File",
+				"${workspaceFolder}/dev/tools/run-ws-soak.ps1",
+				"-Sessions",
+				"50",
+				"-Minutes",
+				"3"
+			],
 			"group": "build"
 		},
 		{
@@ -327,13 +377,33 @@
 			"group": "build"
 		},
 		{
+			"label": "SigNoz: governance (dry-run)",
+			"type": "shell",
+			"command": "pwsh",
+			"args": [
+				"-NoProfile",
+				"-Command",
+				"$ErrorActionPreference='Stop'; . '${workspaceFolder}/dev/tools/common.ps1'; Import-TansuDotEnv | Out-Null; pwsh -NoProfile -File '${workspaceFolder}/dev/tools/signoz-apply-governance.ps1' -DefaultsPath '${workspaceFolder}/SigNoz/governance.defaults.json'"
+			]
+		},
+		{
+			"label": "SigNoz: governance (apply)",
+			"type": "shell",
+			"command": "pwsh",
+			"args": [
+				"-NoProfile",
+				"-Command",
+				"$ErrorActionPreference='Stop'; . '${workspaceFolder}/dev/tools/common.ps1'; Import-TansuDotEnv | Out-Null; pwsh -NoProfile -File '${workspaceFolder}/dev/tools/signoz-apply-governance.ps1' -DefaultsPath '${workspaceFolder}/SigNoz/governance.defaults.json' -Apply"
+			]
+		},
+		{
 			"label": "temp: validate prod compose",
 			"type": "shell",
 			"command": "pwsh",
 			"args": [
 				"-NoProfile",
 				"-Command",
-				"$ErrorActionPreference=\"Stop\"; $env:POSTGRES_USER='postgres'; $env:POSTGRES_PASSWORD='postgres'; $env:PGCAT_ADMIN_USER='admin'; $env:PGCAT_ADMIN_PASSWORD='admin'; $env:DASHBOARD_CLIENT_SECRET='dev-secret'; $env:PUBLIC_BASE_URL='http://gateway:8080'; docker compose -f .\\docker-compose.prod.yml config | Out-String -Width 4096"
+				"$ErrorActionPreference=\"Stop\"; . \"${workspaceFolder}/dev/tools/common.ps1\"; Import-TansuDotEnv | Out-Null; docker compose -f .\\docker-compose.prod.yml config | Out-String -Width 4096"
 			]
 		},
 		{
@@ -343,7 +413,7 @@
 			"args": [
 				"-NoProfile",
 				"-Command",
-				"$ErrorActionPreference=\"Stop\"; $env:POSTGRES_USER='postgres'; $env:POSTGRES_PASSWORD='postgres'; $env:PGCAT_ADMIN_USER='admin'; $env:PGCAT_ADMIN_PASSWORD='admin'; $env:DASHBOARD_CLIENT_SECRET='dev-secret'; $env:PUBLIC_BASE_URL='http://gateway:8080'; $env:OTLP_ENDPOINT='http://signoz-otel-collector:4317'; docker compose -f .\\docker-compose.prod.yml config | Out-String -Width 4096"
+				"$ErrorActionPreference=\"Stop\"; . \"${workspaceFolder}/dev/tools/common.ps1\"; Import-TansuDotEnv | Out-Null; docker compose -f .\\docker-compose.prod.yml config | Out-String -Width 4096"
 			]
 		},
 		{
@@ -353,7 +423,7 @@
 			"args": [
 				"-NoProfile",
 				"-Command",
-				"$ErrorActionPreference=\"Stop\"; $env:POSTGRES_USER='postgres'; $env:POSTGRES_PASSWORD='postgres'; $env:PGCAT_ADMIN_USER='admin'; $env:PGCAT_ADMIN_PASSWORD='admin'; $env:DASHBOARD_CLIENT_SECRET='dev-secret'; $env:PUBLIC_BASE_URL='http://gateway:8080'; $env:OTLP_ENDPOINT='http://signoz-otel-collector:4317'; docker compose -f .\\docker-compose.prod.yml config | Out-String -Width 4096"
+				"$ErrorActionPreference=\"Stop\"; . \"${workspaceFolder}/dev/tools/common.ps1\"; Import-TansuDotEnv | Out-Null; docker compose -f .\\docker-compose.prod.yml config | Out-String -Width 4096"
 			]
 		},
 		{
@@ -389,6 +459,18 @@
 			"type": "shell",
 			"command": "dotnet build .\\TansuCloud.sln -c Debug",
 			"isBackground": false,
+			"group": "build"
+		}
+		,
+		{
+			"label": "compose: up + wait + health E2E",
+			"type": "shell",
+			"command": "pwsh",
+			"args": [
+				"-NoProfile",
+				"-File",
+				"${workspaceFolder}/dev/tools/compose-run-health-e2e.ps1"
+			],
 			"group": "build"
 		}
 	]

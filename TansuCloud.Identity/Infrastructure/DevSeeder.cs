@@ -1,6 +1,10 @@
 // Tansu.Cloud Public Repository:    https://github.com/MusaGursoy/TansuCloud
 using Microsoft.AspNetCore.Identity;
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
 using OpenIddict.Abstractions;
+using TansuCloud.Observability.Shared.Configuration;
 
 namespace TansuCloud.Identity.Infrastructure;
 
@@ -15,6 +19,16 @@ public static class DevSeeder
         var roleMgr = services.GetRequiredService<RoleManager<IdentityRole>>();
         var userMgr = services.GetRequiredService<UserManager<IdentityUser>>();
         var appMgr = services.GetRequiredService<IOpenIddictApplicationManager>();
+        var appUrls = services.GetRequiredService<AppUrlsOptions>();
+
+        static string CombineUrl(string baseUrl, string relative)
+        {
+            var normalizedBase = baseUrl.EndsWith('/') ? baseUrl : baseUrl + "/";
+            return new Uri(new Uri(normalizedBase), relative.TrimStart('/')).ToString();
+        } // End of Method CombineUrl
+
+        var publicBase = appUrls.PublicBaseUrl
+            ?? throw new InvalidOperationException("PUBLIC_BASE_URL must be configured.");
 
         foreach (var role in new[] { "Admin", "User" })
         {
@@ -46,15 +60,16 @@ public static class DevSeeder
         var dashboardClientId = config["Oidc:Dashboard:ClientId"] ?? "tansu-dashboard";
         var dashboardClientSecret = config["Oidc:Dashboard:ClientSecret"] ?? "dev-secret";
         var dashboardRedirectUri =
-            config["Oidc:Dashboard:RedirectUri"] ?? "http://127.0.0.1:8080/dashboard/signin-oidc";
+            config["Oidc:Dashboard:RedirectUri"]
+            ?? CombineUrl(publicBase, "dashboard/signin-oidc");
         var dashboardRedirectUriRoot =
-            config["Oidc:Dashboard:RedirectUriRoot"] ?? "http://127.0.0.1:8080/signin-oidc";
+            config["Oidc:Dashboard:RedirectUriRoot"] ?? CombineUrl(publicBase, "signin-oidc");
         var dashboardPostLogoutUri =
             config["Oidc:Dashboard:PostLogoutRedirectUri"]
-            ?? "http://127.0.0.1:8080/dashboard/signout-callback-oidc";
+            ?? CombineUrl(publicBase, "dashboard/signout-callback-oidc");
         var dashboardPostLogoutUriRoot =
             config["Oidc:Dashboard:PostLogoutRedirectUriRoot"]
-            ?? "http://127.0.0.1:8080/signout-callback-oidc";
+            ?? CombineUrl(publicBase, "signout-callback-oidc");
 
         var existing = await appMgr.FindByClientIdAsync(dashboardClientId);
         var enableClientCreds = services.GetRequiredService<IHostEnvironment>().IsDevelopment();
@@ -84,7 +99,10 @@ public static class DevSeeder
                     OpenIddictConstants.Permissions.Prefixes.Scope + "db.write",
                     OpenIddictConstants.Permissions.Prefixes.Scope + "storage.read",
                     OpenIddictConstants.Permissions.Prefixes.Scope + "storage.write",
-                    OpenIddictConstants.Permissions.Prefixes.Scope + "admin.full"
+                    OpenIddictConstants.Permissions.Prefixes.Scope + "admin.full",
+                    OpenIddictConstants.Permissions.Prefixes.Resource + "tansu.db",
+                    OpenIddictConstants.Permissions.Prefixes.Resource + "tansu.storage",
+                    OpenIddictConstants.Permissions.Prefixes.Resource + "tansu.identity"
                 },
                 Requirements = { OpenIddictConstants.Requirements.Features.ProofKeyForCodeExchange }
             };
@@ -148,6 +166,15 @@ public static class DevSeeder
             );
             descriptor.Permissions.Add(
                 OpenIddictConstants.Permissions.Prefixes.Scope + "admin.full"
+            );
+            descriptor.Permissions.Add(
+                OpenIddictConstants.Permissions.Prefixes.Resource + "tansu.db"
+            );
+            descriptor.Permissions.Add(
+                OpenIddictConstants.Permissions.Prefixes.Resource + "tansu.storage"
+            );
+            descriptor.Permissions.Add(
+                OpenIddictConstants.Permissions.Prefixes.Resource + "tansu.identity"
             );
 
             await appMgr.UpdateAsync(existing, descriptor);

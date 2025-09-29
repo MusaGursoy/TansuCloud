@@ -1,11 +1,19 @@
 param(
-    [string]$BaseUrl = "http://127.0.0.1:8080",
+    [string]$BaseUrl,
     [string]$Tenant = "e2e",
     [int]$Concurrency = 8,
     [int]$RequestsPerRoute = 10
 )
 
 $ErrorActionPreference = 'Stop'
+
+. (Join-Path $PSScriptRoot 'common.ps1')
+Import-TansuDotEnv | Out-Null
+$urls = Resolve-TansuBaseUrls
+
+if (-not $PSBoundParameters.ContainsKey('BaseUrl') -or [string]::IsNullOrWhiteSpace($BaseUrl)) {
+    $BaseUrl = $urls.PublicBaseUrl
+}
 
 Write-Host "Gateway synthetic monitors" -ForegroundColor Cyan
 Write-Host "  BaseUrl=$BaseUrl Tenant=$Tenant Concurrency=$Concurrency RequestsPerRoute=$RequestsPerRoute"

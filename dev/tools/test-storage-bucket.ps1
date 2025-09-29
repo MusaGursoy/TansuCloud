@@ -1,10 +1,18 @@
 param(
     [string]$Tenant = "e2e-$(($env:COMPUTERNAME ?? $env:HOSTNAME) -as [string]).ToLower()",
     [string]$Bucket = "e2e-cli-$(New-Guid | ForEach-Object { $_.Guid.Replace('-', '') })",
-    [string]$BaseUrl = 'http://127.0.0.1:8080'
+    [string]$BaseUrl
 )
 
 $ErrorActionPreference = 'Stop'
+
+. (Join-Path $PSScriptRoot 'common.ps1')
+Import-TansuDotEnv | Out-Null
+$urls = Resolve-TansuBaseUrls
+
+if (-not $PSBoundParameters.ContainsKey('BaseUrl') -or [string]::IsNullOrWhiteSpace($BaseUrl)) {
+    $BaseUrl = $urls.PublicBaseUrl
+}
 
 # Get token
 $tokObj = & "$PSScriptRoot\get-token.ps1" | ConvertFrom-Json

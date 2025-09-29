@@ -5,10 +5,13 @@ using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.IdentityModel.JsonWebTokens;
 using Microsoft.IdentityModel.Tokens;
 using TansuCloud.Database.Provisioning;
 using TansuCloud.Observability.Auditing;
+using TansuCloud.Observability.Shared.Configuration;
 
 namespace TansuCloud.Database.Controllers;
 
@@ -17,12 +20,14 @@ namespace TansuCloud.Database.Controllers;
 public sealed class ProvisioningController(
     ITenantProvisioner provisioner,
     ILogger<ProvisioningController> logger,
-    IAuditLogger audit
+    IAuditLogger audit,
+    AppUrlsOptions appUrls
 ) : ControllerBase
 {
     private readonly ITenantProvisioner _provisioner = provisioner;
     private readonly ILogger<ProvisioningController> _logger = logger;
     private readonly IAuditLogger _audit = audit;
+    private readonly AppUrlsOptions _appUrls = appUrls;
 
     public sealed record ProvisionTenantDto(string tenantId, string? displayName, string? region);
 
@@ -108,7 +113,7 @@ public sealed class ProvisioningController(
                             var cfg2 =
                                 HttpContext.RequestServices.GetRequiredService<IConfiguration>();
                             var issuerConfigured =
-                                cfg2["Oidc:Issuer"] ?? "http://localhost:8080/identity/";
+                                cfg2["Oidc:Issuer"] ?? _appUrls.GetIssuer("identity");
                             var issuerNoSlash = issuerConfigured.TrimEnd('/');
                             var issuerWithSlash = issuerNoSlash + "/";
                             var root = new Uri(issuerWithSlash).GetLeftPart(UriPartial.Authority);

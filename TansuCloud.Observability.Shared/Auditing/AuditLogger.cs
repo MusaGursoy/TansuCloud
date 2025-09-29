@@ -12,6 +12,7 @@ using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Npgsql;
+using NpgsqlTypes;
 
 namespace TansuCloud.Observability.Auditing;
 
@@ -38,11 +39,12 @@ internal sealed class HttpAuditLogger(
         () =>
         {
             var count = 0;
-            if (_channel.IsValueCreated)
+            var channelLazy = _channel;
+            if (channelLazy is not null && channelLazy.IsValueCreated)
             {
                 try
                 {
-                    count = _channel.Value.Reader.Count;
+                    count = channelLazy.Value.Reader.Count;
                 }
                 catch
                 {
@@ -422,10 +424,16 @@ CREATE UNIQUE INDEX IF NOT EXISTS ux_audit_idem ON {_opts.Table} (idempotency_ke
             cmd.Parameters.AddWithValue("@user_agent", (object?)e.UserAgent ?? DBNull.Value);
             cmd.Parameters.AddWithValue("@outcome", (object?)e.Outcome ?? DBNull.Value);
             cmd.Parameters.AddWithValue("@reason_code", (object?)e.ReasonCode ?? DBNull.Value);
-            cmd.Parameters.AddWithValue(
-                "@details",
-                (object?)(e.Details?.RootElement.GetRawText()) ?? DBNull.Value
-            );
+            var detailsParam = cmd.Parameters.Add("@details", NpgsqlDbType.Jsonb);
+            if (e.Details is JsonDocument doc)
+            {
+                var raw = doc.RootElement.GetRawText();
+                detailsParam.Value = string.IsNullOrWhiteSpace(raw) ? DBNull.Value : raw;
+            }
+            else
+            {
+                detailsParam.Value = DBNull.Value;
+            }
             cmd.Parameters.AddWithValue(
                 "@impersonated_by",
                 (object?)e.ImpersonatedBy ?? DBNull.Value

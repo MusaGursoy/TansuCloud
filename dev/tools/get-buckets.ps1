@@ -1,8 +1,16 @@
 param(
     [string]$Tenant = 'e2e-test',
-    [string]$BaseUrl = 'http://127.0.0.1:8080'
+    [string]$BaseUrl
 )
 $ErrorActionPreference='Stop'
+
+. (Join-Path $PSScriptRoot 'common.ps1')
+Import-TansuDotEnv | Out-Null
+$urls = Resolve-TansuBaseUrls
+
+if (-not $PSBoundParameters.ContainsKey('BaseUrl') -or [string]::IsNullOrWhiteSpace($BaseUrl)) {
+  $BaseUrl = $urls.PublicBaseUrl
+}
 $tokObj = & "$PSScriptRoot\get-token.ps1" | ConvertFrom-Json
 $token = $tokObj.access_token
 $headers = @{ 'Authorization' = "Bearer $token"; 'X-Tansu-Tenant' = $Tenant }

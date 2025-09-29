@@ -11,7 +11,10 @@ namespace TansuCloud.Identity.Controllers;
 
 [ApiController]
 [Route("admin/impersonation")]
-[Authorize(Roles = "Admin")]
+[Authorize(
+    Roles = "Admin",
+    AuthenticationSchemes = AuthenticationSchemeConstants.AdminCookieAndBearer
+)]
 public sealed class ImpersonationController(
     UserManager<IdentityUser> userManager,
     IOpenIddictScopeManager scopeManager,

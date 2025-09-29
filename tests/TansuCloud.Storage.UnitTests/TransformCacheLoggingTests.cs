@@ -24,10 +24,9 @@ public class TransformCacheLoggingTests
     public async Task CacheHit_Sampled_By_Percent_When_Configured()
     {
         var logger = new TestLogger<TransformController>();
-        var (controller, cache, conf) = CreateController(logger, samplePercent: 100);
+        var (controller, cache, conf, storage, tenant) = CreateController(logger, samplePercent: 100);
 
         // Arrange a cache entry
-        var tenant = GetTenant(controller);
         var key = "a/b";
         var head = new ObjectInfo(
             Bucket: "buck",
@@ -38,13 +37,12 @@ public class TransformCacheLoggingTests
             LastModified: DateTimeOffset.UtcNow,
             Metadata: new Dictionary<string, string>()
         );
-        var storage = GetStorage(controller);
         storage
             .Setup(s => s.HeadObjectAsync("buck", key, It.IsAny<CancellationToken>()))
             .ReturnsAsync(head);
 
         // Put a cached transform
-        var cacheKeyPrefix = $"tx:{tenant.TenantId}|buck|{key}|{head.ETag}|webp|0x0|q75";
+        var cacheKeyPrefix = $"tx:{tenant.Object.TenantId}|buck|{key}|{head.ETag}|webp|0x0|q75";
         cache.Set(cacheKeyPrefix, new byte[] { 1, 2, 3 }, new MemoryCacheEntryOptions());
 
         // Act
@@ -66,9 +64,7 @@ public class TransformCacheLoggingTests
     public async Task CacheMiss_Always_Logged()
     {
         var logger = new TestLogger<TransformController>();
-        var (controller, _, _) = CreateController(logger, samplePercent: 0);
-
-        var storage = GetStorage(controller);
+        var (controller, _, _, storage, _) = CreateController(logger, samplePercent: 0);
         var head = new ObjectInfo(
             Bucket: "buck",
             Key: "a/b",
@@ -101,7 +97,9 @@ public class TransformCacheLoggingTests
     private static (
         TransformController controller,
         IMemoryCache cache,
-        IConfiguration conf
+        IConfiguration conf,
+        Mock<IObjectStorage> storage,
+        Mock<ITenantContext> tenant
     ) CreateController(ILogger<TransformController> logger, int samplePercent)
     {
         var storage = new Mock<IObjectStorage>(MockBehavior.Strict);
@@ -158,28 +156,8 @@ public class TransformCacheLoggingTests
                     .BuildServiceProvider()
             }
         };
-        return (controller, cache, conf);
+        return (controller, cache, conf, storage, tenant);
     }
-
-    private static Mock<IObjectStorage> GetStorage(TransformController c) =>
-        (Mock<IObjectStorage>)
-            c.GetType()
-                .GetField(
-                    "storage",
-                    System.Reflection.BindingFlags.NonPublic
-                        | System.Reflection.BindingFlags.Instance
-                )!
-                .GetValue(c)!;
-
-    private static ITenantContext GetTenant(TransformController c) =>
-        (ITenantContext)
-            c.GetType()
-                .GetField(
-                    "tenant",
-                    System.Reflection.BindingFlags.NonPublic
-                        | System.Reflection.BindingFlags.Instance
-                )!
-                .GetValue(c)!;
 
     private sealed class TestLogger<T> : ILogger<T>
     {
