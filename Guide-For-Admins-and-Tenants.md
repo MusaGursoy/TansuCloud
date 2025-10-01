@@ -4,7 +4,6 @@
 
 Tansu.Cloud is a modern backend-as-a-service (BaaS) platform built on .NET, providing identity, API gateway, dashboards, database and storage services, observability, and health management. This guide helps admins and tenant operators deploy, configure, and operate the platform.
 
-
 ## 1. Getting Started
 
 - Architecture at a glance
@@ -203,6 +202,16 @@ Dev validation route
 - Trigger an intentional exception through the Gateway to Storage:
   - `GET http://127.0.0.1:8080/storage/dev/throw?message=hello`
   - In Development, this route is anonymous and logs an Error before throwing, ensuring both log and trace signals.
+
+Span attribute smoke
+
+- Confirm gateway HTTP spans carry the expected tags by running the dedicated E2E:
+
+  ```pwsh
+  dotnet test tests/TansuCloud.E2E.Tests/TansuCloud.E2E.Tests.csproj -c Debug --filter FullyQualifiedName~AspNetCoreSpanAttributesE2E
+  ```
+
+  The test calls `/health/ready` with a temporary `X-Tansu-Tenant` header and polls `signoz_traces.signoz_index_v3` to assert `http.route`, `http.status_code`, `tansu.route_base`, and `tansu.tenant` attributes are present. It prints `[SKIP]` when the OTLP collector (default `127.0.0.1:4317`) is not reachable yet.
 
 Tables of interest (ClickHouse)
 
@@ -621,6 +630,28 @@ Notes
   - `tansu_storage_cache_misses_total`
   Each counter includes an `op` tag (list/head). Exporters can aggregate/graph these for hit ratio.
 
+### 8.2 SigNoz UI configuration (Task 40 compliant)
+
+To keep URLs consistent across environments and satisfy Task 40 (No New Hardcoded URLs), the Dashboard derives the SigNoz UI base URL from configuration. Prefer setting an explicit base when the SigNoz UI is reachable to operators.
+
+- Preferred key: `SigNoz:BaseUrl`
+  - Environment variables are supported as `SigNoz__BaseUrl` (double underscore) or `SIG_NOZ_BASE_URL`.
+  - Example (dev): `http://127.0.0.1:3301/`.
+  - Example (prod): `https://observability.example.com/`.
+
+- Fallback behavior (dev convenience only):
+  - If `SigNoz:BaseUrl` is not configured, the Dashboard will derive the SigNoz base from the host component of `PublicBaseUrl` (preferred) or `GatewayBaseUrl` by combining `http(s)://{host}:3301/`.
+  - This ensures there are no hardcoded literals in app code, and the UI links remain consistent with the environment.
+
+- Task 40 compliance:
+  - No hardcoded `http://localhost:3301` or similar literals are introduced. All external links are composed from configured base URLs.
+  - Tests and docs may show loopback examples where they are covered by the repository allowlist; runtime code does not inline such literals.
+
+Notes
+
+- The Dashboard metrics page no longer embeds charts directly; it shows curated links to SigNoz dashboards. Ensure the SigNoz UI is reachable from operator networks.
+- When running via Docker Compose in development, SigNoz UI typically binds to port 3301 on the host.
+
 Troubleshooting tips
 
 - To temporarily disable caching in Development, set `Cache:Disable=1` on the affected service (e.g., Storage) and restart it.
@@ -763,6 +794,74 @@ Resolution rules
 - Common startup issues
 - Certificate and TLS errors
 - OIDC discovery and token validation
+
+### 12.1 Find slow requests in 60 seconds (SigNoz)
+
+Use this quick path to identify slow endpoints and drill into a trace:
+
+1) Open the SigNoz UI and go to Traces → Explorer.
+2) Set Service = the target service (gateway/database/storage/identity/dashboard).
+3) Add Filter: duration > 500ms (adjust as needed) and Time range = Last 15 minutes.
+4) Sort by duration desc and click the top trace to open the waterfall.
+5) In the span list, look for:
+
+- DB spans with high duration (Npgsql/EFCore)
+- Redis spans or HybridCache misses
+- Gateway proxy span retries or 5xx status
+
+6) Click “Logs” to view correlated log entries (TraceId/SpanId are propagated). Check EventId ranges for quick categorization.
+
+Tip: If no traces appear, run the checks in 12.2 below and ensure traffic is actually hitting the gateway. Health reads often don’t emit DB spans; use a real API call.
+
+### 12.2 No traces arriving
+
+Symptoms: Empty Traces/Logs in SigNoz; apps running.
+
+Checklist
+
+- Collector healthy: signoz-otel-collector container up and listening on 4317/4318.
+- Service config: OpenTelemetry:Otlp:Endpoint points to the collector inside the network (dev compose: <http://signoz-otel-collector:4317>).
+- Readiness: check /health/ready for each service; exporter queue and W3C format are validated in readiness.
+- ClickHouse: time-series tables exist (see Section 8.2 readiness checks). Errors in signoz-query/signoz-otel-collector logs can indicate schema drift.
+- Host firewall/VPN: ensure ports 4317/4318 are not blocked between services and collector.
+
+Remediation
+
+- Restart the collector and resend traffic; exporters retry with backoff.
+- In dev, toggle log level to Debug temporarily for category OpenTelemetry.* to inspect exporter messages.
+- Verify that the Environment is Development so RequireHttpsMetadata is not blocking HTTP in dev, and production uses HTTPS endpoints.
+
+### 12.3 ClickHouse retention exhausted or storage pressure
+
+Symptoms: Recent traces/metrics disappear; disk usage high.
+
+Checklist
+
+- Check ClickHouse disk usage and partitions; retention windows per data type may be too low/high for your traffic.
+- Confirm compaction/log flushes: run a targeted LOGS flush.
+- Validate that governance defaults were applied (retention/TTL) if you rely on them.
+
+Remediation
+
+- Apply updated retention via governance task (see Section 8.2 → Apply SigNoz governance defaults) and allow background merges.
+- Increase disk allocation or reduce sampling/capture volume for verbose categories.
+- For dev only: drop and recreate metrics DB if corrupt (see Section 8.2 troubleshooting steps).
+
+### 12.4 Collector backpressure and retry storms
+
+Symptoms: High exporter queue, batch timeouts, delayed signal appearance.
+
+Checklist
+
+- SigNoz collector CPU/memory usage; look for throttling.
+- Exporter diagnostics meter (tansu.otel.exporter) for queue size/backoff events in Dashboard metrics page or SigNoz.
+- Batch processor settings (maxQueueSize, scheduledDelay, exportTimeout) across services.
+
+Remediation
+
+- Scale collector resources or reduce incoming load temporarily.
+- Increase service batch/exporter limits slightly and ensure backoff is bounded; prefer small scheduledDelay for interactive traces.
+- Avoid capturing high-cardinality attributes or large logs; ensure body capture is disabled.
 
 ## 13. Testing & E2E validation
 

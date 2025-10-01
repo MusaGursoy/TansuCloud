@@ -1,4 +1,5 @@
 // Tansu.Cloud Public Repository:    https://github.com/MusaGursoy/TansuCloud
+using System.Diagnostics;
 using System.Diagnostics.Metrics;
 using Microsoft.AspNetCore.Http;
 using Microsoft.EntityFrameworkCore;
@@ -86,7 +87,8 @@ internal sealed class OutboxDispatcher(
                     continue;
                 }
 
-                await DispatchPendingAsync(db, publisher, stoppingToken);
+                var tenantTag = ResolveTenantTag(httpCtx, _opts.DispatchTenant);
+                await DispatchPendingAsync(db, publisher, tenantTag, stoppingToken);
             }
             catch (TaskCanceledException) when (stoppingToken.IsCancellationRequested)
             {
@@ -104,98 +106,245 @@ internal sealed class OutboxDispatcher(
     internal async Task<int> DispatchPendingAsync(
         TansuDbContext db,
         IOutboxPublisher publisher,
+        string? tenantTag,
         CancellationToken ct
     )
     {
-        var now = DateTimeOffset.UtcNow;
-        var due = await db
-            .OutboxEvents.Where(e =>
-                (e.Status == OutboxStatus.Pending || e.Status == OutboxStatus.Failed)
-                && (e.NextAttemptAt == null || e.NextAttemptAt <= now)
-            )
-            .OrderBy(e => e.NextAttemptAt ?? e.OccurredAt)
-            .Take(_opts.BatchSize * 2) // over-fetch a little to allow suppression filtering
-            .ToListAsync(ct);
+        using var activity = TansuActivitySources.Background.StartActivity(
+            "OutboxDispatch",
+            ActivityKind.Internal
+        );
 
-        // Idempotency suppression: if an outbox event has an IdempotencyKey and a previously dispatched
-        // event with same (Type, IdempotencyKey) exists, skip publishing and mark as Dispatched immediately.
-        // This avoids duplicate external publishes after producer logic races.
-        if (due.Count > 0)
+        var normalizedTenant = NormalizeTenantTag(tenantTag);
+
+        if (activity is not null)
         {
-            var keyed = due.Where(e => e.IdempotencyKey != null).ToList();
-            if (keyed.Count > 0)
+            if (!string.IsNullOrEmpty(normalizedTenant))
             {
-                var keys = keyed.Select(k => k.IdempotencyKey!).Distinct().ToList();
-                var already = await db
-                    .OutboxEvents.AsNoTracking()
-                    .Where(e =>
-                        e.Status == OutboxStatus.Dispatched
-                        && e.IdempotencyKey != null
-                        && keys.Contains(e.IdempotencyKey)
-                    )
-                    .Select(e => new ValueTuple<string, string>(e.IdempotencyKey!, e.Type))
-                    .ToListAsync(ct);
-                var dispatchedSet = new HashSet<(string, string)>(already);
-                // Track first occurrence in current batch so later duplicates are suppressed even within same fetch.
-                foreach (var e in keyed.OrderBy(k => k.OccurredAt))
+                activity.SetTag(TelemetryConstants.Tenant, normalizedTenant);
+            }
+
+            if (!string.IsNullOrWhiteSpace(_opts.Channel))
+            {
+                activity.SetTag("outbox.channel", _opts.Channel);
+            }
+
+            activity.SetTag("outbox.batch.limit", _opts.BatchSize);
+        }
+
+        try
+        {
+            var now = DateTimeOffset.UtcNow;
+            var due = await db
+                .OutboxEvents.Where(e =>
+                    (e.Status == OutboxStatus.Pending || e.Status == OutboxStatus.Failed)
+                    && (e.NextAttemptAt == null || e.NextAttemptAt <= now)
+                )
+                .OrderBy(e => e.NextAttemptAt ?? e.OccurredAt)
+                .Take(_opts.BatchSize * 2) // over-fetch a little to allow suppression filtering
+                .ToListAsync(ct);
+
+            if (string.IsNullOrEmpty(normalizedTenant))
+            {
+                var derived = NormalizeTenantTag(TryDeriveTenantFromDatabase(db));
+                if (!string.IsNullOrEmpty(derived))
                 {
-                    var key = (e.IdempotencyKey!, e.Type);
-                    if (!dispatchedSet.Add(key))
+                    normalizedTenant = derived;
+                    activity?.SetTag(TelemetryConstants.Tenant, normalizedTenant);
+                }
+            }
+
+            activity?.SetTag("outbox.batch.due_count", due.Count);
+
+            // Idempotency suppression: if an outbox event has an IdempotencyKey and a previously dispatched
+            // event with same (Type, IdempotencyKey) exists, skip publishing and mark as Dispatched immediately.
+            // This avoids duplicate external publishes after producer logic races.
+            if (due.Count > 0)
+            {
+                var keyed = due.Where(e => e.IdempotencyKey != null).ToList();
+                if (keyed.Count > 0)
+                {
+                    var keys = keyed.Select(k => k.IdempotencyKey!).Distinct().ToList();
+                    var already = await db
+                        .OutboxEvents.AsNoTracking()
+                        .Where(e =>
+                            e.Status == OutboxStatus.Dispatched
+                            && e.IdempotencyKey != null
+                            && keys.Contains(e.IdempotencyKey)
+                        )
+                        .Select(e => new ValueTuple<string, string>(e.IdempotencyKey!, e.Type))
+                        .ToListAsync(ct);
+                    var dispatchedSet = new HashSet<(string, string)>(already);
+                    // Track first occurrence in current batch so later duplicates are suppressed even within same fetch.
+                    foreach (var e in keyed.OrderBy(k => k.OccurredAt))
                     {
-                        e.Status = OutboxStatus.Dispatched; // suppress publish (duplicate in DB or earlier in batch)
+                        var key = (e.IdempotencyKey!, e.Type);
+                        if (!dispatchedSet.Add(key))
+                        {
+                            e.Status = OutboxStatus.Dispatched; // suppress publish (duplicate in DB or earlier in batch)
+                        }
                     }
                 }
             }
+
+            var suppressed = 0;
+            var dispatchedCount = 0;
+            var retriedCount = 0;
+            var deadLetteredCount = 0;
+
+            foreach (var e in due)
+            {
+                if (e.Status == OutboxStatus.Dispatched)
+                {
+                    suppressed++;
+                    continue; // suppressed duplicate already marked dispatched
+                }
+
+                var attempt = e.Attempts + 1;
+                using var eventActivity = StartEventActivity(normalizedTenant, e, attempt);
+
+                try
+                {
+                    _logger.LogOutboxDispatchAttempt(e.Id, attempt);
+                    var payloadJson = e.Payload is null ? "null" : e.Payload.RootElement.GetRawText();
+                    await publisher.PublishAsync(_opts.Channel, payloadJson, ct);
+                    e.Status = OutboxStatus.Dispatched;
+                    await db.SaveChangesAsync(ct);
+                    Dispatched.Add(1);
+                    dispatchedCount++;
+                    eventActivity?.SetTag("outbox.event.status", nameof(OutboxStatus.Dispatched));
+                    eventActivity?.SetStatus(ActivityStatusCode.Ok);
+                }
+                catch (Exception ex)
+                {
+                    e.Attempts++;
+                    var isDead = e.Attempts >= _opts.MaxAttempts;
+                    e.Status = isDead ? OutboxStatus.DeadLettered : OutboxStatus.Failed;
+                    var baseSeconds = Math.Pow(2, Math.Min(8, e.Attempts));
+                    var backoff = TimeSpan.FromSeconds(Math.Min(300, baseSeconds));
+                    backoff += TimeSpan.FromMilliseconds(Random.Shared.Next(0, 1000));
+                    e.NextAttemptAt = DateTimeOffset.UtcNow + backoff;
+                    await db.SaveChangesAsync(ct);
+
+                    eventActivity?.SetTag("outbox.event.status", e.Status.ToString());
+                    eventActivity?.SetTag("outbox.event.error", ex.Message);
+                    eventActivity?.SetTag("outbox.event.next_attempt_at", e.NextAttemptAt?.ToString("O"));
+                    eventActivity?.SetStatus(ActivityStatusCode.Error, ex.Message);
+
+                    if (isDead)
+                    {
+                        DeadLettered.Add(1);
+                        deadLetteredCount++;
+                        _logger.LogError(
+                            ex,
+                            "Dead-lettered outbox event {Id} after {Attempts} attempts",
+                            e.Id,
+                            e.Attempts
+                        );
+                    }
+                    else
+                    {
+                        Retried.Add(1);
+                        retriedCount++;
+                        _logger.LogWarning(
+                            ex,
+                            "Failed dispatching outbox event {Id}. Attempts={Attempts} next={NextAttemptAt}",
+                            e.Id,
+                            e.Attempts,
+                            e.NextAttemptAt
+                        );
+                    }
+                }
+            }
+
+            activity?.SetTag("outbox.events.suppressed", suppressed);
+            activity?.SetTag("outbox.events.dispatched", dispatchedCount);
+            activity?.SetTag("outbox.events.retried", retriedCount);
+            activity?.SetTag("outbox.events.dead_lettered", deadLetteredCount);
+            activity?.SetStatus(ActivityStatusCode.Ok);
+
+            return due.Count;
+        }
+        catch (Exception ex)
+        {
+            activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
+            activity?.SetTag("outbox.error", ex.Message);
+            throw;
+        }
+    }
+
+    private static string? ResolveTenantTag(HttpContext? httpContext, string? fallbackTenant)
+    {
+        var headerTenant = httpContext?.Request.Headers["X-Tansu-Tenant"].ToString();
+        if (!string.IsNullOrWhiteSpace(headerTenant))
+        {
+            return headerTenant;
         }
 
-        foreach (var e in due)
+        return fallbackTenant;
+    }
+
+    private static string? TryDeriveTenantFromDatabase(TansuDbContext db)
+    {
+        try
         {
-            if (e.Status == OutboxStatus.Dispatched)
+            var conn = db.Database.GetDbConnection();
+            var name = conn?.Database;
+            if (string.IsNullOrWhiteSpace(name))
             {
-                continue; // suppressed duplicate already marked dispatched
+                return null;
             }
-            try
+
+            const string prefix = "tansu_tenant_";
+            if (name.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
             {
-                _logger.LogOutboxDispatchAttempt(e.Id, e.Attempts + 1);
-                var payloadJson = e.Payload is null ? "null" : e.Payload.RootElement.GetRawText();
-                await publisher.PublishAsync(_opts.Channel, payloadJson, ct);
-                e.Status = OutboxStatus.Dispatched;
-                await db.SaveChangesAsync(ct);
-                Dispatched.Add(1);
+                return name[prefix.Length..];
             }
-            catch (Exception ex)
-            {
-                e.Attempts++;
-                var isDead = e.Attempts >= _opts.MaxAttempts;
-                e.Status = isDead ? OutboxStatus.DeadLettered : OutboxStatus.Failed;
-                var baseSeconds = Math.Pow(2, Math.Min(8, e.Attempts));
-                var backoff = TimeSpan.FromSeconds(Math.Min(300, baseSeconds));
-                backoff += TimeSpan.FromMilliseconds(Random.Shared.Next(0, 1000));
-                e.NextAttemptAt = DateTimeOffset.UtcNow + backoff;
-                await db.SaveChangesAsync(ct);
-                if (isDead)
-                {
-                    DeadLettered.Add(1);
-                    _logger.LogError(
-                        ex,
-                        "Dead-lettered outbox event {Id} after {Attempts} attempts",
-                        e.Id,
-                        e.Attempts
-                    );
-                }
-                else
-                {
-                    Retried.Add(1);
-                    _logger.LogWarning(
-                        ex,
-                        "Failed dispatching outbox event {Id}. Attempts={Attempts} next={NextAttemptAt}",
-                        e.Id,
-                        e.Attempts,
-                        e.NextAttemptAt
-                    );
-                }
-            }
+
+            return name;
         }
-        return due.Count;
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static string? NormalizeTenantTag(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return null;
+        }
+
+        var trimmed = value.Trim();
+        if (trimmed.Length > 64)
+        {
+            trimmed = trimmed[..64];
+        }
+
+        return trimmed.ToLowerInvariant();
+    }
+
+    private static Activity? StartEventActivity(string? tenant, OutboxEvent e, int attempt)
+    {
+        var activity = TansuActivitySources.Background.StartActivity(
+            "OutboxDispatch.Event",
+            ActivityKind.Internal
+        );
+
+        if (activity is not null)
+        {
+            if (!string.IsNullOrEmpty(tenant))
+            {
+                activity.SetTag(TelemetryConstants.Tenant, tenant);
+            }
+
+            activity.SetTag("outbox.event.id", e.Id);
+            activity.SetTag("outbox.event.type", e.Type);
+            activity.SetTag("outbox.event.attempt", attempt);
+            activity.SetTag("outbox.event.status", e.Status.ToString());
+        }
+
+        return activity;
     }
 }

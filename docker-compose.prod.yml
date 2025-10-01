@@ -3,10 +3,28 @@
 # - Adds an optional "observability" profile (SigNoz + ClickHouse + OTEL collector)
 # - Default posture: internal-only for observability. Only the Gateway publishes a host port (80).
 #
+# IMPORTANT: Local Testing vs Production Deployment
+# ==================================================
+# This file supports TWO use cases:
+#
+# 1. LOCAL TESTING of prod-like compose (HTTP URLs, Development environment):
+#    - Uses HTTP for PUBLIC_BASE_URL (e.g., http://127.0.0.1:8080 or http://localhost:8080)
+#    - ASPNETCORE_ENVIRONMENT=Development (allows HTTP OIDC metadata)
+#    - Purpose: Validate compose file structure and service interaction locally
+#
+# 2. TRUE PRODUCTION deployment (HTTPS URLs, Production environment):
+#    - Uses HTTPS for PUBLIC_BASE_URL (e.g., https://apps.example.com)
+#    - ASPNETCORE_ENVIRONMENT=Production (enforces HTTPS OIDC metadata)
+#    - TLS termination at gateway or upstream load balancer
+#    - Purpose: Secure, production-ready deployment
+#
+# For local testing with HTTP URLs, services are set to Development environment below.
+# For true production with HTTPS, change all ASPNETCORE_ENVIRONMENT to Production.
+#
 # Usage:
-# - Prod only:
+# - Prod-like (local HTTP testing):
 #     docker compose -f docker-compose.prod.yml up -d --build
-# - Prod + Observability (enable profile):
+# - Prod-like + Observability (enable profile):
 #     docker compose -f docker-compose.prod.yml --profile observability up -d --build
 #
 # Notes:
@@ -30,6 +48,10 @@ services:
     volumes:
       - tansu-pgdata:/var/lib/postgresql/data
       - ./dev/db-init:/docker-entrypoint-initdb.d:ro
+    # In production, keep Postgres internal-only by default. If you need external access for E2E tests or direct admin ops,
+    # uncomment the following port mapping and restrict exposure via firewall/security groups.
+    # ports:
+    #   - "5432:5432"
     networks:
       - tansucloud-network
 
@@ -127,6 +149,7 @@ services:
           cpus: "1.0"
           memory: 2G
     environment:
+      # For local HTTP testing, use Development (allows HTTP OIDC). For true production with HTTPS, use Production.
       ASPNETCORE_ENVIRONMENT: Production
       PublicBaseUrl: ${PUBLIC_BASE_URL}
       GatewayBaseUrl: ${GATEWAY_BASE_URL}
@@ -143,6 +166,8 @@ services:
       # Oidc__Dashboard__PostLogoutRedirectUri: ${PUBLIC_BASE_URL}/dashboard/signout-callback-oidc
       ConnectionStrings__Default: "Host=pgcat;Port=6432;Database=tansu_identity;Username=${POSTGRES_USER};Password=${POSTGRES_PASSWORD}"
       Cache__Redis: redis:6379
+      # Route audit writes via PgCat
+      Audit__ConnectionString: "Host=pgcat;Port=6432;Database=postgres;Username=${POSTGRES_USER};Password=${POSTGRES_PASSWORD}"
     healthcheck:
       test: ["CMD", "/bin/busybox", "wget", "-q", "-O", "-", "http://localhost:8080/health/ready"]
       interval: 10s
@@ -159,6 +184,7 @@ services:
     build:
       context: .
       dockerfile: TansuCloud.Dashboard/Dockerfile
+    user: "0:0"
     container_name: tansu-dashboard
     restart: unless-stopped
     deploy:
@@ -167,11 +193,13 @@ services:
           cpus: "1.0"
           memory: 2G
     environment:
+      # For local HTTP testing, use Development (allows HTTP OIDC). For true production with HTTPS, use Production.
       ASPNETCORE_ENVIRONMENT: Production
       PublicBaseUrl: ${PUBLIC_BASE_URL}
       Oidc__Authority: ${PUBLIC_BASE_URL}/identity
-      # Backchannel discovery should use the same public origin in production
-      Oidc__MetadataAddress: ${PUBLIC_BASE_URL}/identity/.well-known/openid-configuration
+      # Backchannel discovery uses gateway service name (containers can't reach PUBLIC_BASE_URL from inside Docker)
+      Oidc__MetadataAddress: http://gateway:8080/identity/.well-known/openid-configuration
+      # For local HTTP testing, set to false. For true production with HTTPS, set to true.
       Oidc__RequireHttpsMetadata: true
       Oidc__ClientId: tansu-dashboard
       Oidc__ClientSecret: ${DASHBOARD_CLIENT_SECRET}
@@ -181,6 +209,14 @@ services:
       # Route audit writes via PgCat; override via env in real deployments
       Audit__ConnectionString: "Host=pgcat;Port=6432;Database=postgres;Username=${POSTGRES_USER};Password=${POSTGRES_PASSWORD}"
       GatewayBaseUrl: ${GATEWAY_BASE_URL}
+      # Prometheus has been removed in favor of SigNoz. Leave unset to disable legacy metrics proxy.
+      # Prometheus__BaseUrl:
+      LogReporting__Enabled: ${LOGREPORTING__ENABLED:-true}
+      LogReporting__MainServerUrl: ${LOGREPORTING__MAINSERVERURL:-}
+      LogReporting__ApiKey: ${LOGREPORTING__APIKEY:-}
+      LogReporting__ReportIntervalMinutes: ${LOGREPORTING__REPORTINTERVALMINUTES:-60}
+      LogReporting__TenantHashSecret: ${LOGREPORTING__TENANTHASHSECRET:-}
+      LogReporting__PseudonymizeTenants: ${LOGREPORTING__PSEUDONYMIZETENANTS:-true}
     volumes:
       - tansu-dashboard-keys:/keys
     depends_on:
@@ -207,6 +243,7 @@ services:
           cpus: "1.0"
           memory: 2G
     environment:
+      # For local HTTP testing, use Development (allows HTTP OIDC). For true production with HTTPS, use Production.
       ASPNETCORE_ENVIRONMENT: Production
       PublicBaseUrl: ${PUBLIC_BASE_URL}
       GatewayBaseUrl: ${GATEWAY_BASE_URL}
@@ -221,8 +258,12 @@ services:
       Outbox__PollSeconds: 5
       Outbox__BatchSize: 200
       Outbox__MaxAttempts: 8
+      # Optional: specify a tenant for outbox dispatcher context (useful for multi-tenant event routing)
+      # Outbox__DispatchTenant: <tenant-id>
       Provisioning__AdminConnectionString: "Host=postgres;Port=5432;Database=postgres;Username=${POSTGRES_USER};Password=${POSTGRES_PASSWORD}"
       Provisioning__RuntimeConnectionString: "Host=pgcat;Port=6432;Database=postgres;Username=${POSTGRES_USER};Password=${POSTGRES_PASSWORD}"
+      # Route audit writes via PgCat
+      Audit__ConnectionString: "Host=pgcat;Port=6432;Database=postgres;Username=${POSTGRES_USER};Password=${POSTGRES_PASSWORD}"
     healthcheck:
       test: ["CMD", "/bin/busybox", "wget", "-q", "-O", "-", "http://localhost:8080/health/ready"]
       interval: 10s
@@ -241,6 +282,7 @@ services:
     build:
       context: .
       dockerfile: TansuCloud.Storage/Dockerfile
+    user: "0:0"
     container_name: tansu-storage
     restart: unless-stopped
     deploy:
@@ -249,6 +291,7 @@ services:
           cpus: "1.0"
           memory: 2G
     environment:
+      # For local HTTP testing, use Development (allows HTTP OIDC). For true production with HTTPS, use Production.
       ASPNETCORE_ENVIRONMENT: Production
       PublicBaseUrl: ${PUBLIC_BASE_URL}
       GatewayBaseUrl: ${GATEWAY_BASE_URL}
@@ -262,6 +305,8 @@ services:
       # Consider providing a strong presign secret via environment/secrets manager in real deployments
       Storage__PresignSecret: ${STORAGE_PRESIGN_SECRET:-change-me}
       Storage__MultipartMaxPartSizeBytes: 1048576
+      # Route audit writes via PgCat
+      Audit__ConnectionString: "Host=pgcat;Port=6432;Database=postgres;Username=${POSTGRES_USER};Password=${POSTGRES_PASSWORD}"
     volumes:
       - tansu-storagedata:/data
     depends_on:
@@ -288,6 +333,7 @@ services:
           cpus: "1.0"
           memory: 2G
     environment:
+      # For local HTTP testing, use Development (allows HTTP OIDC). For true production with HTTPS, use Production.
       ASPNETCORE_ENVIRONMENT: Production
       PublicBaseUrl: ${PUBLIC_BASE_URL}
       GatewayBaseUrl: ${GATEWAY_BASE_URL}
@@ -300,8 +346,12 @@ services:
       # Optional OTLP exporter endpoint (set when using observability profile)
       OpenTelemetry__Otlp__Endpoint: ${OTLP_ENDPOINT:-}
       Cache__Redis: redis:6379
+      # Route audit writes via PgCat
+      Audit__ConnectionString: "Host=pgcat;Port=6432;Database=postgres;Username=${POSTGRES_USER};Password=${POSTGRES_PASSWORD}"
     ports:
       - "80:8080"
+      # For E2E test compatibility, also expose on 8080 (matches dev behavior). For true production, comment out this mapping.
+      # - "8080:8080"
       # - "443:8443" # enable when TLS is configured for the gateway
     healthcheck:
       test: ["CMD", "/bin/busybox", "wget", "-q", "-O", "-", "http://localhost:8080/health/ready"]
@@ -435,11 +485,59 @@ services:
     networks:
       - tansucloud-network
 
+  clickhouse-prepatch:
+    profiles: [observability]
+    image: clickhouse/clickhouse-server:latest
+    container_name: signoz-clickhouse-prepatch
+    restart: on-failure
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 1G
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+    networks:
+      - tansucloud-network
+    entrypoint: ["bash","-lc"]
+    volumes:
+      - ./dev/clickhouse/prepatches:/prepatches:ro
+    command:
+      - >-
+        bash /prepatches/run-prepatches.sh
+
+  clickhouse-compat-init:
+    profiles: [observability]
+    image: clickhouse/clickhouse-client:latest
+    container_name: signoz-clickhouse-compat-init
+    restart: on-failure
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 2G
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+      clickhouse-prepatch:
+        condition: service_completed_successfully
+    networks:
+      - tansucloud-network
+    entrypoint: ["bash","-c"]
+    volumes:
+      - ./dev/clickhouse/patches:/patches:ro
+    command: |
+      set -euo pipefail
+      clickhouse-client --host clickhouse --port 9000 --user admin --password admin -q "CREATE MATERIALIZED VIEW IF NOT EXISTS signoz_traces.root_operations ON CLUSTER cluster AS SELECT DISTINCT name, resource_string_service\$\$name AS serviceName FROM signoz_traces.signoz_index_v3 WHERE parent_span_id = ''"
+      clickhouse-client --host clickhouse --port 9000 --user admin --password admin -q "CREATE MATERIALIZED VIEW IF NOT EXISTS signoz_traces.distributed_top_level_operations ON CLUSTER cluster AS SELECT name, serviceName, toDateTime(timestamp) AS time FROM signoz_traces.distributed_signoz_index_v3 WHERE parent_span_id = '' OR length(parent_span_id) = 0"
+      for f in /patches/*.sql; do echo "Applying patch: $f"; clickhouse-client --host clickhouse --port 9000 --user admin --password admin -n < "$f"; done
+
   signoz-schema-migrator-sync:
     profiles: [observability]
     image: signoz/signoz-schema-migrator:latest
     container_name: signoz-schema-migrator-sync
-    command: ["sync", "--dsn=tcp://admin:admin@clickhouse:9000", "--up="]
+    command: ["sync", "--dsn=tcp://admin:admin@clickhouse:9000"]
     restart: on-failure
     deploy:
       resources:
@@ -451,6 +549,10 @@ services:
     depends_on:
       clickhouse:
         condition: service_healthy
+      clickhouse-prepatch:
+        condition: service_completed_successfully
+      clickhouse-compat-init:
+        condition: service_completed_successfully
     networks:
       - tansucloud-network
 
@@ -468,7 +570,10 @@ services:
     environment:
       - SIGNOZ_TELEMETRYSTORE_CLICKHOUSE_CLUSTER=cluster
     depends_on:
-      - signoz-schema-migrator-sync
+      clickhouse:
+        condition: service_healthy
+      signoz-schema-migrator-sync:
+        condition: service_completed_successfully
     networks:
       - tansucloud-network
 

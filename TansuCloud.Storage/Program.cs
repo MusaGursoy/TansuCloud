@@ -154,6 +154,12 @@ builder
     .Services.AddHealthChecks()
     .AddCheck("self", () => HealthCheckResult.Healthy(), tags: new[] { "self" });
 
+// Readiness: verify OTLP exporter reachability and W3C Activity id format
+builder.Services.AddHealthChecks().AddCheck<OtlpConnectivityHealthCheck>(
+    "otlp",
+    tags: new[] { "ready", "otlp" }
+);
+
 // Phase 0: health status transition publisher for ops visibility
 builder.Services.AddSingleton<IHealthCheckPublisher, HealthTransitionPublisher>();
 builder.Services.Configure<HealthCheckPublisherOptions>(o =>
@@ -761,7 +767,9 @@ Task WriteHealthResponse(HttpContext httpContext, HealthReport report)
                 {
                     status = e.Value.Status.ToString(),
                     description = e.Value.Description,
-                    durationMs = e.Value.Duration.TotalMilliseconds
+                    durationMs = e.Value.Duration.TotalMilliseconds,
+                    // Include health check data for ops visibility (e.g., activity/otlp keys)
+                    data = e.Value.Data
                 }
             )
         }

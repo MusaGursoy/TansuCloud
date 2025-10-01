@@ -29,6 +29,7 @@ using OpenTelemetry.Metrics;
 using OpenTelemetry.Resources;
 using OpenTelemetry.Trace;
 using StackExchange.Redis;
+using TansuCloud.Gateway.Observability;
 using TansuCloud.Gateway.Services;
 using TansuCloud.Observability;
 using TansuCloud.Observability.Auditing;
@@ -137,6 +138,7 @@ builder
 // Shared observability core (Task 38): dynamic log level overrides, etc.
 builder.Services.AddTansuObservabilityCore();
 builder.Services.AddTansuAudit(builder.Configuration);
+builder.Services.AddHostedService<YarpActivityEnricher>();
 
 // Required by HttpAuditLogger to enrich events from the current request
 builder.Services.AddHttpContextAccessor();
@@ -154,6 +156,11 @@ builder
     .Services.AddHealthChecks()
     // Self liveness check (no external dependencies)
     .AddCheck("self", () => HealthCheckResult.Healthy(), tags: new[] { "self" });
+
+// Readiness: verify OTLP exporter reachability and W3C Activity id format
+builder
+    .Services.AddHealthChecks()
+    .AddCheck<OtlpConnectivityHealthCheck>("otlp", tags: new[] { "ready", "otlp" });
 
 // Phase 0: publish health transitions (Info) for ops visibility
 builder.Services.AddSingleton<IHealthCheckPublisher, HealthTransitionPublisher>();
@@ -1609,14 +1616,46 @@ app.Use(
 app.MapGet("/", () => "TansuCloud Gateway is running");
 
 // Health endpoints
+Task WriteHealthResponse(HttpContext httpContext, HealthReport report)
+{
+    httpContext.Response.ContentType = "application/json";
+    var status = report.Status.ToString();
+    var json = JsonSerializer.Serialize(
+        new
+        {
+            status,
+            totalDurationMs = report.TotalDuration.TotalMilliseconds,
+            entries = report.Entries.ToDictionary(
+                e => e.Key,
+                e => new
+                {
+                    status = e.Value.Status.ToString(),
+                    description = e.Value.Description,
+                    durationMs = e.Value.Duration.TotalMilliseconds,
+                    data = e.Value.Data
+                }
+            )
+        }
+    );
+    return httpContext.Response.WriteAsync(json);
+} // End of Method WriteHealthResponse
+
 app.MapHealthChecks(
         "/health/live",
-        new HealthCheckOptions { Predicate = r => r.Tags.Contains("self") }
+        new HealthCheckOptions
+        {
+            Predicate = r => r.Tags.Contains("self"),
+            ResponseWriter = WriteHealthResponse
+        }
     )
     .AllowAnonymous();
 app.MapHealthChecks(
         "/health/ready",
-        new HealthCheckOptions { Predicate = r => r.Tags.Contains("ready") }
+        new HealthCheckOptions
+        {
+            Predicate = r => r.Tags.Contains("ready"),
+            ResponseWriter = WriteHealthResponse
+        }
     )
     .AllowAnonymous();
 

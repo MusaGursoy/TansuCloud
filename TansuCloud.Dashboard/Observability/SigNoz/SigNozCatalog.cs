@@ -130,7 +130,7 @@ public sealed class SigNozMetricsCatalog
 
     private static string NormalizeBaseUrl(string? baseUrl)
     {
-        // Allow configuration via SigNoz:BaseUrl, SIG_NOZ_BASE_URL, or fall back to PublicBaseUrl when reasonable
+        // Allow configuration via SigNoz:BaseUrl, SIG_NOZ_BASE_URL, or derive from configured public/gateway base URLs.
         var effective = string.IsNullOrWhiteSpace(baseUrl)
             ? (
                 Environment.GetEnvironmentVariable("SIG_NOZ_BASE_URL")
@@ -140,34 +140,50 @@ public sealed class SigNozMetricsCatalog
             : baseUrl.Trim();
         if (string.IsNullOrWhiteSpace(effective))
         {
-            // As a last resort (dev ergonomics): if PublicBaseUrl is set and SigNoz is commonly at 3301 in dev,
-            // prefer that default; otherwise just return a reasonable http://127.0.0.1:3301/ dev URL.
+            // Derive from configured bases (no new literals). Prefer PublicBaseUrl host; fallback to GatewayBaseUrl host.
+            // If neither is configured, leave empty and the UI will show a helpful message without generating a URL.
             var publicBase =
                 Environment.GetEnvironmentVariable("PUBLIC_BASE_URL")
                 ?? Environment.GetEnvironmentVariable("PublicBaseUrl");
-            if (!string.IsNullOrWhiteSpace(publicBase))
+            var gatewayBase =
+                Environment.GetEnvironmentVariable("GATEWAY_BASE_URL")
+                ?? Environment.GetEnvironmentVariable("GatewayBaseUrl");
+
+            string? hostFrom(string? url)
             {
+                if (string.IsNullOrWhiteSpace(url))
+                    return null;
                 try
                 {
-                    var uri = new Uri(publicBase.Trim());
-                    effective = $"http://{uri.Host}:3301/";
+                    return new Uri(url.Trim()).Host;
                 }
                 catch
                 {
-                    effective = "http://127.0.0.1:3301/";
+                    return null;
                 }
+            }
+
+            var host = hostFrom(publicBase) ?? hostFrom(gatewayBase);
+            if (!string.IsNullOrWhiteSpace(host))
+            {
+                // In dev compose we publish SigNoz UI at host port 3301; compose the URL from the configured host.
+                effective = $"http://{host}:3301/";
             }
             else
             {
-                effective = "http://127.0.0.1:3301/";
+                // No configured base found – avoid introducing a literal default URL.
+                effective = string.Empty;
             }
         }
-        if (!effective.StartsWith("http", StringComparison.OrdinalIgnoreCase))
+        if (
+            !string.IsNullOrWhiteSpace(effective)
+            && !effective.StartsWith("http", StringComparison.OrdinalIgnoreCase)
+        )
         {
             var normalizedHost = effective.Trim('/');
             effective = $"http://{normalizedHost}/";
         }
-        if (!effective.EndsWith('/'))
+        if (!string.IsNullOrWhiteSpace(effective) && !effective.EndsWith('/'))
         {
             effective += "/";
         }

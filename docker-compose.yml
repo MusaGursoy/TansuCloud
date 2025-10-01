@@ -158,6 +158,10 @@ services:
     depends_on:
       clickhouse:
         condition: service_healthy
+      clickhouse-prepatch:
+        condition: service_completed_successfully
+      clickhouse-compat-init:
+        condition: service_completed_successfully
     networks:
       - tansucloud-network
 
@@ -179,8 +183,32 @@ services:
     depends_on:
       clickhouse:
         condition: service_healthy
+      schema-migrator-sync:
+        condition: service_completed_successfully
     networks:
       - tansucloud-network
+
+  # Dev-only prepatch job to create minimal tables/views required by migrator and collector
+  clickhouse-prepatch:
+    image: clickhouse/clickhouse-server:latest
+    container_name: signoz-clickhouse-prepatch
+    restart: on-failure
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 1G
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+    networks:
+      - tansucloud-network
+    entrypoint: ["bash","-lc"]
+    volumes:
+      - ./dev/clickhouse/prepatches:/prepatches:ro
+    command:
+      - >-
+        bash /prepatches/run-prepatches.sh
 
   # Dev-only compatibility init for SigNoz traces API
   # Ensures the view signoz_traces.distributed_top_level_operations exists, which
@@ -197,35 +225,18 @@ services:
     depends_on:
       clickhouse:
         condition: service_healthy
-      schema-migrator-sync:
+      clickhouse-prepatch:
         condition: service_completed_successfully
     networks:
       - tansucloud-network
-    entrypoint: ["bash","-lc"]
+    entrypoint: ["bash","-c"]
     volumes:
       - ./dev/clickhouse/patches:/patches:ro
-    command:
-      - >-
-        set -euo pipefail; \
-        # Create a compatibility view used by some SigNoz queries
-        clickhouse-client --host clickhouse --port 9000 --user admin --password admin \
-        -q "CREATE VIEW IF NOT EXISTS signoz_traces.distributed_top_level_operations ON CLUSTER cluster AS
-        SELECT name, serviceName, toDateTime(timestamp) AS time
-        FROM signoz_traces.distributed_signoz_index_v3
-        WHERE (parent_span_id = '' OR length(parent_span_id) = 0);" \
-        && \
-        # Ensure root_operations view exists before migrator attempts to ALTER it
-        clickhouse-client --host clickhouse --port 9000 --user admin --password admin \
-        -q "CREATE VIEW IF NOT EXISTS signoz_traces.root_operations ON CLUSTER cluster AS
-        SELECT DISTINCT name, resource_string_service$$name AS serviceName
-        FROM signoz_traces.signoz_index_v3
-        WHERE parent_span_id = ''" \
-        && \
-        # Apply all dev ClickHouse schema patches (idempotent)
-        for f in /patches/*.sql; do \
-          echo "Applying patch: $f"; \
-          clickhouse-client --host clickhouse --port 9000 --user admin --password admin -n < "$f"; \
-        done
+    command: |
+      set -euo pipefail
+      clickhouse-client --host clickhouse --port 9000 --user admin --password admin -q "CREATE MATERIALIZED VIEW IF NOT EXISTS signoz_traces.root_operations ON CLUSTER cluster AS SELECT DISTINCT name, resource_string_service\$\$name AS serviceName FROM signoz_traces.signoz_index_v3 WHERE parent_span_id = ''"
+      clickhouse-client --host clickhouse --port 9000 --user admin --password admin -q "CREATE MATERIALIZED VIEW IF NOT EXISTS signoz_traces.distributed_top_level_operations ON CLUSTER cluster AS SELECT name, serviceName, toDateTime(timestamp) AS time FROM signoz_traces.distributed_signoz_index_v3 WHERE parent_span_id = '' OR length(parent_span_id) = 0"
+      for f in /patches/*.sql; do echo "Applying patch: $f"; clickhouse-client --host clickhouse --port 9000 --user admin --password admin -n < "$f"; done
 
   redis:
     image: redis:latest
@@ -369,7 +380,7 @@ services:
       # Route audit writes via PgCat; avoid localhost inside container
       Audit__ConnectionString: "Host=pgcat;Port=6432;Database=postgres;Username=${POSTGRES_USER};Password=${POSTGRES_PASSWORD}"
       Oidc__Authority: ${PUBLIC_BASE_URL}/identity
-  # Use in-cluster gateway for backchannel discovery; browser-facing Authority follows PUBLIC_BASE_URL
+      # Use in-cluster gateway for backchannel discovery; browser-facing Authority follows PUBLIC_BASE_URL
       Oidc__MetadataAddress: ${GATEWAY_BASE_URL}/identity/.well-known/openid-configuration
       Oidc__RequireHttpsMetadata: false
       Oidc__ClientId: tansu-dashboard
@@ -382,6 +393,12 @@ services:
       CLICKHOUSE_HTTP: http://127.0.0.1:8123
       # Prometheus has been removed in favor of SigNoz. Leave unset to disable legacy metrics proxy.
       # Prometheus__BaseUrl: 
+      LogReporting__Enabled: ${LOGREPORTING__ENABLED:-true}
+    LogReporting__MainServerUrl: ${LOGREPORTING__MAINSERVERURL:-}
+    LogReporting__ApiKey: ${LOGREPORTING__APIKEY:-}
+    LogReporting__ReportIntervalMinutes: ${LOGREPORTING__REPORTINTERVALMINUTES:-60}
+    LogReporting__TenantHashSecret: ${LOGREPORTING__TENANTHASHSECRET:-}
+    LogReporting__PseudonymizeTenants: ${LOGREPORTING__PSEUDONYMIZETENANTS:-true}
     volumes:
       - tansu-dashboard-keys:/keys
     depends_on:

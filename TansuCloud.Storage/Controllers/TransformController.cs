@@ -1,4 +1,5 @@
 // Tansu.Cloud Public Repository:    https://github.com/MusaGursoy/TansuCloud
+using System.Diagnostics;
 using System.Security.Cryptography;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -54,23 +55,62 @@ public sealed class TransformController(
         CancellationToken ct
     )
     {
+        using var activity = TansuActivitySources.StorageTransforms.StartActivity(
+            "StorageTransform",
+            ActivityKind.Internal
+        );
+
+        void MarkStatus(ActivityStatusCode statusCode, string? description = null)
+        {
+            if (activity is not null)
+            {
+                activity.SetStatus(statusCode, description);
+            }
+        }
+
+        var normalizedTenant = NormalizeTenantTag(tenant.TenantId);
+        if (activity is not null)
+        {
+            if (!string.IsNullOrEmpty(normalizedTenant))
+            {
+                activity.SetTag(TelemetryConstants.Tenant, normalizedTenant);
+            }
+
+            activity.SetTag("storage.transform.bucket", bucket);
+            activity.SetTag("storage.transform.object_key", key);
+        }
+
         if (!_options.Enabled)
+        {
+            MarkStatus(ActivityStatusCode.Error, "TransformsDisabled");
             return Problem(
                 statusCode: StatusCodes.Status404NotFound,
                 detail: "Transforms disabled"
             );
+        }
 
         // Normalize key from route (decode % escapes like %2F) to match presign canonicalization
         key = RouteKeyNormalizer.Normalize(key);
 
         // Presign validation (signed GET; reuse IPresignService contract semantics)
         if (!TryValidateTransformPresign(bucket, key, out var problem))
+        {
+            MarkStatus(ActivityStatusCode.Error, "InvalidSignature");
             return problem!;
+        }
 
         // Enforce output format allowlist
         var format = (fmt ?? "webp").ToLowerInvariant();
         if (!_options.AllowedFormats.Contains(format, StringComparer.OrdinalIgnoreCase))
+        {
+            MarkStatus(ActivityStatusCode.Error, "InvalidFormat");
             return Problem(statusCode: StatusCodes.Status400BadRequest, detail: "Invalid format");
+        }
+
+        if (activity is not null)
+        {
+            activity.SetTag("storage.transform.format", format);
+        }
 
         // Clamp dimensions
         var width = Math.Max(0, w ?? 0);
@@ -82,34 +122,57 @@ public sealed class TransformController(
         else
         {
             if (_options.MaxWidth > 0 && width > _options.MaxWidth)
+            {
+                MarkStatus(ActivityStatusCode.Error, "WidthTooLarge");
                 return Problem(
                     statusCode: StatusCodes.Status400BadRequest,
                     detail: "Width too large"
                 );
+            }
             if (_options.MaxHeight > 0 && height > _options.MaxHeight)
+            {
+                MarkStatus(ActivityStatusCode.Error, "HeightTooLarge");
                 return Problem(
                     statusCode: StatusCodes.Status400BadRequest,
                     detail: "Height too large"
                 );
+            }
             if (
                 _options.MaxTotalPixels > 0
                 && (long)Math.Max(1, width) * Math.Max(1, height) > _options.MaxTotalPixels
             )
+            {
+                MarkStatus(ActivityStatusCode.Error, "PixelLimitExceeded");
                 return Problem(
                     statusCode: StatusCodes.Status400BadRequest,
                     detail: "Total pixels too large"
                 );
+            }
+        }
+
+        if (activity is not null)
+        {
+            activity.SetTag("storage.transform.requested_width", width);
+            activity.SetTag("storage.transform.requested_height", height);
         }
 
         // Load source head for ETag and metadata
         var head = await storage.HeadObjectAsync(bucket, key, ct);
         if (head is null)
+        {
+            MarkStatus(ActivityStatusCode.Error, "SourceNotFound");
             return NotFound();
+        }
 
         // Build cache key: tenant|bucket|key|etag|fmt|w|h|q
         var qual = q is > 0 and <= 100 ? q.Value : _options.DefaultQuality;
         var cacheKey =
             $"tx:{tenant.TenantId}|{bucket}|{key}|{head.ETag}|{format}|{width}x{height}|q{qual}";
+
+        if (activity is not null)
+        {
+            activity.SetTag("storage.transform.quality", qual);
+        }
 
         // Optional sampling for cache hits to reduce log noise; default sample 10% if not configured
         var samplePctStr = HttpContext
@@ -129,15 +192,21 @@ public sealed class TransformController(
             Response.Headers.ETag = head.ETag; // tie to source ETag
             SetVaryEncoding();
             CacheHitCounter.Add(1);
+            activity?.SetTag("storage.transform.cache_hit", true);
+            MarkStatus(ActivityStatusCode.Ok);
             return File(cached!, GetContentType(format));
         }
 
+        activity?.SetTag("storage.transform.cache_hit", false);
         CacheMissCounter.Add(1);
         var sw = System.Diagnostics.Stopwatch.StartNew();
         // Load original
         var found = await storage.GetObjectAsync(bucket, key, ct);
         if (found is null)
+        {
+            MarkStatus(ActivityStatusCode.Error, "SourceNotFound");
             return NotFound();
+        }
 
         try
         {
@@ -210,6 +279,7 @@ public sealed class TransformController(
             sw.Stop();
             DurationMs.Record(sw.Elapsed.TotalMilliseconds);
             logger.LogCacheMiss(cacheKey);
+            MarkStatus(ActivityStatusCode.Ok);
             return File(bytes, GetContentType(format));
         }
         catch (OperationCanceledException)
@@ -217,6 +287,7 @@ public sealed class TransformController(
             sw.Stop();
             DurationMs.Record(sw.Elapsed.TotalMilliseconds);
             TimeoutCounter.Add(1);
+            MarkStatus(ActivityStatusCode.Error, "Timeout");
             return Problem(
                 statusCode: StatusCodes.Status504GatewayTimeout,
                 detail: "Transform timeout"
@@ -226,6 +297,7 @@ public sealed class TransformController(
         {
             logger.LogWarning(ex, "Transform failed for {Bucket}/{Key}", bucket, key);
             FailureCounter.Add(1);
+            MarkStatus(ActivityStatusCode.Error, ex.Message);
             return Problem(
                 statusCode: StatusCodes.Status415UnsupportedMediaType,
                 detail: "Unsupported image or transform failed"
@@ -309,6 +381,22 @@ public sealed class TransformController(
         fixedBytes = buf;
         return true;
     }
+
+    private static string? NormalizeTenantTag(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return null;
+        }
+
+        var trimmed = value.Trim();
+        if (trimmed.Length > 64)
+        {
+            trimmed = trimmed[..64];
+        }
+
+        return trimmed.ToLowerInvariant();
+    } // End of Method NormalizeTenantTag
 
     private static uint ReadUInt32BE(ReadOnlySpan<byte> span)
     {

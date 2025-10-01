@@ -68,7 +68,12 @@ public class OutboxDispatcherHappyPathTests
         );
 
         // Use internal seam to process pending once
-        await dispatcher.DispatchPendingAsync(ctx, publisher, CancellationToken.None);
+        await dispatcher.DispatchPendingAsync(
+            ctx,
+            publisher,
+            "x",
+            CancellationToken.None
+        );
 
         // Assert
         publisher.Sent.Count.Should().Be(2);

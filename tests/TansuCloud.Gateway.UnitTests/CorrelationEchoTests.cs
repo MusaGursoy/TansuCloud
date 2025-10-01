@@ -9,11 +9,11 @@ using Xunit;
 
 namespace TansuCloud.Gateway.UnitTests;
 
-public class CorrelationEchoTests : IClassFixture<WebApplicationFactory<Program>>
+public class CorrelationEchoTests : IClassFixture<GatewayWebApplicationFactory>
 {
-    private readonly WebApplicationFactory<Program> _factory;
+    private readonly GatewayWebApplicationFactory _factory;
 
-    public CorrelationEchoTests(WebApplicationFactory<Program> factory)
+    public CorrelationEchoTests(GatewayWebApplicationFactory factory)
     {
         _factory = factory;
     }

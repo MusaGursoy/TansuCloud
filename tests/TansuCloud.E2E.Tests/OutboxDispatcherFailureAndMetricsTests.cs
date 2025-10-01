@@ -127,7 +127,12 @@ public class OutboxDispatcherFailureAndMetricsTests
         listener.Start();
 
         // First attempt fails -> status moves to Failed with Attempts=1 and NextAttemptAt future
-        await dispatcher.DispatchPendingAsync(ctx, flaky, CancellationToken.None);
+        await dispatcher.DispatchPendingAsync(
+            ctx,
+            flaky,
+            "x",
+            CancellationToken.None
+        );
         var ev = await ctx.OutboxEvents.SingleAsync();
         ev.Status.Should().Be(OutboxStatus.Failed);
         ev.Attempts.Should().Be(1);
@@ -138,7 +143,12 @@ public class OutboxDispatcherFailureAndMetricsTests
         ev.NextAttemptAt = DateTimeOffset.UtcNow.AddMilliseconds(-10);
         await ctx.SaveChangesAsync();
 
-        await dispatcher.DispatchPendingAsync(ctx, flaky, CancellationToken.None);
+        await dispatcher.DispatchPendingAsync(
+            ctx,
+            flaky,
+            "x",
+            CancellationToken.None
+        );
         ev = await ctx.OutboxEvents.SingleAsync();
         ev.Status.Should().Be(OutboxStatus.Dispatched);
         flaky.Payloads.Should().HaveCount(1);
@@ -208,7 +218,12 @@ public class OutboxDispatcherFailureAndMetricsTests
         );
         listener.Start();
         // Run until dead-letter (MaxAttempts=2 means 2 failures then move to DeadLettered on 2nd attempt)
-        await dispatcher.DispatchPendingAsync(ctx, failing, CancellationToken.None); // attempt 1 -> Failed
+        await dispatcher.DispatchPendingAsync(
+            ctx,
+            failing,
+            "x",
+            CancellationToken.None
+        ); // attempt 1 -> Failed
         var ev = await ctx.OutboxEvents.SingleAsync();
         ev.Status.Should().Be(OutboxStatus.Failed);
         ev.Attempts.Should().Be(1);
@@ -216,7 +231,12 @@ public class OutboxDispatcherFailureAndMetricsTests
         ev.NextAttemptAt = DateTimeOffset.UtcNow.AddMilliseconds(-5);
         await ctx.SaveChangesAsync();
 
-        await dispatcher.DispatchPendingAsync(ctx, failing, CancellationToken.None); // attempt 2 -> DeadLettered
+        await dispatcher.DispatchPendingAsync(
+            ctx,
+            failing,
+            "x",
+            CancellationToken.None
+        ); // attempt 2 -> DeadLettered
         ev = await ctx.OutboxEvents.SingleAsync();
         ev.Status.Should().Be(OutboxStatus.DeadLettered);
         ev.Attempts.Should().Be(2);

@@ -4,6 +4,7 @@ using System.IdentityModel.Tokens.Jwt; // For token inspection logging
 using System.IO;
 using System.Linq;
 using System.Net.Http;
+using System.Text.Json;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.Cookies;
@@ -20,11 +21,11 @@ using Microsoft.Extensions.Diagnostics.HealthChecks;
 using Microsoft.IdentityModel.Protocols; // For ConfigurationManager
 using Microsoft.IdentityModel.Protocols.OpenIdConnect; // For OpenIdConnectConfigurationRetriever
 using Microsoft.IdentityModel.Tokens;
+using OpenTelemetry.Instrumentation.StackExchangeRedis;
 using OpenTelemetry.Logs;
 using OpenTelemetry.Metrics;
 using OpenTelemetry.Resources;
 using OpenTelemetry.Trace;
-using OpenTelemetry.Instrumentation.StackExchangeRedis;
 using StackExchange.Redis;
 using TansuCloud.Dashboard.Components;
 using TansuCloud.Dashboard.Hosting;
@@ -143,6 +144,11 @@ builder.Logging.AddFilter("OIDC-Ticket", LogLevel.Information);
 builder
     .Services.AddHealthChecks()
     .AddCheck("self", () => HealthCheckResult.Healthy(), tags: new[] { "self" });
+
+// Readiness: verify OTLP exporter reachability and W3C Activity id format
+builder
+    .Services.AddHealthChecks()
+    .AddCheck<OtlpConnectivityHealthCheck>("otlp", tags: new[] { "ready", "otlp" });
 
 // Phase 0: publish health transitions
 builder.Services.AddSingleton<IHealthCheckPublisher, HealthTransitionPublisher>();
@@ -2343,14 +2349,46 @@ app.MapStaticAssets().AllowAnonymous();
 // API endpoints (map BEFORE Razor components so Blazor's catch-all doesn't shadow /api/*)
 // --------------------
 // Health endpoints
+Task WriteHealthResponse(HttpContext httpContext, HealthReport report)
+{
+    httpContext.Response.ContentType = "application/json";
+    var status = report.Status.ToString();
+    var json = JsonSerializer.Serialize(
+        new
+        {
+            status,
+            totalDurationMs = report.TotalDuration.TotalMilliseconds,
+            entries = report.Entries.ToDictionary(
+                e => e.Key,
+                e => new
+                {
+                    status = e.Value.Status.ToString(),
+                    description = e.Value.Description,
+                    durationMs = e.Value.Duration.TotalMilliseconds,
+                    data = e.Value.Data
+                }
+            )
+        }
+    );
+    return httpContext.Response.WriteAsync(json);
+} // End of Method WriteHealthResponse
+
 app.MapHealthChecks(
         "/health/live",
-        new HealthCheckOptions { Predicate = r => r.Tags.Contains("self") }
+        new HealthCheckOptions
+        {
+            Predicate = r => r.Tags.Contains("self"),
+            ResponseWriter = WriteHealthResponse
+        }
     )
     .AllowAnonymous();
 app.MapHealthChecks(
         "/health/ready",
-        new HealthCheckOptions { Predicate = r => r.Tags.Contains("ready") }
+        new HealthCheckOptions
+        {
+            Predicate = r => r.Tags.Contains("ready"),
+            ResponseWriter = WriteHealthResponse
+        }
     )
     .AllowAnonymous();
 

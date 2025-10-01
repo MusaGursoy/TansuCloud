@@ -16,7 +16,11 @@ using Moq;
 using TansuCloud.Observability;
 using TansuCloud.Storage.Controllers;
 using TansuCloud.Storage.Services;
+using TansuCloud.Storage.UnitTests.Support;
+using Microsoft.AspNetCore.Mvc.Infrastructure;
 using Xunit;
+using SixLabors.ImageSharp;
+using SixLabors.ImageSharp.PixelFormats;
 
 public class TransformCacheLoggingTests
 {
@@ -82,7 +86,7 @@ public class TransformCacheLoggingTests
             Bucket: "buck",
             Key: "a/b",
             Length: 3,
-            ContentType: "image/webp",
+            ContentType: "image/png",
             ETag: "etag1",
             LastModified: DateTimeOffset.UtcNow,
             Metadata: new Dictionary<string, string>()
@@ -92,7 +96,7 @@ public class TransformCacheLoggingTests
             .ReturnsAsync(head);
         storage
             .Setup(s => s.GetObjectAsync("buck", "a/b", It.IsAny<CancellationToken>()))
-            .ReturnsAsync((head, (Stream)new MemoryStream(new byte[] { 1, 2, 3 })));
+            .ReturnsAsync(() => (head, (Stream)new MemoryStream(CreateTinyPng())));
 
         controller.ControllerContext.HttpContext.Request.Headers["X-Tansu-Tenant"] = tenant
             .Object
@@ -114,6 +118,18 @@ public class TransformCacheLoggingTests
         );
         // May be 415/timeout depending on encoder, but we only assert logging of miss attempt occurs prior to transform
         logger.Events.Should().Contain(e => e.Id == LogEvents.StorageCacheMiss.Id);
+    }
+
+    private static byte[] CreateTinyPng()
+    {
+        using var image = new Image<Rgba32>(width: 2, height: 2);
+        image[0, 0] = new Rgba32(255, 0, 0);
+        image[1, 0] = new Rgba32(0, 255, 0);
+        image[0, 1] = new Rgba32(0, 0, 255);
+        image[1, 1] = new Rgba32(255, 255, 0);
+        using var ms = new MemoryStream();
+        image.SaveAsPng(ms);
+        return ms.ToArray();
     }
 
     private static (
@@ -175,6 +191,7 @@ public class TransformCacheLoggingTests
             {
                 RequestServices = new ServiceCollection()
                     .AddSingleton<IConfiguration>(conf)
+                    .AddSingleton<ProblemDetailsFactory, TestProblemDetailsFactory>()
                     .BuildServiceProvider()
             }
         };

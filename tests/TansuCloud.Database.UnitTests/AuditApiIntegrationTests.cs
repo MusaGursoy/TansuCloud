@@ -1,4 +1,6 @@
 // Tansu.Cloud Public Repository:    https://github.com/MusaGursoy/TansuCloud
+using System;
+using System.Collections.Generic;
 using System.Net.Http.Json;
 using System.Text.Json;
 using FluentAssertions;
@@ -6,6 +8,7 @@ using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using TansuCloud.Database.Services;
@@ -17,6 +20,8 @@ public class DatabaseWebAppFactory : WebApplicationFactory<Program>
 {
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
+        TestEnvironment.EnsureInitialized();
+
         builder.ConfigureServices(services =>
         {
             // Replace the real query service with a fake one returning a deterministic item
@@ -32,6 +37,34 @@ public class DatabaseWebAppFactory : WebApplicationFactory<Program>
                 o.AddPolicy("db.read", p => p.RequireAssertion(_ => true));
             });
         });
+
+        builder.ConfigureAppConfiguration(
+            (_, configBuilder) =>
+            {
+                var publicBase = Environment.GetEnvironmentVariable("PUBLIC_BASE_URL");
+                var gatewayBase = Environment.GetEnvironmentVariable("GATEWAY_BASE_URL");
+
+                if (string.IsNullOrWhiteSpace(publicBase) && string.IsNullOrWhiteSpace(gatewayBase))
+                {
+                    return;
+                }
+
+                var overrides = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
+                if (!string.IsNullOrWhiteSpace(publicBase))
+                {
+                    overrides["PublicBaseUrl"] = publicBase;
+                    overrides["PUBLIC_BASE_URL"] = publicBase;
+                }
+
+                if (!string.IsNullOrWhiteSpace(gatewayBase))
+                {
+                    overrides["GatewayBaseUrl"] = gatewayBase;
+                    overrides["GATEWAY_BASE_URL"] = gatewayBase;
+                }
+
+                configBuilder.AddInMemoryCollection(overrides);
+            }
+        );
 
         builder.UseEnvironment("Development");
     } // End of Method ConfigureWebHost

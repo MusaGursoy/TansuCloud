@@ -138,6 +138,12 @@ builder
     .Services.AddHealthChecks()
     .AddCheck("self", () => HealthCheckResult.Healthy(), tags: new[] { "self" });
 
+// Readiness: verify OTLP exporter reachability and W3C Activity id format
+builder.Services.AddHealthChecks().AddCheck<OtlpConnectivityHealthCheck>(
+    "otlp",
+    tags: new[] { "ready", "otlp" }
+);
+
 // Audit retention options and background job (Phase 3)
 builder
     .Services.AddOptions<TansuCloud.Database.Services.AuditRetentionOptions>()
@@ -1059,7 +1065,9 @@ Task WriteHealthResponse(HttpContext httpContext, HealthReport report)
                 {
                     status = e.Value.Status.ToString(),
                     description = e.Value.Description,
-                    durationMs = e.Value.Duration.TotalMilliseconds
+                    durationMs = e.Value.Duration.TotalMilliseconds,
+                    // Include health check data for ops visibility (e.g., activity/otlp keys)
+                    data = e.Value.Data
                 }
             )
         }

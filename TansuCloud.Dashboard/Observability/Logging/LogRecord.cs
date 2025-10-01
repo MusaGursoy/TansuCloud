@@ -17,8 +17,11 @@ public sealed record LogRecord
     public string? Scope { get; init; } // End of Property Scope
     public string? Tenant { get; init; } // End of Property Tenant
     public string? RequestId { get; init; } // End of Property RequestId
+    public string? CorrelationId { get; init; } // End of Property CorrelationId
     public string? TraceId { get; init; } // End of Property TraceId
     public string? SpanId { get; init; } // End of Property SpanId
     public string? ServiceName { get; init; } // End of Property ServiceName
     public string? EnvironmentName { get; init; } // End of Property EnvironmentName
+    public int EventId { get; init; } // End of Property EventId
+    public string? EventName { get; init; } // End of Property EventName
 } // End of Record LogRecord

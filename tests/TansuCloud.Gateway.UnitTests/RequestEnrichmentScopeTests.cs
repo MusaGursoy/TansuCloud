@@ -11,18 +11,18 @@ using FluentAssertions;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
-using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using TansuCloud.Observability;
 using Xunit;
 
-public class RequestEnrichmentScopeTests : IClassFixture<WebApplicationFactory<Program>>
-{
-    private readonly WebApplicationFactory<Program> _factory;
+namespace TansuCloud.Gateway.UnitTests;
 
-    public RequestEnrichmentScopeTests(WebApplicationFactory<Program> factory) =>
-        _factory = factory; // End of Constructor RequestEnrichmentScopeTests
+public class RequestEnrichmentScopeTests : IClassFixture<GatewayWebApplicationFactory>
+{
+    private readonly GatewayWebApplicationFactory _factory;
+
+    public RequestEnrichmentScopeTests(GatewayWebApplicationFactory factory) => _factory = factory; // End of Constructor RequestEnrichmentScopeTests
 
     [Fact(
         DisplayName = "Gateway scope contains correlation/tenant/route/trace/span and echoes header"

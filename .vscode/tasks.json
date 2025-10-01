@@ -25,7 +25,11 @@
 			"label": "SigNoz: readiness probe",
 			"type": "shell",
 			"command": "pwsh",
-			"args": ["-NoProfile", "-File", "${workspaceFolder}/dev/tools/sigNoz-ready.ps1" ]
+			"args": [
+				"-NoProfile",
+				"-File",
+				"${workspaceFolder}/dev/tools/sigNoz-ready.ps1"
+			]
 		},
 		{
 			"label": "Run health E2E tests",
@@ -373,7 +377,11 @@
 			"label": "SigNoz: readiness + run E2E",
 			"type": "shell",
 			"command": "pwsh",
-			"args": ["-NoProfile", "-File", "${workspaceFolder}/dev/tools/sigNoz-run-exception-e2e.ps1"],
+			"args": [
+				"-NoProfile",
+				"-File",
+				"${workspaceFolder}/dev/tools/sigNoz-run-exception-e2e.ps1"
+			],
 			"group": "build"
 		},
 		{
@@ -383,7 +391,7 @@
 			"args": [
 				"-NoProfile",
 				"-Command",
-				"$ErrorActionPreference='Stop'; . '${workspaceFolder}/dev/tools/common.ps1'; Import-TansuDotEnv | Out-Null; pwsh -NoProfile -File '${workspaceFolder}/dev/tools/signoz-apply-governance.ps1' -DefaultsPath '${workspaceFolder}/SigNoz/governance.defaults.json'"
+				"$ErrorActionPreference='Stop'; . '${workspaceFolder}/dev/tools/common.ps1'; Import-TansuDotEnv | Out-Null; pwsh -NoProfile -File '${workspaceFolder}/dev/tools/signoz-apply-governance.ps1' -DefaultsPath '${workspaceFolder}/SigNoz/governance.dev.json'"
 			]
 		},
 		{
@@ -393,7 +401,7 @@
 			"args": [
 				"-NoProfile",
 				"-Command",
-				"$ErrorActionPreference='Stop'; . '${workspaceFolder}/dev/tools/common.ps1'; Import-TansuDotEnv | Out-Null; pwsh -NoProfile -File '${workspaceFolder}/dev/tools/signoz-apply-governance.ps1' -DefaultsPath '${workspaceFolder}/SigNoz/governance.defaults.json' -Apply"
+				"$ErrorActionPreference='Stop'; . '${workspaceFolder}/dev/tools/common.ps1'; Import-TansuDotEnv | Out-Null; pwsh -NoProfile -File '${workspaceFolder}/dev/tools/signoz-apply-governance.ps1' -DefaultsPath '${workspaceFolder}/SigNoz/governance.dev.json' -Apply"
 			]
 		},
 		{
@@ -460,8 +468,7 @@
 			"command": "dotnet build .\\TansuCloud.sln -c Debug",
 			"isBackground": false,
 			"group": "build"
-		}
-		,
+		},
 		{
 			"label": "compose: up + wait + health E2E",
 			"type": "shell",
@@ -471,6 +478,13 @@
 				"-File",
 				"${workspaceFolder}/dev/tools/compose-run-health-e2e.ps1"
 			],
+			"group": "build"
+		},
+		{
+			"label": "temp: quick build (health smoke)",
+			"type": "shell",
+			"command": "dotnet build .\\TansuCloud.sln -c Debug",
+			"isBackground": false,
 			"group": "build"
 		}
 	]

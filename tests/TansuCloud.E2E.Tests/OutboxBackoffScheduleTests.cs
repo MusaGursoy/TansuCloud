@@ -74,6 +74,7 @@ public class OutboxBackoffScheduleTests
             await dispatcher.DispatchPendingAsync(
                 ctx,
                 new AlwaysFailingPublisher(),
+                "x",
                 CancellationToken.None
             );
             var ev = ctx.OutboxEvents.Single();

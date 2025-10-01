@@ -77,5 +77,15 @@ namespace TansuCloud.Dashboard.Observability.Logging
 
         [Range(0, 100)]
         public int ErrorRatePercent { get; set; } = 1; // End of Property ErrorRatePercent
+
+        /// <summary>
+        /// When true, tenant identifiers are pseudonymized using TenantHashSecret before reporting.
+        /// </summary>
+        public bool PseudonymizeTenants { get; set; } = true; // End of Property PseudonymizeTenants
+
+        /// <summary>
+        /// Optional shared secret used to HMAC-hash tenant identifiers. If empty, SHA256 is used.
+        /// </summary>
+        public string? TenantHashSecret { get; set; } // End of Property TenantHashSecret
     } // End of Class LogReportingOptions
 } // End of Namespace TansuCloud.Dashboard.Observability.Logging

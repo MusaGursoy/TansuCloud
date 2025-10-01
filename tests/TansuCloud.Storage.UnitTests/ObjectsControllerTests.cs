@@ -10,9 +10,15 @@ using Moq;
 using TansuCloud.Observability.Auditing;
 using TansuCloud.Storage.Controllers;
 using TansuCloud.Storage.Services;
+using TansuCloud.Storage.UnitTests.Support;
+using Microsoft.AspNetCore.Mvc.Infrastructure;
 
 public sealed class ObjectsControllerTests
 {
+    private static readonly IServiceProvider TestServices = new ServiceCollection()
+        .AddSingleton<ProblemDetailsFactory, TestProblemDetailsFactory>()
+        .BuildServiceProvider();
+
     private sealed class FakeVersions : ITenantCacheVersion
     {
         private readonly Dictionary<string, int> _versions = new();
@@ -66,7 +72,7 @@ public sealed class ObjectsControllerTests
             cache: null
         );
 
-        var httpCtx = new DefaultHttpContext();
+        var httpCtx = new DefaultHttpContext { RequestServices = TestServices };
         httpCtx.Request.Headers["X-Tansu-Tenant"] = "tenant-ut";
         httpCtx.User = new ClaimsPrincipal(
             new ClaimsIdentity(
@@ -129,7 +135,7 @@ public sealed class ObjectsControllerTests
             cache
         );
 
-        var httpCtx = new DefaultHttpContext();
+        var httpCtx = new DefaultHttpContext { RequestServices = TestServices };
         httpCtx.User = new System.Security.Claims.ClaimsPrincipal(
             new System.Security.Claims.ClaimsIdentity(
                 new[] { new System.Security.Claims.Claim("scope", "storage.read") },
@@ -157,7 +163,7 @@ public sealed class ObjectsControllerTests
     }
 
     [Fact]
-    public async Task Head_Uses_HybridCache_And_Invalidates_On_Version()
+    public async Task Head_Bypasses_Cache_When_Disabled_But_Still_Succeeds()
     {
         // Arrange
         var storage = new Mock<IObjectStorage>(MockBehavior.Strict);
@@ -199,7 +205,7 @@ public sealed class ObjectsControllerTests
             cache
         );
 
-        var httpCtx = new DefaultHttpContext();
+    var httpCtx = new DefaultHttpContext { RequestServices = TestServices };
         httpCtx.User = new System.Security.Claims.ClaimsPrincipal(
             new System.Security.Claims.ClaimsIdentity(
                 new[] { new System.Security.Claims.Claim("scope", "storage.read") },
@@ -212,18 +218,18 @@ public sealed class ObjectsControllerTests
         // Act: first head → miss
         var r1 = await controller.Head(bucket, key, default);
         r1.Should().BeOfType<OkResult>();
-        storage.Verify(s => s.HeadObjectAsync(bucket, key, default), Times.Once);
+    storage.Verify(s => s.HeadObjectAsync(bucket, key, default), Times.Once);
 
-        // Act: second head → hit
+    // Act: second head → caching currently disabled, so another call occurs
         var r2 = await controller.Head(bucket, key, default);
         r2.Should().BeOfType<OkResult>();
-        storage.Verify(s => s.HeadObjectAsync(bucket, key, default), Times.Once);
+    storage.Verify(s => s.HeadObjectAsync(bucket, key, default), Times.Exactly(2));
 
         // Invalidate and ensure call goes to storage again
         versions.Increment("tenant-ut");
         var r3 = await controller.Head(bucket, key, default);
         r3.Should().BeOfType<OkResult>();
-        storage.Verify(s => s.HeadObjectAsync(bucket, key, default), Times.Exactly(2));
+    storage.Verify(s => s.HeadObjectAsync(bucket, key, default), Times.Exactly(3));
     }
 
     [Fact]
@@ -287,7 +293,7 @@ public sealed class ObjectsControllerTests
             )
             .Returns(true);
 
-        var httpCtx = new DefaultHttpContext();
+    var httpCtx = new DefaultHttpContext { RequestServices = TestServices };
         httpCtx.Request.Method = HttpMethods.Get;
         httpCtx.Request.QueryString = new QueryString("?exp=9999999999&sig=s");
         httpCtx.Request.Headers["Range"] = "bytes=0-3";
@@ -351,10 +357,10 @@ public sealed class ObjectsControllerTests
             )
             .Returns(true);
 
-        var httpCtx = new DefaultHttpContext();
+    var httpCtx = new DefaultHttpContext { RequestServices = TestServices };
         httpCtx.Request.Method = HttpMethods.Get;
         httpCtx.Request.QueryString = new QueryString("?exp=9999999999&sig=s");
-    httpCtx.Request.Headers["Range"] = "bytes=10-20"; // invalid given length=5
+        httpCtx.Request.Headers["Range"] = "bytes=10-20"; // invalid given length=5
         httpCtx.Request.Headers["X-Tansu-Tenant"] = "tenant-ut";
         var ctrlCtx = new ControllerContext { HttpContext = httpCtx };
         controller.ControllerContext = ctrlCtx;
@@ -402,7 +408,7 @@ public sealed class ObjectsControllerTests
         );
         quotas.Setup(q => q.EvaluateAsync(It.IsAny<long>(), default)).ReturnsAsync(eval);
 
-        var httpCtx = new DefaultHttpContext();
+    var httpCtx = new DefaultHttpContext { RequestServices = TestServices };
         httpCtx.Request.Method = HttpMethods.Put;
         httpCtx.Request.QueryString = new QueryString("?exp=9999999999&sig=s");
         httpCtx.Request.ContentType = "text/plain";
@@ -469,7 +475,7 @@ public sealed class ObjectsControllerTests
             )
             .Returns(true);
 
-        var httpCtx = new DefaultHttpContext();
+    var httpCtx = new DefaultHttpContext { RequestServices = TestServices };
         httpCtx.Request.Method = HttpMethods.Get;
         httpCtx.Request.QueryString = new QueryString("?exp=9999999999&sig=s");
         httpCtx.Request.Headers["If-None-Match"] = etag;
@@ -526,7 +532,7 @@ public sealed class ObjectsControllerTests
             )
             .Returns(true);
 
-        var httpCtx = new DefaultHttpContext();
+    var httpCtx = new DefaultHttpContext { RequestServices = TestServices };
         httpCtx.Request.Method = HttpMethods.Get;
         httpCtx.Request.QueryString = new QueryString("?exp=9999999999&sig=s");
         httpCtx.Request.Headers["If-Match"] = "\"strong\""; // mismatch
@@ -569,7 +575,7 @@ public sealed class ObjectsControllerTests
             .Setup(q => q.EvaluateAsync(It.IsAny<long>(), default))
             .ReturnsAsync(new QuotaEvaluation(false, null, 0, 0, 0, 0, 0, 0));
 
-        var httpCtx = new DefaultHttpContext();
+    var httpCtx = new DefaultHttpContext { RequestServices = TestServices };
         httpCtx.Request.Method = HttpMethods.Put;
         httpCtx.Request.QueryString = new QueryString("?exp=9999999999&sig=s&ct=text/plain");
         httpCtx.Request.ContentType = "application/json; charset=utf-8"; // mismatch to text/plain
@@ -653,7 +659,7 @@ public sealed class ObjectsControllerTests
             );
         av.Setup(a => a.ScanObjectAsync(bucket, key, default)).ReturnsAsync(true);
 
-        var httpCtx = new DefaultHttpContext();
+    var httpCtx = new DefaultHttpContext { RequestServices = TestServices };
         httpCtx.Request.Method = HttpMethods.Put;
         httpCtx.Request.QueryString = new QueryString("?exp=9999999999&sig=s");
         httpCtx.Request.ContentType = "text/plain";

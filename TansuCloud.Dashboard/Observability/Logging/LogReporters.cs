@@ -44,7 +44,7 @@ namespace TansuCloud.Dashboard.Observability.Logging
             if (string.IsNullOrWhiteSpace(_options.MainServerUrl))
                 return;
 
-            var url = _options.MainServerUrl!.TrimEnd('/') + "/api/logs/report";
+            var url = _options.MainServerUrl!.Trim();
             var json = JsonSerializer.Serialize(
                 request,
                 new JsonSerializerOptions

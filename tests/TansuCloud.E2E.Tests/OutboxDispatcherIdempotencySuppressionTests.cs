@@ -40,7 +40,12 @@ public class OutboxDispatcherIdempotencySuppressionTests
         var sp = services.BuildServiceProvider();
         var dispatcher = new OutboxDispatcher(Options.Create(new OutboxOptions { RedisConnection="unused", DispatchTenant="x" }), sp.GetRequiredService<ILogger<OutboxDispatcher>>(), sp, publisher);
 
-        await dispatcher.DispatchPendingAsync(ctx, publisher, CancellationToken.None);
+        await dispatcher.DispatchPendingAsync(
+            ctx,
+            publisher,
+            "suppression",
+            CancellationToken.None
+        );
 
         // Only first should publish, both should end up dispatched.
         publisher.Sent.Should().HaveCount(1);

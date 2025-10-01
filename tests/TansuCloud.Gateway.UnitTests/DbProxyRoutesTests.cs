@@ -8,11 +8,11 @@ using Xunit;
 
 namespace TansuCloud.Gateway.UnitTests;
 
-public sealed class DbProxyRoutesTests : IClassFixture<WebApplicationFactory<Program>>
+public sealed class DbProxyRoutesTests : IClassFixture<GatewayWebApplicationFactory>
 {
     private readonly WebApplicationFactory<Program> _factory;
 
-    public DbProxyRoutesTests(WebApplicationFactory<Program> factory)
+    public DbProxyRoutesTests(GatewayWebApplicationFactory factory)
     {
         // Boot the gateway with defaults; no downstream Database needed to assert auth guard
         _factory = factory.WithWebHostBuilder(_ => { });

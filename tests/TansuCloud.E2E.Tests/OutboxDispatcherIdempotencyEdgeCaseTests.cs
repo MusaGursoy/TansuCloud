@@ -74,7 +74,12 @@ public class OutboxDispatcherIdempotencyEdgeCaseTests
             publisher
         );
 
-        await dispatcher.DispatchPendingAsync(ctx, publisher, CancellationToken.None);
+        await dispatcher.DispatchPendingAsync(
+            ctx,
+            publisher,
+            "edge",
+            CancellationToken.None
+        );
 
         publisher.Sent.Should().HaveCount(2); // both distinct (Type, IdempotencyKey) pairs must publish
         (await ctx.OutboxEvents.CountAsync(e => e.Status == OutboxStatus.Dispatched))

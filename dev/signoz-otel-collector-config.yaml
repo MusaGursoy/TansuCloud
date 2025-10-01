@@ -53,8 +53,7 @@ service:
       receivers: [otlp]
       processors: [resourcedetection, batch]
       exporters: [clickhouselogsexporter]
-    # Temporarily disable metrics pipeline until schema alignment is finalized
-    # metrics:
-    #   receivers: [otlp, hostmetrics]
-    #   processors: [batch]
-    #   exporters: [signozclickhousemetrics]
+    metrics:
+      receivers: [otlp, hostmetrics]
+      processors: [batch]
+      exporters: [signozclickhousemetrics]

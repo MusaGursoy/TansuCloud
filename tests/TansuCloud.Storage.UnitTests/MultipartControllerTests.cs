@@ -2,15 +2,22 @@
 using FluentAssertions;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.Mvc.Infrastructure;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Moq;
 using TansuCloud.Observability.Auditing;
 using TansuCloud.Storage.Controllers;
 using TansuCloud.Storage.Services;
+using TansuCloud.Storage.UnitTests.Support;
+using Microsoft.Extensions.DependencyInjection;
 
 public sealed class MultipartControllerTests
 {
+    private static readonly IServiceProvider TestServices = new ServiceCollection()
+        .AddSingleton<ProblemDetailsFactory, TestProblemDetailsFactory>()
+        .BuildServiceProvider();
+
     private static MultipartController Create(
         out Mock<IMultipartStorage> mp,
         out Mock<ITenantContext> tenant,
@@ -70,11 +77,11 @@ public sealed class MultipartControllerTests
         mp.Setup(m => m.GetPartsAsync(bucket, key, uploadId, default))
             .ReturnsAsync(new[] { new PartInfo(1, 10) });
 
-        var http = new DefaultHttpContext();
+        var http = new DefaultHttpContext { RequestServices = TestServices };
         http.Request.Method = HttpMethods.Post;
         http.Request.QueryString = new QueryString("?exp=9999999999&sig=s");
-    http.Request.Headers["X-Tansu-Tenant"] = "tenant-ut";
-    controller.ControllerContext = new ControllerContext { HttpContext = http };
+        http.Request.Headers["X-Tansu-Tenant"] = "tenant-ut";
+        controller.ControllerContext = new ControllerContext { HttpContext = http };
 
         var res = await controller.Complete(
             bucket,
@@ -83,9 +90,10 @@ public sealed class MultipartControllerTests
             new MultipartController.CompleteRequest(new List<int> { 1, 2 }),
             default
         );
-        var pr = Assert.IsType<ObjectResult>(res);
-        pr.StatusCode.Should().Be(StatusCodes.Status400BadRequest);
-        Assert.Contains("Missing uploaded part 2", pr.Value?.ToString());
+    var pr = Assert.IsType<ObjectResult>(res);
+    pr.StatusCode.Should().Be(StatusCodes.Status400BadRequest);
+    var problem = Assert.IsType<ProblemDetails>(pr.Value);
+    problem.Detail.Should().Contain("Missing uploaded part 2");
     }
 
     [Fact]
@@ -113,11 +121,11 @@ public sealed class MultipartControllerTests
         mp.Setup(m => m.GetPartsAsync(bucket, key, uploadId, default))
             .ReturnsAsync(new[] { new PartInfo(1, 3), new PartInfo(2, 10) });
 
-        var http = new DefaultHttpContext();
+        var http = new DefaultHttpContext { RequestServices = TestServices };
         http.Request.Method = HttpMethods.Post;
         http.Request.QueryString = new QueryString("?exp=9999999999&sig=s");
-    http.Request.Headers["X-Tansu-Tenant"] = "tenant-ut";
-    controller.ControllerContext = new ControllerContext { HttpContext = http };
+        http.Request.Headers["X-Tansu-Tenant"] = "tenant-ut";
+        controller.ControllerContext = new ControllerContext { HttpContext = http };
 
         var res = await controller.Complete(
             bucket,
@@ -126,9 +134,10 @@ public sealed class MultipartControllerTests
             new MultipartController.CompleteRequest(new List<int> { 1, 2 }),
             default
         );
-        var pr = Assert.IsType<ObjectResult>(res);
-        pr.StatusCode.Should().Be(StatusCodes.Status400BadRequest);
-        Assert.Contains("below minimum size", pr.Value?.ToString());
+    var pr = Assert.IsType<ObjectResult>(res);
+    pr.StatusCode.Should().Be(StatusCodes.Status400BadRequest);
+    var problem = Assert.IsType<ProblemDetails>(pr.Value);
+    problem.Detail.Should().Contain("below minimum size");
     }
 
     [Fact]
@@ -156,11 +165,11 @@ public sealed class MultipartControllerTests
         mp.Setup(m => m.GetPartsAsync(bucket, key, uploadId, default))
             .ReturnsAsync(new[] { new PartInfo(1, 10), new PartInfo(2, 10) });
 
-        var http = new DefaultHttpContext();
+        var http = new DefaultHttpContext { RequestServices = TestServices };
         http.Request.Method = HttpMethods.Post;
         http.Request.QueryString = new QueryString("?exp=9999999999&sig=s");
-    http.Request.Headers["X-Tansu-Tenant"] = "tenant-ut";
-    controller.ControllerContext = new ControllerContext { HttpContext = http };
+        http.Request.Headers["X-Tansu-Tenant"] = "tenant-ut";
+        controller.ControllerContext = new ControllerContext { HttpContext = http };
 
         // Duplicate part number 2 provided
         var res = await controller.Complete(
@@ -170,9 +179,10 @@ public sealed class MultipartControllerTests
             new MultipartController.CompleteRequest(new List<int> { 1, 2, 2 }),
             default
         );
-        var pr = Assert.IsType<ObjectResult>(res);
-        pr.StatusCode.Should().Be(StatusCodes.Status400BadRequest);
-        Assert.Contains("Duplicate part number", pr.Value?.ToString());
+    var pr = Assert.IsType<ObjectResult>(res);
+    pr.StatusCode.Should().Be(StatusCodes.Status400BadRequest);
+    var problem = Assert.IsType<ProblemDetails>(pr.Value);
+    problem.Detail.Should().Contain("Duplicate part number");
     }
 
     [Fact]
@@ -197,13 +207,13 @@ public sealed class MultipartControllerTests
             )
             .Returns(false);
 
-        var http = new DefaultHttpContext();
+        var http = new DefaultHttpContext { RequestServices = TestServices };
         http.Request.Method = HttpMethods.Put;
         http.Request.QueryString = new QueryString("?exp=9999999999&sig=bad");
         http.Request.ContentLength = 10;
         http.Request.Body = new MemoryStream(new byte[10]);
-    http.Request.Headers["X-Tansu-Tenant"] = "tenant-ut";
-    controller.ControllerContext = new ControllerContext { HttpContext = http };
+        http.Request.Headers["X-Tansu-Tenant"] = "tenant-ut";
+        controller.ControllerContext = new ControllerContext { HttpContext = http };
 
         var res = await controller.UploadPart(bucket, key, partNumber: 1, uploadId, default);
         var pr = Assert.IsType<ObjectResult>(res);
@@ -240,16 +250,19 @@ public sealed class MultipartControllerTests
             )
             .Returns(true);
 
-        var http = new DefaultHttpContext();
+    var http = new DefaultHttpContext { RequestServices = TestServices };
         http.Request.Method = HttpMethods.Put;
         http.Request.QueryString = new QueryString("?exp=9999999999&sig=s");
         http.Request.ContentLength = 10; // exceeds max 5
         http.Request.Body = new MemoryStream(new byte[10]);
+    http.Request.Headers["X-Tansu-Tenant"] = "tenant-ut";
         controller.ControllerContext = new ControllerContext { HttpContext = http };
 
         var res = await controller.UploadPart(bucket, key, partNumber: 1, uploadId, default);
         var pr = Assert.IsType<ObjectResult>(res);
         pr.StatusCode.Should().Be(StatusCodes.Status413PayloadTooLarge);
+    var problem = Assert.IsType<ProblemDetails>(pr.Value);
+    problem.Detail.Should().Contain("exceeds maximum size");
     }
 
     [Fact]
@@ -286,9 +299,10 @@ public sealed class MultipartControllerTests
         mp.Setup(m => m.GetPartsAsync(bucket, key, uploadId, default))
             .ReturnsAsync(new[] { new PartInfo(1, 10), new PartInfo(2, 10_000) });
 
-        var http = new DefaultHttpContext();
+        var http = new DefaultHttpContext { RequestServices = TestServices };
         http.Request.Method = HttpMethods.Post;
         http.Request.QueryString = new QueryString("?exp=9999999999&sig=s");
+        http.Request.Headers["X-Tansu-Tenant"] = "tenant-ut";
         controller.ControllerContext = new ControllerContext { HttpContext = http };
 
         var res = await controller.Complete(
@@ -300,5 +314,7 @@ public sealed class MultipartControllerTests
         );
         var pr = Assert.IsType<ObjectResult>(res);
         pr.StatusCode.Should().Be(StatusCodes.Status413PayloadTooLarge);
+        var problem = Assert.IsType<ProblemDetails>(pr.Value);
+        problem.Detail.Should().Contain("exceeds maximum size");
     }
 }

@@ -4,15 +4,21 @@ using System.Text.Json.Serialization;
 namespace TansuCloud.Dashboard.Observability.Logging
 {
     public sealed record LogItem(
+        string Kind,
         string Timestamp,
         string Level,
         string Message,
+        string TemplateHash,
         string? Exception,
         string? Service,
         string? Environment,
-        string? Tenant,
+        string? TenantHash,
+        string? CorrelationId,
         string? TraceId,
         string? SpanId,
+        string? Category,
+        int? EventId,
+        int Count,
         object? Properties
     ); // End of Record LogItem
 

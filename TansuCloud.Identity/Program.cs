@@ -1,6 +1,7 @@
 // Tansu.Cloud Public Repository:    https://github.com/MusaGursoy/TansuCloud
 
 using System.Linq;
+using System.Text.Json;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.AspNetCore.Diagnostics.HealthChecks;
@@ -142,6 +143,11 @@ builder
     .Services.AddHealthChecks()
     // Self liveness check
     .AddCheck("self", () => HealthCheckResult.Healthy(), tags: new[] { "self" });
+
+// Readiness: verify OTLP exporter reachability and W3C Activity id format
+builder
+    .Services.AddHealthChecks()
+    .AddCheck<OtlpConnectivityHealthCheck>("otlp", tags: new[] { "ready", "otlp" });
 
 // Phase 0: health transition publisher for Info logs on status change
 builder.Services.AddSingleton<IHealthCheckPublisher, HealthTransitionPublisher>();
@@ -466,7 +472,7 @@ builder.Services.AddHttpClient(
         var urls = builder
             .Configuration["ASPNETCORE_URLS"]
             ?.Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-    var self = urls?.FirstOrDefault() ?? identityLoopbackBase;
+        var self = urls?.FirstOrDefault() ?? identityLoopbackBase;
         c.BaseAddress = new Uri(self);
     }
 );
@@ -527,14 +533,46 @@ app.MapControllers();
 app.MapRazorPages();
 
 // Health endpoints
+Task WriteHealthResponse(HttpContext httpContext, HealthReport report)
+{
+    httpContext.Response.ContentType = "application/json";
+    var status = report.Status.ToString();
+    var json = JsonSerializer.Serialize(
+        new
+        {
+            status,
+            totalDurationMs = report.TotalDuration.TotalMilliseconds,
+            entries = report.Entries.ToDictionary(
+                e => e.Key,
+                e => new
+                {
+                    status = e.Value.Status.ToString(),
+                    description = e.Value.Description,
+                    durationMs = e.Value.Duration.TotalMilliseconds,
+                    data = e.Value.Data
+                }
+            )
+        }
+    );
+    return httpContext.Response.WriteAsync(json);
+} // End of Method WriteHealthResponse
+
 app.MapHealthChecks(
         "/health/live",
-        new HealthCheckOptions { Predicate = r => r.Tags.Contains("self") }
+        new HealthCheckOptions
+        {
+            Predicate = r => r.Tags.Contains("self"),
+            ResponseWriter = WriteHealthResponse
+        }
     )
     .AllowAnonymous();
 app.MapHealthChecks(
         "/health/ready",
-        new HealthCheckOptions { Predicate = r => r.Tags.Contains("ready") }
+        new HealthCheckOptions
+        {
+            Predicate = r => r.Tags.Contains("ready"),
+            ResponseWriter = WriteHealthResponse
+        }
     )
     .AllowAnonymous();
 
