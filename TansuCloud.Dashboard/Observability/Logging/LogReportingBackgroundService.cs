@@ -2,6 +2,7 @@
 using System.Security.Cryptography;
 using System.Text;
 using Microsoft.Extensions.Options;
+using TansuCloud.Telemetry.Contracts;
 
 namespace TansuCloud.Dashboard.Observability.Logging
 {
@@ -280,7 +281,12 @@ namespace TansuCloud.Dashboard.Observability.Logging
         private static string ComputeTemplateHash(LogRecord record)
         {
             using var sha = SHA256.Create();
-            var payload = string.Join("|", record.Category, record.EventId.ToString(), record.Message);
+            var payload = string.Join(
+                "|",
+                record.Category,
+                record.EventId.ToString(),
+                record.Message
+            );
             var bytes = Encoding.UTF8.GetBytes(payload);
             var hash = sha.ComputeHash(bytes);
             return Convert.ToHexString(hash);

@@ -1,9 +1,12 @@
 // Tansu.Cloud Public Repository:    https://github.com/MusaGursoy/TansuCloud
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IdentityModel.Tokens.Jwt; // For token inspection logging
 using System.IO;
 using System.Linq;
 using System.Net.Http;
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Authentication;
@@ -35,6 +38,7 @@ using TansuCloud.Dashboard.Observability.SigNoz;
 using TansuCloud.Observability;
 using TansuCloud.Observability.Auditing;
 using TansuCloud.Observability.Shared.Configuration;
+using TansuCloud.Telemetry.Contracts;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -201,17 +205,7 @@ builder.Services.AddSingleton<ILogReportingRuntimeSwitch>(sp =>
     return new LogReportingRuntimeSwitch(opts.Enabled);
 });
 builder.Services.AddHttpClient("log-reporter");
-builder.Services.AddSingleton<ILogReporter>(sp =>
-{
-    var optsOld =
-        sp.GetRequiredService<Microsoft.Extensions.Options.IOptionsMonitor<TansuCloud.Dashboard.Observability.Logging.LogReportingOptions>>().CurrentValue;
-    if (string.IsNullOrWhiteSpace(optsOld.MainServerUrl))
-    {
-        return new NoopLogReporter();
-    }
-    var http = sp.GetRequiredService<IHttpClientFactory>().CreateClient("log-reporter");
-    return new HttpLogReporter(http, optsOld);
-});
+builder.Services.AddScoped<ILogReporter, ConfigurableLogReporter>();
 builder.Services.AddHostedService<LogReportingBackgroundService>();
 
 // Persist Data Protection keys so antiforgery and auth cookies can be decrypted across restarts/instances
@@ -2718,6 +2712,18 @@ app.MapGet(
                     queryWindowMinutes = opts.QueryWindowMinutes,
                     maxItems = opts.MaxItems,
                     httpTimeoutSeconds = opts.HttpTimeoutSeconds,
+                    warningSamplingPercent = opts.WarningSamplingPercent,
+                    allowedWarningCategories = opts.AllowedWarningCategories,
+                    pseudonymizeTenants = opts.PseudonymizeTenants,
+                    tenantHashSecretConfigured = !string.IsNullOrWhiteSpace(opts.TenantHashSecret),
+                    reportKinds = new[]
+                    {
+                        "critical",
+                        "error",
+                        "warning (allowlisted / sampled)",
+                        "perf_slo_breach",
+                        "telemetry_internal"
+                    },
                     capture = new
                     {
                         captureOpts.Enabled,
@@ -2758,6 +2764,98 @@ app.MapPost(
             }
             catch { }
             return Results.NoContent();
+        }
+    )
+    .RequireAuthorization("AdminOnly");
+
+app.MapPost(
+        "/api/admin/log-reporting/test",
+        async (
+            ILogReporter reporter,
+            Microsoft.Extensions.Options.IOptionsMonitor<TansuCloud.Dashboard.Observability.Logging.LogReportingOptions> monitor,
+            HttpContext http,
+            IAuditLogger audit,
+            CancellationToken cancellationToken
+        ) =>
+        {
+            var opts = monitor.CurrentValue;
+            if (string.IsNullOrWhiteSpace(opts.MainServerUrl))
+            {
+                return Results.Problem(
+                    title: "Reporting endpoint not configured",
+                    detail: "Set LogReporting:MainServerUrl (or LOGREPORTING__MAINSERVERURL) before sending a test report.",
+                    statusCode: 400
+                );
+            }
+
+            var environment =
+                Environment.GetEnvironmentVariable("ASPNETCORE_ENVIRONMENT") ?? "Production";
+            var timestamp = DateTimeOffset.UtcNow;
+            var templateHash = Convert.ToHexString(
+                SHA256.HashData(Encoding.UTF8.GetBytes("tansu.dashboard.telemetry.heartbeat"))
+            );
+            var testItem = new LogItem(
+                Kind: "diagnostic_heartbeat",
+                Timestamp: timestamp.ToString("o"),
+                Level: "Information",
+                Message: "Dashboard telemetry heartbeat",
+                TemplateHash: templateHash,
+                Exception: null,
+                Service: "tansu.dashboard",
+                Environment: environment,
+                TenantHash: null,
+                CorrelationId: http.TraceIdentifier,
+                TraceId: Activity.Current?.TraceId.ToString(),
+                SpanId: Activity.Current?.SpanId.ToString(),
+                Category: "Tansu.Telemetry",
+                EventId: TansuCloud.Observability.LogEvents.TelemetryBatchSend.Id,
+                Count: 1,
+                Properties: new
+                {
+                    Source = "AdminTestReport",
+                    SentBy = http.User?.Identity?.Name ?? "anonymous",
+                    SentAtUtc = timestamp
+                }
+            );
+
+            var request = new LogReportRequest(
+                Host: Environment.MachineName,
+                Environment: environment,
+                Service: "tansu.dashboard",
+                SeverityThreshold: opts.SeverityThreshold,
+                WindowMinutes: 0,
+                MaxItems: 1,
+                Items: new[] { testItem }
+            );
+
+            await reporter.ReportAsync(request, cancellationToken).ConfigureAwait(false);
+
+            try
+            {
+                var ev = new TansuCloud.Observability.Auditing.AuditEvent
+                {
+                    Category = "Admin",
+                    Action = "LogReportingTestSend",
+                    Outcome = "Success",
+                    Subject = http.User?.Identity?.Name ?? "anonymous",
+                    CorrelationId = http.TraceIdentifier
+                };
+                audit.TryEnqueueRedacted(
+                    ev,
+                    new { Target = opts.MainServerUrl ?? string.Empty },
+                    new[] { "Target" }
+                );
+            }
+            catch { }
+
+            return Results.Ok(
+                new
+                {
+                    sent = true,
+                    target = opts.MainServerUrl,
+                    kind = "diagnostic_heartbeat"
+                }
+            );
         }
     )
     .RequireAuthorization("AdminOnly");

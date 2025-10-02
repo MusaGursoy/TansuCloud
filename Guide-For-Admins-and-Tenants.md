@@ -692,10 +692,30 @@ Configuration (Dashboard)
   - `WarningSamplingPercent` (int, default 10): sampling for non-allowlisted warnings.
   - `AllowedWarningCategories` (string[], defaults include `OIDC-`, `Tansu.Gateway`, `Tansu.Storage`, `Tansu.Database`, `Tansu.Identity`).
   - `HttpLatencyP95Ms` (int, default 500), `DbDurationP95Ms` (int, default 300), `ErrorRatePercent` (int, default 1) for aggregated perf events.
+  - `PseudonymizeTenants` (bool, default true) and `TenantHashSecret` (string, optional) control HMAC hashing of tenant identifiers.
+- Environment variables follow the standard double-underscore convention (derive from option names). Prefer configuring them via `.env` so compose and VS Code tasks stay aligned. Common keys:
+
+  | Environment key | Description | Default (Development) |
+  | --- | --- | --- |
+  | `LogReporting__Enabled` | Master switch for the background reporter | `false` |
+  | `LogReporting__MainServerUrl` | Base URL for the central ingestion endpoint | empty |
+  | `LogReporting__ApiKey` | Bearer token attached to outbound reports | empty |
+  | `LogReporting__ReportIntervalMinutes` | Minutes between report attempts | `60` |
+  | `LogReporting__SeverityThreshold` | Minimum log level considered for export | `Warning` |
+  | `LogReporting__QueryWindowMinutes` | Lookback window for buffered logs | `60` |
+  | `LogReporting__MaxItems` | Maximum entries per report | `2000` |
+  | `LogReporting__HttpTimeoutSeconds` | HTTP timeout when calling the main server | `30` |
+  | `LogReporting__WarningSamplingPercent` | Sampling rate for non-allowlisted warnings | `10` |
+  | `LogReporting__AllowedWarningCategories__0..n` | Allowlist prefixes for product warnings | `OIDC-`, `Tansu.Gateway`, `Tansu.Storage`, `Tansu.Database`, `Tansu.Identity` |
+  | `LogReporting__HttpLatencyP95Ms` / `LogReporting__DbDurationP95Ms` / `LogReporting__ErrorRatePercent` | Perf SLO breach thresholds | `500` / `300` / `1` |
+  | `LogReporting__PseudonymizeTenants` | Enable tenant hash anonymization | `false` |
+  | `LogReporting__TenantHashSecret` | Optional HMAC secret for tenant hashes | empty |
 
 Runtime toggle
 
 - Admins can disable or re-enable reporting on the fly at Dashboard → Admin → Logs. This does not affect local log capture/viewing.
+- The Admin Logs card now surfaces the effective status (`Configured`, `Runtime`, `Effective`), the active endpoint, sampling percentage, warning allowlist, pseudonymization flags, and the set of report kinds (`critical`, `error`, `warning` (allowlisted/sampled), `perf_slo_breach`, `telemetry_internal`). This makes it clear what will leave the deployment.
+- Use the **Send test report** button to emit a harmless `diagnostic_heartbeat` envelope on demand. The call uses the currently bound `LogReporting` options, and the UI confirms the target endpoint when the POST succeeds. This is the fastest way to validate egress connectivity after configuring credentials.
 
 Buffering and failure handling
 
@@ -712,6 +732,20 @@ Troubleshooting
 - Reporting disabled: set `LogReporting:Enabled=true` and verify `MainServerUrl` is set.
 - Connectivity/auth: check Dashboard logs for "Log report failed" messages and confirm `ApiKey` is valid.
 - Volume too high: raise `SeverityThreshold`, lower `WarningSamplingPercent`, or tighten `AllowedWarningCategories`.
+- Test report fails: confirm the Admin Logs UI shows the correct endpoint, verify DNS/TLS reachability to `<MainServerUrl>`, and ensure the `ApiKey` grants access. The API returns a 400 Problem when the endpoint is missing, so admins can fix configuration without digging through logs.
+- Tenant hashes look unexpected: set `LogReporting__PseudonymizeTenants=false` (or clear the hash secret) for diagnostics, but revert to pseudonymized mode for production deployments.
+
+Validation checklist (after configuring telemetry)
+
+1. Confirm `MainServerUrl` and `ApiKey` are populated via configuration (`appsettings.{Environment}.json`, `.env`, or host secrets).
+2. In Dashboard → Admin → Logs, check that `Configured`, `Runtime`, and `Effective` read `true` when telemetry should flow.
+3. Review the status details: warning sampling percentage, allowlisted categories, pseudonymization flags, and report kinds.
+4. Click **Send test report** and ensure the success toast reports the target endpoint. If it fails, inspect the returned error details and Dashboard logs.
+5. (Optional) Monitor the main server ingress endpoint for the `diagnostic_heartbeat` entry to ensure end-to-end flow works.
+
+Durable sink posture
+
+- SigNoz (ClickHouse) remains the authoritative sink for tenant-visible logs, traces, and metrics. Product telemetry is the only egress to Tansu Cloud and is limited to the policy above. Toggle reporting off at runtime or via `LogReporting__Enabled=false` if a deployment must stay fully air-gapped. We intentionally keep product telemetry separate from SigNoz to avoid double ingestion; operators who want a local copy can add an OTEL processor/receiver alongside SigNoz, but that remains optional and off by default.
 
 ## 10. Security Hardening
 
@@ -799,17 +833,17 @@ Resolution rules
 
 Use this quick path to identify slow endpoints and drill into a trace:
 
-1) Open the SigNoz UI and go to Traces → Explorer.
-2) Set Service = the target service (gateway/database/storage/identity/dashboard).
-3) Add Filter: duration > 500ms (adjust as needed) and Time range = Last 15 minutes.
-4) Sort by duration desc and click the top trace to open the waterfall.
-5) In the span list, look for:
+1. Open the SigNoz UI and go to Traces → Explorer.
+2. Set Service = the target service (gateway/database/storage/identity/dashboard).
+3. Add Filter: duration > 500ms (adjust as needed) and Time range = Last 15 minutes.
+4. Sort by duration desc and click the top trace to open the waterfall.
+5. In the span list, look for:
 
 - DB spans with high duration (Npgsql/EFCore)
 - Redis spans or HybridCache misses
 - Gateway proxy span retries or 5xx status
 
-6) Click “Logs” to view correlated log entries (TraceId/SpanId are propagated). Check EventId ranges for quick categorization.
+6. Click “Logs” to view correlated log entries (TraceId/SpanId are propagated). Check EventId ranges for quick categorization.
 
 Tip: If no traces appear, run the checks in 12.2 below and ensure traffic is actually hitting the gateway. Health reads often don’t emit DB spans; use a real API call.
 

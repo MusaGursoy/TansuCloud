@@ -7,6 +7,17 @@
 
 <div class="mb-2">
     <button class="btn btn-sm btn-primary" @onclick="Refresh">Refresh</button>
+    <button class="btn btn-sm btn-outline-success ms-2" disabled="@isSendingTest" @onclick="SendTestReport">
+        @if (isSendingTest)
+        {
+            <span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span>
+            <span class="ms-1">Sending test…</span>
+        }
+        else
+        {
+            <span>Send test report</span>
+        }
+    </button>
     <label class="ms-3">
     <input type="checkbox" @bind="runtimeEnabled" @bind:after="Toggle" /> Reporting Enabled (runtime)
     </label>
@@ -15,6 +26,9 @@
     <span class="ms-3">Report every: @status.reportIntervalMinutes min</span>
     <span class="ms-3">Endpoint: @status.mainServerUrl</span>
     <div class="text-muted"><small>Configured: @status.configured; Effective: @status.effective</small></div>
+    <div class="text-muted"><small>Pseudonymize tenants: @status.pseudonymizeTenants; Hash secret configured: @status.tenantHashSecretConfigured</small></div>
+    <div class="text-muted"><small>Warning sampling: @status.warningSamplingPercent% ; Allowlist: @(status.allowedWarningCategories is { Length: > 0 } cats ? string.Join(", ", cats) : "(none)")</small></div>
+    <div class="text-muted"><small>Report kinds: @(status.reportKinds is { Length: > 0 } kinds ? string.Join(", ", kinds) : "(none)")</small></div>
     <div class="mt-2">
         <label>Level:
             <select @bind="filterLevel">
@@ -44,6 +58,12 @@
 {
     <div class="alert alert-danger" role="alert">
         <strong>Error:</strong> @error
+    </div>
+}
+else if (!string.IsNullOrWhiteSpace(lastTestMessage))
+{
+    <div class="alert alert-info" role="status">
+        @lastTestMessage
     </div>
 }
 
@@ -80,6 +100,8 @@
     private string? filterCategory;
     private int take = 200;
     private int skip = 0;
+    private bool isSendingTest;
+    private string? lastTestMessage;
 
     [Inject] private HttpClient Http { get; set; } = default!;
     [Inject] private NavigationManager Nav { get; set; } = default!;
@@ -104,6 +126,7 @@
             bufferCapacity = status.buffer?.Capacity ?? 0;
             captureMinLevel = status.capture?.MinimumLevel ?? "";
             runtimeEnabled = status.runtime;
+            lastTestMessage = null;
 
             var logsUrl = new Uri(
                 $"dashboard/api/admin/logs/recent?take={take}&skip={skip}&level={Uri.EscapeDataString(filterLevel ?? string.Empty)}&categoryContains={Uri.EscapeDataString(filterCategory ?? string.Empty)}",
@@ -121,6 +144,7 @@
             bufferCount = 0;
             bufferCapacity = 0;
             captureMinLevel = "";
+            lastTestMessage = null;
         }
         StateHasChanged();
     }
@@ -152,6 +176,42 @@
         await LoadAsync();
     }
 
+    private async Task SendTestReport()
+    {
+        if (isSendingTest)
+        {
+            return;
+        }
+
+        try
+        {
+            isSendingTest = true;
+            error = null;
+            lastTestMessage = null;
+            var testUrl = new Uri("dashboard/api/admin/log-reporting/test", UriKind.Relative);
+            using var response = await Http.PostAsJsonAsync(testUrl, new { });
+            if (!response.IsSuccessStatusCode)
+            {
+                var details = await response.Content.ReadAsStringAsync();
+                throw new InvalidOperationException($"Test send failed ({(int)response.StatusCode}): {details}");
+            }
+
+            var payload = await response.Content.ReadFromJsonAsync<TestSendResponse>();
+            lastTestMessage = payload is null
+                ? "Test report sent."
+                : $"Test report sent to {payload.target} (kind: {payload.kind}).";
+        }
+        catch (Exception ex)
+        {
+            error = ex.Message;
+        }
+        finally
+        {
+            isSendingTest = false;
+            StateHasChanged();
+        }
+    }
+
     private sealed class StatusDto
     {
         public bool configured { get; set; }
@@ -163,6 +223,11 @@
         public int queryWindowMinutes { get; set; }
         public int maxItems { get; set; }
         public int httpTimeoutSeconds { get; set; }
+        public double warningSamplingPercent { get; set; }
+        public string[]? allowedWarningCategories { get; set; }
+        public bool pseudonymizeTenants { get; set; }
+        public bool tenantHashSecretConfigured { get; set; }
+        public string[]? reportKinds { get; set; }
         public CaptureDto capture { get; set; } = new();
         public BufferDto buffer { get; set; } = new();
     }
@@ -178,5 +243,12 @@
     {
         public int Capacity { get; set; }
         public int Count { get; set; }
+    }
+
+    private sealed class TestSendResponse
+    {
+        public bool sent { get; set; }
+        public string? target { get; set; }
+        public string? kind { get; set; }
     }
 }

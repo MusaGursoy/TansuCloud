@@ -394,11 +394,11 @@ services:
       # Prometheus has been removed in favor of SigNoz. Leave unset to disable legacy metrics proxy.
       # Prometheus__BaseUrl: 
       LogReporting__Enabled: ${LOGREPORTING__ENABLED:-true}
-    LogReporting__MainServerUrl: ${LOGREPORTING__MAINSERVERURL:-}
-    LogReporting__ApiKey: ${LOGREPORTING__APIKEY:-}
-    LogReporting__ReportIntervalMinutes: ${LOGREPORTING__REPORTINTERVALMINUTES:-60}
-    LogReporting__TenantHashSecret: ${LOGREPORTING__TENANTHASHSECRET:-}
-    LogReporting__PseudonymizeTenants: ${LOGREPORTING__PSEUDONYMIZETENANTS:-true}
+      LogReporting__MainServerUrl: ${LOGREPORTING__MAINSERVERURL:-}
+      LogReporting__ApiKey: ${LOGREPORTING__APIKEY:-}
+      LogReporting__ReportIntervalMinutes: ${LOGREPORTING__REPORTINTERVALMINUTES:-60}
+      LogReporting__TenantHashSecret: ${LOGREPORTING__TENANTHASHSECRET:-}
+      LogReporting__PseudonymizeTenants: ${LOGREPORTING__PSEUDONYMIZETENANTS:-true}
     volumes:
       - tansu-dashboard-keys:/keys
     depends_on:

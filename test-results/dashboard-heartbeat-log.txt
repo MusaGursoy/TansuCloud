@@ -1,0 +1,168 @@
+[Observability] SigNoz now provides metrics, traces, and logs. In-app Prometheus proxy disabled.
+[DataProtection] Using Redis key ring at 'DataProtection-Keys:Dashboard' (StackExchange.Redis)
+[DataProtection] Startup complete. DataProtection configured for TansuCloud.Dashboard
+warn: Microsoft.AspNetCore.Hosting.Diagnostics[15]
+      Overriding HTTP_PORTS '8080' and HTTPS_PORTS ''. Binding to values defined by URLS instead 'http://+:8080'.
+[BypassSignatureValidator] ACTIVE: id_token signature verification is bypassed (DEV ONLY)
+[OidcPreload] Authority=http://127.0.0.1:8080/identity evaluating 3 metadata candidate(s)
+[OidcPreload] Attempting metadata (configured) http://gateway:8080/identity/.well-known/openid-configuration
+[OidcPreload] Metadata (configured) succeeded on attempt 1
+[OidcPreload] Loaded Issuer=http://gateway:8080/identity/ KeyCount=1 (dynamic via configured)
+[OidcPreload] ValidIssuers=http://gateway:8080/identity,http://gateway:8080/identity/,http://127.0.0.1:8080/identity,http://127.0.0.1:8080/identity/
+[OidcPostConfigure] ConfigKeyCount=1 TVPKeyCount=1 ValidateIssuerSigningKey=False
+[OidcPostConfigure] Authority=http://127.0.0.1:8080/identity Metadata=http://gateway:8080/identity/.well-known/openid-configuration ValidIssuers=http://gateway:8080/identity|http://gateway:8080/identity/|http://127.0.0.1:8080/identity|http://127.0.0.1:8080/identity/
+[EarlyOidcInit] Path=/_blazor/negotiate HasConfig=True KeyCount=1 ValidateIssuerSigningKey=False
+[EarlyOidcInit] Path=/_blazor HasConfig=True KeyCount=1 ValidateIssuerSigningKey=False
+[EarlyOidcInit] Path=/admin/logs HasConfig=True KeyCount=1 ValidateIssuerSigningKey=False
+[EarlyOidcInit] Path=/api/admin/log-reporting/status HasConfig=True KeyCount=1 ValidateIssuerSigningKey=False
+[EarlyOidcInit] Path=/api/admin/logs/recent HasConfig=True KeyCount=1 ValidateIssuerSigningKey=False
+[EarlyOidcInit] Path=/_blazor/disconnect HasConfig=True KeyCount=1 ValidateIssuerSigningKey=False
+[EarlyOidcInit] Path=/app.css HasConfig=True KeyCount=1 ValidateIssuerSigningKey=False
+[EarlyOidcInit] Path=/_framework/blazor.web.js HasConfig=True KeyCount=1 ValidateIssuerSigningKey=False
+[EarlyOidcInit] Path=/TansuCloud.Dashboard.styles.css HasConfig=True KeyCount=1 ValidateIssuerSigningKey=False
+[EarlyOidcInit] Path=/_blazor/initializers HasConfig=True KeyCount=1 ValidateIssuerSigningKey=False
+[EarlyOidcInit] Path=/_blazor/negotiate HasConfig=True KeyCount=1 ValidateIssuerSigningKey=False
+[EarlyOidcInit] Path=/_blazor HasConfig=True KeyCount=1 ValidateIssuerSigningKey=False
+[EarlyOidcInit] Path=/api/admin/log-reporting/status HasConfig=True KeyCount=1 ValidateIssuerSigningKey=False
+[EarlyOidcInit] Path=/api/admin/logs/recent HasConfig=True KeyCount=1 ValidateIssuerSigningKey=False
+[EarlyOidcInit] Path=/health/ready HasConfig=True KeyCount=1 ValidateIssuerSigningKey=False
+[EarlyOidcInit] Path=/health/ready HasConfig=True KeyCount=1 ValidateIssuerSigningKey=False
+[EarlyOidcInit] Path=/admin/logs HasConfig=True KeyCount=1 ValidateIssuerSigningKey=False
+[EarlyOidcInit] Path=/api/admin/log-reporting/status HasConfig=True KeyCount=1 ValidateIssuerSigningKey=False
+[EarlyOidcInit] Path=/api/admin/logs/recent HasConfig=True KeyCount=1 ValidateIssuerSigningKey=False
+[EarlyOidcInit] Path=/_blazor/disconnect HasConfig=True KeyCount=1 ValidateIssuerSigningKey=False
+[EarlyOidcInit] Path=/TansuCloud.Dashboard.styles.css HasConfig=True KeyCount=1 ValidateIssuerSigningKey=False
+[EarlyOidcInit] Path=/app.css HasConfig=True KeyCount=1 ValidateIssuerSigningKey=False
+[EarlyOidcInit] Path=/_framework/blazor.web.js HasConfig=True KeyCount=1 ValidateIssuerSigningKey=False
+[EarlyOidcInit] Path=/_blazor/initializers HasConfig=True KeyCount=1 ValidateIssuerSigningKey=False
+[EarlyOidcInit] Path=/_blazor/negotiate HasConfig=True KeyCount=1 ValidateIssuerSigningKey=False
+[EarlyOidcInit] Path=/_blazor HasConfig=True KeyCount=1 ValidateIssuerSigningKey=False
+[EarlyOidcInit] Path=/api/admin/log-reporting/status HasConfig=True KeyCount=1 ValidateIssuerSigningKey=False
+[EarlyOidcInit] Path=/api/admin/logs/recent HasConfig=True KeyCount=1 ValidateIssuerSigningKey=False
+[EarlyOidcInit] Path=/health/ready HasConfig=True KeyCount=1 ValidateIssuerSigningKey=False
+[EarlyOidcInit] Path=/health/ready HasConfig=True KeyCount=1 ValidateIssuerSigningKey=False
+[EarlyOidcInit] Path=/api/admin/log-reporting/toggle HasConfig=True KeyCount=1 ValidateIssuerSigningKey=False
+[EarlyOidcInit] Path=/api/admin/log-reporting/status HasConfig=True KeyCount=1 ValidateIssuerSigningKey=False
+[EarlyOidcInit] Path=/api/admin/logs/recent HasConfig=True KeyCount=1 ValidateIssuerSigningKey=False
+[EarlyOidcInit] Path=/api/admin/log-reporting/test HasConfig=True KeyCount=1 ValidateIssuerSigningKey=False
+fail: Microsoft.AspNetCore.Diagnostics.DeveloperExceptionPageMiddleware[1]
+      An unhandled exception has occurred while executing the request.
+      System.Net.Http.HttpRequestException: Name or service not known (telemetry.tansu.cloud:443)
+       ---> System.Net.Sockets.SocketException (0xFFFDFFFF): Name or service not known
+         at System.Net.Sockets.Socket.AwaitableSocketAsyncEventArgs.ThrowException(SocketError error, CancellationToken cancellationToken)
+         at System.Net.Sockets.Socket.AwaitableSocketAsyncEventArgs.System.Threading.Tasks.Sources.IValueTaskSource.GetResult(Int16 token)
+         at System.Net.Sockets.Socket.<ConnectAsync>g__WaitForConnectWithCancellation|285_0(AwaitableSocketAsyncEventArgs saea, ValueTask connectTask, CancellationToken cancellationToken)
+         at System.Net.Http.HttpConnectionPool.ConnectToTcpHostAsync(String host, Int32 port, HttpRequestMessage initialRequest, Boolean async, CancellationToken cancellationToken)
+         --- End of inner exception stack trace ---
+         at System.Net.Http.HttpConnectionPool.ConnectToTcpHostAsync(String host, Int32 port, HttpRequestMessage initialRequest, Boolean async, CancellationToken cancellationToken)
+         at System.Net.Http.HttpConnectionPool.ConnectAsync(HttpRequestMessage request, Boolean async, CancellationToken cancellationToken)
+         at System.Net.Http.HttpConnectionPool.CreateHttp11ConnectionAsync(HttpRequestMessage request, Boolean async, CancellationToken cancellationToken)
+         at System.Net.Http.HttpConnectionPool.InjectNewHttp11ConnectionAsync(QueueItem queueItem)
+         at System.Threading.Tasks.TaskCompletionSourceWithCancellation`1.WaitWithCancellationAsync(CancellationToken cancellationToken)
+         at System.Net.Http.HttpConnectionWaiter`1.WaitForConnectionWithTelemetryAsync(HttpRequestMessage request, HttpConnectionPool pool, Boolean async, CancellationToken requestCancellationToken)
+         at System.Net.Http.HttpConnectionPool.SendWithVersionDetectionAndRetryAsync(HttpRequestMessage request, Boolean async, Boolean doRequestAuth, CancellationToken cancellationToken)
+         at System.Net.Http.Metrics.MetricsHandler.SendAsyncWithMetrics(HttpRequestMessage request, Boolean async, CancellationToken cancellationToken)
+         at System.Net.Http.DiagnosticsHandler.SendAsyncCore(HttpRequestMessage request, Boolean async, CancellationToken cancellationToken)
+         at System.Net.Http.RedirectHandler.SendAsync(HttpRequestMessage request, Boolean async, CancellationToken cancellationToken)
+         at Microsoft.Extensions.Http.Logging.LoggingHttpMessageHandler.<SendCoreAsync>g__Core|4_0(HttpRequestMessage request, Boolean useAsync, CancellationToken cancellationToken)
+         at Microsoft.Extensions.Http.Logging.LoggingScopeHttpMessageHandler.<SendCoreAsync>g__Core|4_0(HttpRequestMessage request, Boolean useAsync, CancellationToken cancellationToken)
+         at System.Net.Http.HttpClient.<SendAsync>g__Core|83_0(HttpRequestMessage request, HttpCompletionOption completionOption, CancellationTokenSource cts, Boolean disposeCts, CancellationTokenSource pendingRequestsCts, CancellationToken originalCancellationToken)
+         at TansuCloud.Dashboard.Observability.Logging.ConfigurableLogReporter.ReportAsync(LogReportRequest request, CancellationToken cancellationToken) in /src/TansuCloud.Dashboard/Observability/Logging/LogReporters.cs:line 132
+         at Program.<>c.<<<Main>$>b__0_31>d.MoveNext() in /src/TansuCloud.Dashboard/Program.cs:line 2830
+      --- End of stack trace from previous location ---
+         at Microsoft.AspNetCore.Http.RequestDelegateFactory.ExecuteTaskResult[T](Task`1 task, HttpContext httpContext)
+         at Program.<>c.<<<Main>$>b__0_24>d.MoveNext() in /src/TansuCloud.Dashboard/Program.cs:line 2331
+      --- End of stack trace from previous location ---
+         at Microsoft.AspNetCore.Authorization.AuthorizationMiddleware.Invoke(HttpContext context)
+         at Program.<>c.<<<Main>$>b__0_23>d.MoveNext() in /src/TansuCloud.Dashboard/Program.cs:line 2293
+      --- End of stack trace from previous location ---
+         at Microsoft.AspNetCore.Authentication.AuthenticationMiddleware.Invoke(HttpContext context)
+         at Program.<>c.<<<Main>$>b__0_22>d.MoveNext() in /src/TansuCloud.Dashboard/Program.cs:line 2234
+      --- End of stack trace from previous location ---
+         at Program.<>c.<<<Main>$>b__0_21>d.MoveNext() in /src/TansuCloud.Dashboard/Program.cs:line 2128
+      --- End of stack trace from previous location ---
+         at Program.<>c.<<<Main>$>b__0_20>d.MoveNext() in /src/TansuCloud.Dashboard/Program.cs:line 2060
+      --- End of stack trace from previous location ---
+         at Program.<>c.<<<Main>$>b__0_19>d.MoveNext() in /src/TansuCloud.Dashboard/Program.cs:line 1967
+      --- End of stack trace from previous location ---
+         at Microsoft.AspNetCore.Diagnostics.DeveloperExceptionPageMiddlewareImpl.Invoke(HttpContext context)
+[EarlyOidcInit] Path=/health/ready HasConfig=True KeyCount=1 ValidateIssuerSigningKey=False
+[EarlyOidcInit] Path=/health/ready HasConfig=True KeyCount=1 ValidateIssuerSigningKey=False
+[EarlyOidcInit] Path=/health/ready HasConfig=True KeyCount=1 ValidateIssuerSigningKey=False
+[EarlyOidcInit] Path=/health/ready HasConfig=True KeyCount=1 ValidateIssuerSigningKey=False
+[EarlyOidcInit] Path=/health/ready HasConfig=True KeyCount=1 ValidateIssuerSigningKey=False
+[EarlyOidcInit] Path=/health/ready HasConfig=True KeyCount=1 ValidateIssuerSigningKey=False
+[EarlyOidcInit] Path=/health/ready HasConfig=True KeyCount=1 ValidateIssuerSigningKey=False
+[EarlyOidcInit] Path=/health/ready HasConfig=True KeyCount=1 ValidateIssuerSigningKey=False
+[EarlyOidcInit] Path=/health/ready HasConfig=True KeyCount=1 ValidateIssuerSigningKey=False
+[EarlyOidcInit] Path=/health/ready HasConfig=True KeyCount=1 ValidateIssuerSigningKey=False
+[EarlyOidcInit] Path=/health/ready HasConfig=True KeyCount=1 ValidateIssuerSigningKey=False
+[EarlyOidcInit] Path=/health/ready HasConfig=True KeyCount=1 ValidateIssuerSigningKey=False
+[EarlyOidcInit] Path=/health/ready HasConfig=True KeyCount=1 ValidateIssuerSigningKey=False
+[EarlyOidcInit] Path=/health/ready HasConfig=True KeyCount=1 ValidateIssuerSigningKey=False
+[EarlyOidcInit] Path=/health/ready HasConfig=True KeyCount=1 ValidateIssuerSigningKey=False
+[EarlyOidcInit] Path=/health/ready HasConfig=True KeyCount=1 ValidateIssuerSigningKey=False
+[EarlyOidcInit] Path=/health/ready HasConfig=True KeyCount=1 ValidateIssuerSigningKey=False
+[EarlyOidcInit] Path=/health/ready HasConfig=True KeyCount=1 ValidateIssuerSigningKey=False
+[EarlyOidcInit] Path=/health/ready HasConfig=True KeyCount=1 ValidateIssuerSigningKey=False
+[EarlyOidcInit] Path=/health/ready HasConfig=True KeyCount=1 ValidateIssuerSigningKey=False
+[EarlyOidcInit] Path=/health/ready HasConfig=True KeyCount=1 ValidateIssuerSigningKey=False
+[EarlyOidcInit] Path=/health/ready HasConfig=True KeyCount=1 ValidateIssuerSigningKey=False
+[EarlyOidcInit] Path=/health/ready HasConfig=True KeyCount=1 ValidateIssuerSigningKey=False
+[EarlyOidcInit] Path=/health/ready HasConfig=True KeyCount=1 ValidateIssuerSigningKey=False
+[EarlyOidcInit] Path=/health/ready HasConfig=True KeyCount=1 ValidateIssuerSigningKey=False
+[EarlyOidcInit] Path=/health/ready HasConfig=True KeyCount=1 ValidateIssuerSigningKey=False
+[EarlyOidcInit] Path=/health/ready HasConfig=True KeyCount=1 ValidateIssuerSigningKey=False
+[EarlyOidcInit] Path=/health/ready HasConfig=True KeyCount=1 ValidateIssuerSigningKey=False
+[EarlyOidcInit] Path=/health/ready HasConfig=True KeyCount=1 ValidateIssuerSigningKey=False
+[EarlyOidcInit] Path=/health/ready HasConfig=True KeyCount=1 ValidateIssuerSigningKey=False
+[EarlyOidcInit] Path=/health/ready HasConfig=True KeyCount=1 ValidateIssuerSigningKey=False
+[EarlyOidcInit] Path=/health/ready HasConfig=True KeyCount=1 ValidateIssuerSigningKey=False
+[EarlyOidcInit] Path=/health/ready HasConfig=True KeyCount=1 ValidateIssuerSigningKey=False
+[EarlyOidcInit] Path=/health/ready HasConfig=True KeyCount=1 ValidateIssuerSigningKey=False
+[EarlyOidcInit] Path=/health/ready HasConfig=True KeyCount=1 ValidateIssuerSigningKey=False
+[EarlyOidcInit] Path=/health/ready HasConfig=True KeyCount=1 ValidateIssuerSigningKey=False
+[EarlyOidcInit] Path=/health/ready HasConfig=True KeyCount=1 ValidateIssuerSigningKey=False
+[EarlyOidcInit] Path=/health/ready HasConfig=True KeyCount=1 ValidateIssuerSigningKey=False
+[EarlyOidcInit] Path=/health/ready HasConfig=True KeyCount=1 ValidateIssuerSigningKey=False
+[EarlyOidcInit] Path=/health/ready HasConfig=True KeyCount=1 ValidateIssuerSigningKey=False
+[EarlyOidcInit] Path=/health/ready HasConfig=True KeyCount=1 ValidateIssuerSigningKey=False
+[EarlyOidcInit] Path=/health/ready HasConfig=True KeyCount=1 ValidateIssuerSigningKey=False
+[EarlyOidcInit] Path=/health/ready HasConfig=True KeyCount=1 ValidateIssuerSigningKey=False
+[EarlyOidcInit] Path=/health/ready HasConfig=True KeyCount=1 ValidateIssuerSigningKey=False
+[EarlyOidcInit] Path=/health/ready HasConfig=True KeyCount=1 ValidateIssuerSigningKey=False
+[EarlyOidcInit] Path=/health/ready HasConfig=True KeyCount=1 ValidateIssuerSigningKey=False
+[EarlyOidcInit] Path=/health/ready HasConfig=True KeyCount=1 ValidateIssuerSigningKey=False
+[EarlyOidcInit] Path=/health/ready HasConfig=True KeyCount=1 ValidateIssuerSigningKey=False
+[EarlyOidcInit] Path=/health/ready HasConfig=True KeyCount=1 ValidateIssuerSigningKey=False
+[EarlyOidcInit] Path=/health/ready HasConfig=True KeyCount=1 ValidateIssuerSigningKey=False
+[EarlyOidcInit] Path=/health/ready HasConfig=True KeyCount=1 ValidateIssuerSigningKey=False
+[EarlyOidcInit] Path=/health/ready HasConfig=True KeyCount=1 ValidateIssuerSigningKey=False
+[EarlyOidcInit] Path=/health/ready HasConfig=True KeyCount=1 ValidateIssuerSigningKey=False
+[EarlyOidcInit] Path=/health/ready HasConfig=True KeyCount=1 ValidateIssuerSigningKey=False
+[EarlyOidcInit] Path=/health/ready HasConfig=True KeyCount=1 ValidateIssuerSigningKey=False
+[EarlyOidcInit] Path=/health/ready HasConfig=True KeyCount=1 ValidateIssuerSigningKey=False
+[EarlyOidcInit] Path=/health/ready HasConfig=True KeyCount=1 ValidateIssuerSigningKey=False
+[EarlyOidcInit] Path=/health/ready HasConfig=True KeyCount=1 ValidateIssuerSigningKey=False
+[EarlyOidcInit] Path=/health/ready HasConfig=True KeyCount=1 ValidateIssuerSigningKey=False
+[EarlyOidcInit] Path=/health/ready HasConfig=True KeyCount=1 ValidateIssuerSigningKey=False
+[EarlyOidcInit] Path=/health/ready HasConfig=True KeyCount=1 ValidateIssuerSigningKey=False
+[EarlyOidcInit] Path=/health/ready HasConfig=True KeyCount=1 ValidateIssuerSigningKey=False
+[EarlyOidcInit] Path=/health/ready HasConfig=True KeyCount=1 ValidateIssuerSigningKey=False
+[EarlyOidcInit] Path=/health/ready HasConfig=True KeyCount=1 ValidateIssuerSigningKey=False
+[EarlyOidcInit] Path=/health/ready HasConfig=True KeyCount=1 ValidateIssuerSigningKey=False
+[EarlyOidcInit] Path=/health/ready HasConfig=True KeyCount=1 ValidateIssuerSigningKey=False
+[EarlyOidcInit] Path=/health/ready HasConfig=True KeyCount=1 ValidateIssuerSigningKey=False
+[EarlyOidcInit] Path=/health/ready HasConfig=True KeyCount=1 ValidateIssuerSigningKey=False
+[EarlyOidcInit] Path=/health/ready HasConfig=True KeyCount=1 ValidateIssuerSigningKey=False
+[EarlyOidcInit] Path=/health/ready HasConfig=True KeyCount=1 ValidateIssuerSigningKey=False
+[EarlyOidcInit] Path=/health/ready HasConfig=True KeyCount=1 ValidateIssuerSigningKey=False
+[EarlyOidcInit] Path=/health/ready HasConfig=True KeyCount=1 ValidateIssuerSigningKey=False
+[EarlyOidcInit] Path=/health/ready HasConfig=True KeyCount=1 ValidateIssuerSigningKey=False
+[EarlyOidcInit] Path=/health/ready HasConfig=True KeyCount=1 ValidateIssuerSigningKey=False
+[EarlyOidcInit] Path=/health/ready HasConfig=True KeyCount=1 ValidateIssuerSigningKey=False
+[EarlyOidcInit] Path=/health/ready HasConfig=True KeyCount=1 ValidateIssuerSigningKey=False
+[EarlyOidcInit] Path=/health/ready HasConfig=True KeyCount=1 ValidateIssuerSigningKey=False
+[EarlyOidcInit] Path=/health/ready HasConfig=True KeyCount=1 ValidateIssuerSigningKey=False
+[EarlyOidcInit] Path=/health/ready HasConfig=True KeyCount=1 ValidateIssuerSigningKey=False
+[EarlyOidcInit] Path=/health/ready HasConfig=True KeyCount=1 ValidateIssuerSigningKey=False

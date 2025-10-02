@@ -1,6 +1,7 @@
 // Tansu.Cloud Public Repository:    https://github.com/MusaGursoy/TansuCloud
 using System.Threading;
 using System.Threading.Tasks;
+using TansuCloud.Telemetry.Contracts;
 
 namespace TansuCloud.Dashboard.Observability.Logging
 {

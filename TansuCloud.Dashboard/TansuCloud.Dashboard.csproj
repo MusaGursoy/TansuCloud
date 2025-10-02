@@ -23,6 +23,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\TansuCloud.Observability.Shared\TansuCloud.Observability.Shared.csproj" />
+    <ProjectReference Include="..\TansuCloud.Telemetry.Contracts\TansuCloud.Telemetry.Contracts.csproj" />
   </ItemGroup>
 
 </Project>
