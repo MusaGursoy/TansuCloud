@@ -8,4 +8,6 @@ namespace TansuCloud.Telemetry.Security;
 public static class TelemetryAuthorizationPolicies
 {
     public const string Ingestion = "TelemetryIngestion"; // End of Field Ingestion
+
+    public const string Admin = "TelemetryAdmin"; // End of Field Admin
 } // End of Class TelemetryAuthorizationPolicies

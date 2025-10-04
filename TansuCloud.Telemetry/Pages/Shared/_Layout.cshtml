@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>@(string.IsNullOrWhiteSpace(ViewData["Title"] as string) ? "Telemetry Admin" : ViewData["Title"] + " · Telemetry Admin")</title>
+    <link rel="stylesheet" href="~/css/admin.css" asp-append-version="true" />
+</head>
+<body>
+    <a class="skip-link" href="#main-content">Skip to main content</a>
+
+    <header class="app-header">
+        <div class="app-header__brand">
+            <span class="app-header__logo" aria-hidden="true">⊚</span>
+            <div>
+                <div class="app-header__title">Tansu Cloud</div>
+                <div class="app-header__subtitle">Telemetry Console</div>
+            </div>
+        </div>
+        <button class="app-header__menu-toggle" type="button" aria-label="Toggle navigation" aria-controls="admin-nav" aria-expanded="false">
+            <span></span>
+            <span></span>
+            <span></span>
+        </button>
+    </header>
+
+    <div class="layout-shell">
+        <aside class="sidebar" id="admin-nav">
+            <nav class="sidebar__nav" aria-label="Telemetry navigation">
+                <ul>
+                    <li class="sidebar__section">Overview</li>
+                    <li><a asp-page="/Admin/Envelopes/Index" class="sidebar__link">Envelopes</a></li>
+                    <li><a href="/health/ready" class="sidebar__link" target="_blank" rel="noopener">Service health (new tab)</a></li>
+                </ul>
+                <ul>
+                    <li class="sidebar__section">Documentation</li>
+                    <li><a href="https://github.com/MusaGursoy/TansuCloud" class="sidebar__link" target="_blank" rel="noopener">Repository</a></li>
+                    <li><a href="/api/docs" class="sidebar__link" rel="nofollow">API docs (if enabled)</a></li>
+                </ul>
+            </nav>
+        </aside>
+
+        <main id="main-content" class="main-content" role="main">
+            @await Html.PartialAsync("_StatusMessage")
+            @RenderBody()
+        </main>
+    </div>
+
+    <footer class="app-footer">
+        <div>
+            <span>&copy; @DateTime.UtcNow.Year Tansu.Cloud</span>
+            <span class="app-footer__version">Service: tansu.cloud.telemetry</span>
+        </div>
+    </footer>
+
+    <script>
+        (function () {
+            const toggle = document.querySelector('.app-header__menu-toggle');
+            const sidebar = document.getElementById('admin-nav');
+            if (!toggle || !sidebar) {
+                return;
+            }
+
+            toggle.addEventListener('click', function () {
+                const expanded = toggle.getAttribute('aria-expanded') === 'true';
+                toggle.setAttribute('aria-expanded', (!expanded).toString());
+                sidebar.classList.toggle('sidebar--open');
+            });
+        })();
+    </script>
+
+    @RenderSection("Scripts", required: false)
+</body>
+</html>

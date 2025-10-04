@@ -7,5 +7,7 @@ namespace TansuCloud.Telemetry.Security;
 /// </summary>
 public static class TelemetryAuthenticationDefaults
 {
-    public const string SchemeName = "TelemetryApiKey"; // End of Field SchemeName
+    public const string IngestionSchemeName = "TelemetryIngestionApiKey"; // End of Field IngestionSchemeName
+
+    public const string AdminSchemeName = "TelemetryAdminApiKey"; // End of Field AdminSchemeName
 } // End of Class TelemetryAuthenticationDefaults

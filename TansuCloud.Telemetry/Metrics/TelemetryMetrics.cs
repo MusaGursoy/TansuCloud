@@ -1,5 +1,4 @@
 // Tansu.Cloud Public Repository:    https://github.com/MusaGursoy/TansuCloud
-using System.Collections.Concurrent;
 using System.Diagnostics.Metrics;
 
 namespace TansuCloud.Telemetry.Metrics;
@@ -11,7 +10,6 @@ public sealed class TelemetryMetrics : IDisposable
 {
     private readonly Meter _meter;
     private readonly Counter<long> _persistedItems;
-    private readonly ConcurrentBag<ObservableGauge<int>> _gauges = new();
     private Func<int>? _queueDepthProvider;
 
     public TelemetryMetrics()
@@ -35,7 +33,7 @@ public sealed class TelemetryMetrics : IDisposable
     public void RegisterQueueObserver(Func<int> observer)
     {
         _queueDepthProvider = observer;
-        var gauge = _meter.CreateObservableGauge(
+        _meter.CreateObservableGauge(
             "telemetry_queue_depth",
             () =>
             {
@@ -46,7 +44,6 @@ public sealed class TelemetryMetrics : IDisposable
             unit: null,
             description: "Current backlog size of the telemetry ingestion queue."
         );
-        _gauges.Add(gauge);
     } // End of Method RegisterQueueObserver
 
     /// <summary>
@@ -64,11 +61,6 @@ public sealed class TelemetryMetrics : IDisposable
 
     public void Dispose()
     {
-        foreach (var gauge in _gauges)
-        {
-            gauge.Dispose();
-        }
-
         _meter.Dispose();
     } // End of Method Dispose
 } // End of Class TelemetryMetrics

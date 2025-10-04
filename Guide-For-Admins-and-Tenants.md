@@ -144,9 +144,9 @@ Quick validation
 - VS Code task: “compose: validate config” (dev)
 - VS Code task: “compose: validate prod config” (prod)
 
-2. Check Identity discovery at `${PUBLIC_BASE_URL}/identity/.well-known/openid-configuration`.
+1. Check Identity discovery at `${PUBLIC_BASE_URL}/identity/.well-known/openid-configuration`.
 
-3. Through the gateway, open:
+1. Through the gateway, open:
 
 - `${PUBLIC_BASE_URL}/dashboard/health/ready`
 - `${PUBLIC_BASE_URL}/identity/health/ready`
@@ -746,6 +746,110 @@ Validation checklist (after configuring telemetry)
 Durable sink posture
 
 - SigNoz (ClickHouse) remains the authoritative sink for tenant-visible logs, traces, and metrics. Product telemetry is the only egress to Tansu Cloud and is limited to the policy above. Toggle reporting off at runtime or via `LogReporting__Enabled=false` if a deployment must stay fully air-gapped. We intentionally keep product telemetry separate from SigNoz to avoid double ingestion; operators who want a local copy can add an OTEL processor/receiver alongside SigNoz, but that remains optional and off by default.
+
+### 9.2 Telemetry ingestion service (`telemetry.tansu.cloud`)
+
+What it is
+
+- Dedicated minimal API (`TansuCloud.Telemetry`) that receives the Dashboard reporter batches at `POST /api/logs/report`, persists envelopes to SQLite, and now ships a Razor-based admin console at `/admin` for triage, acknowledgement, and archiving.
+- Runs outside the main cluster so product telemetry can continue operating even when tenant infrastructure is offline or being upgraded.
+
+Development note
+
+- In local docker-compose runs the telemetry admin console is exposed directly on <http://127.0.0.1:5279>. Add `Authorization: Bearer $env:TELEMETRY__ADMIN__APIKEY` when testing with a browser plugin or CLI. The gateway deliberately does **not** proxy `/telemetry/*`; keep using the direct port (or your own hardened reverse proxy in production) so auth headers stay under your control.
+- Running the project directly via `dotnet run` or Visual Studio binds the service to <http://127.0.0.1:5279> (and `http://localhost:5279`) by default. Set `ASPNETCORE_URLS` or pass `--urls` if you need a different port for ad-hoc diagnostics; Docker/compose scenarios continue to listen on `http://0.0.0.0:8080` inside the container.
+
+Deployment topology
+
+- Host the container on a hardened VM or managed container host with a public DNS record `telemetry.tansu.cloud` pointing to your reverse proxy (e.g., Nginx/Traefik/Caddy) and a valid TLS certificate. We require HTTPS for all traffic.
+- Expose only TCP/443 externally; block all other inbound ports. The reverse proxy forwards `https://telemetry.tansu.cloud/api/*` to the container’s HTTP port (default 8080).
+- Persist the SQLite database on encrypted disk. The default compose volume path is `/var/opt/tansu/telemetry`; ensure the directory exists and is backed up on the host (nightly copy or snapshot).
+- Recommended compose snippet (adjust volume paths and secrets):
+
+  ```yaml
+  telemetry:
+    image: ghcr.io/tansucloud/telemetry:latest
+    restart: unless-stopped
+    environment:
+      ASPNETCORE_URLS: http://+:8080
+      Telemetry__Ingestion__ApiKey: "${TELEMETRY__INGESTION__APIKEY}"
+      Telemetry__Admin__ApiKey: "${TELEMETRY__ADMIN__APIKEY}"
+      Telemetry__Database__FilePath: /var/opt/tansu/telemetry/telemetry.db
+      Telemetry__Database__EnforceForeignKeys: true
+      OpenTelemetry__Otlp__Endpoint: http://signoz-otel-collector:4317 # optional, omit if SigNoz not reachable
+    volumes:
+      - /var/opt/tansu/telemetry:/var/opt/tansu/telemetry
+    networks:
+      - telemetry-backend
+  ```
+
+#### Admin console and authentication flow
+
+- The admin console lives at `/admin` (aliases `/admin/envelopes` and detail pages under `/admin/envelopes/{id}`) and shares the same bearer authentication scheme as the JSON admin API. Every request must include `Authorization: Bearer <Telemetry__Admin__ApiKey>`.
+- Because standard browsers cannot add custom Authorization headers, terminate traffic behind a reverse proxy that injects the header for trusted operators. Example snippets:
+  - **Nginx**
+
+    ```nginx
+    location /admin/ {
+        proxy_set_header Authorization "Bearer $telemetry_admin_key";
+        proxy_pass http://telemetry:8080/admin/;
+    }
+    ```
+
+  - **Traefik** (static middleware)
+
+    ```toml
+    [http.middlewares.telemetry-admin.headers.customRequestHeaders]
+    Authorization = "Bearer ${TELEMETRY_ADMIN_KEY}"
+    ```
+
+  Apply the middleware/headers only on the admin path and scope access via corporate VPN or allowlisted source IPs. Never embed the raw key in client-side code.
+- For command-line validation, run `curl -H "Authorization: Bearer $TELEMETRY__ADMIN__APIKEY" https://telemetry.tansu.cloud/api/admin/envelopes?page=1` to ensure the proxy is forwarding the header correctly before exposing the UI.
+- Supported workflows today:
+  - **Filters and metrics** — the list view provides quick filters (service, environment, host, severity floor, time range, acknowledgement/archive flags, free-text search) plus on-page counters (active/archived/acknowledged envelopes and total item count).
+  - **Detail drilling** — click an envelope to inspect log items with structured properties, correlation IDs, and exception payloads ordered newest-first.
+  - **Lifecycle controls** — acknowledge or archive directly from either the list or detail page; status toasts confirm actions and the table disables buttons once state flips.
+  - **Pagination guardrails** — UI enforces `Telemetry__Admin__DefaultPageSize`/`MaxPageSize`; invalid combinations fall back gracefully with validation messaging.
+  - **Ingestion health at a glance** — the header surfaces queue depth, capacity, and utilisation so operators can spot backlog pressure quickly.
+  - **Filtered exports** — download CSV or JSON for the active filter set via the header buttons; downloads include item windows and respect the configured export cap. Automation can continue to call `/api/admin/envelopes/export/{json|csv}` with the admin API key.
+
+Configuration keys
+
+| Environment key | Description | Notes |
+| --- | --- | --- |
+| `Telemetry__Ingestion__ApiKey` | Bearer token required by Dashboard reporters. Rotate when compromised. | Set the same value in Dashboard (`LogReporting__ApiKey`). |
+| `Telemetry__Admin__ApiKey` | API key for `/api/admin/*` and the Razor admin console. | Store separately from ingestion key; grant to internal operators only. |
+| `Telemetry__Admin__DefaultPageSize` | Default page size applied when operators first load the console. | Must be between 1 and 500; defaults to `50`. |
+| `Telemetry__Admin__MaxPageSize` | Upper bound enforced on page size selections. | Prevents expensive queries; defaults to `200`. |
+| `Telemetry__Admin__MaxExportItems` | Caps CSV/JSON export size for UI and API downloads. | Defaults to `500`; lower it if downstream tooling struggles with large payloads. |
+| `Telemetry__Database__FilePath` | Absolute or relative path to the SQLite file. | Defaults to `App_Data/telemetry/telemetry.db` inside the container; override to place on mounted storage. |
+| `Telemetry__Database__EnforceForeignKeys` | Enables SQLite FK enforcement. | Keep `true` unless troubleshooting schema upgrades. |
+| `Telemetry__Ingestion__QueueCapacity` | Optional override for in-memory queue depth. | Increase cautiously; defaults protect memory usage. |
+
+Operational checklist
+
+1. Provision API keys and store them in your secret manager (Azure Key Vault, AWS Secrets Manager, etc.). Update the container environment without baking keys into images.
+1. Verify health endpoints:
+   - `GET /health/live` responds 200 once the process starts.
+   - `GET /health/ready` gates on SQLite availability and ingestion queue readiness. Instrument your proxy or load balancer to watch this endpoint.
+1. Confirm ingestion by running Dashboard → Admin → Logs → **Send test report**; the telemetry logs should show "Accepted telemetry payload" entries.
+1. Open `/admin` through the proxy and confirm the list view renders with the expected counts. Use the filters to prove that acknowledgement and archive toggles respect the configuration limits.
+1. Review `/api/admin/envelopes?page=1` using the admin API key as a secondary validation (JSON payload mirrors the UI results and is useful for scripts).
+1. Trigger a CSV or JSON export from the UI (or hit `/api/admin/envelopes/export/json`) to confirm downloads respect filters and the configured export cap.
+1. Schedule filesystem backups for the SQLite path (retain at least 30 days). Optionally mirror data into ClickHouse or Postgres for long-term analytics—Document the downstream pipeline if you add one.
+
+Security posture
+
+- TLS termination must enforce TLS 1.2 or newer. Issue certificates via ACME automation (Let’s Encrypt/ZeroSSL) and rotate automatically.
+- Put the telemetry service behind a WAF/rate limiter. Suggested baseline: 60 requests/min per source IP, 10 concurrent connections.
+- Keep the admin API scope-restricted by IP allowlist (e.g., corporate VPN) or additional auth (mTLS or forward auth provider).
+- Rotate API keys quarterly and whenever someone leaves the operations team. The Dashboard configuration accepts hot swaps without restarts.
+
+Integration with Dashboard
+
+- Update `LogReporting__MainServerUrl` (in `.env`, environment variables, or appsettings) to `https://telemetry.tansu.cloud/api/logs/report`.
+- Align `LogReporting__ApiKey` with the ingestion key above. Restart the Dashboard only if configuration providers require it; `.env` + compose reload picks it up automatically.
+- Maintain parity between dev/staging/production: dev compose already points to the local telemetry container and uses the values in `.env` (`TELEMETRY__INGESTION__APIKEY`, `TELEMETRY__ADMIN__APIKEY`).
 
 ## 10. Security Hardening
 

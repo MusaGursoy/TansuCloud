@@ -8,7 +8,7 @@ This note packages the evidence used to validate Task 37. It should accompany th
 
 | Check | Command / Source | Result |
 | --- | --- | --- |
-| Compose app stack | `docker compose --env-file ./.env up -d identity dashboard db storage gateway` | Pass – all services healthy within ~36s |
+| Compose app stack | `docker compose --env-file ./.env up -d identity dashboard db storage telemetry gateway` | Pass – all services healthy within ~36s |
 | Gateway/Dashboard/Identity/DB/Storage health | `dotnet test tests/TansuCloud.E2E.Tests/TansuCloud.E2E.Tests.csproj -c Debug --filter FullyQualifiedName~TansuCloud.E2E.Tests.HealthEndpointsE2E` | Pass (10/10) |
 | Dashboard metrics smoke | `dotnet test tests/TansuCloud.E2E.Tests/TansuCloud.E2E.Tests.csproj -c Debug --filter FullyQualifiedName~TansuCloud.E2E.Tests.DashboardMetricsSmoke.Metrics_Page_Renders` | Pass (1/1) |
 

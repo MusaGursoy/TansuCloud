@@ -394,8 +394,8 @@ services:
       # Prometheus has been removed in favor of SigNoz. Leave unset to disable legacy metrics proxy.
       # Prometheus__BaseUrl: 
       LogReporting__Enabled: ${LOGREPORTING__ENABLED:-true}
-      LogReporting__MainServerUrl: ${LOGREPORTING__MAINSERVERURL:-}
-      LogReporting__ApiKey: ${LOGREPORTING__APIKEY:-}
+      LogReporting__MainServerUrl: ${LOGREPORTING__MAINSERVERURL:-http://telemetry:8080/api/logs/report}
+      LogReporting__ApiKey: ${LOGREPORTING__APIKEY:-dev-telemetry-api-key-1234567890}
       LogReporting__ReportIntervalMinutes: ${LOGREPORTING__REPORTINTERVALMINUTES:-60}
       LogReporting__TenantHashSecret: ${LOGREPORTING__TENANTHASHSECRET:-}
       LogReporting__PseudonymizeTenants: ${LOGREPORTING__PSEUDONYMIZETENANTS:-true}
@@ -498,6 +498,40 @@ services:
       redis:
         condition: service_healthy
 
+  telemetry:
+    build:
+      context: .
+      dockerfile: TansuCloud.Telemetry/Dockerfile
+    container_name: tansu-telemetry
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 1G
+    environment:
+      ASPNETCORE_ENVIRONMENT: Development
+      OpenTelemetry__Otlp__Endpoint: http://signoz-otel-collector:4317
+      Telemetry__Ingestion__ApiKey: "${TELEMETRY__INGESTION__APIKEY:-dev-telemetry-api-key-1234567890}"
+      Telemetry__Admin__ApiKey: "${TELEMETRY__ADMIN__APIKEY:-dev-telemetry-admin-key-9876543210}"
+      Telemetry__Database__FilePath: /var/opt/tansu/telemetry/telemetry.db
+      Telemetry__Database__EnforceForeignKeys: true
+    volumes:
+      - tansu-telemetrydata:/var/opt/tansu/telemetry
+    ports:
+      - "5279:8080"
+    healthcheck:
+      test: ["CMD", "/bin/busybox", "wget", "-q", "-O", "-", "http://localhost:8080/health/ready"]
+      interval: 10s
+      timeout: 5s
+      retries: 15
+      start_period: 25s
+    depends_on:
+      signoz-otel-collector:
+        condition: service_started
+    networks:
+      - tansucloud-network
+
   gateway:
     build:
       context: .
@@ -566,4 +600,6 @@ volumes:
   signoz-zookeeper-data:
     driver: local
   signoz-data:
+    driver: local
+  tansu-telemetrydata:
     driver: local

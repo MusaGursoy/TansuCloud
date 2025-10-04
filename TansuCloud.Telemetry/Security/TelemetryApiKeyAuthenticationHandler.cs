@@ -4,25 +4,30 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Encodings.Web;
 using Microsoft.AspNetCore.Authentication;
+using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.WebUtilities;
 using Microsoft.Extensions.Options;
 using TansuCloud.Telemetry.Configuration;
 
 namespace TansuCloud.Telemetry.Security;
 
 /// <summary>
-/// Authentication handler that validates bearer API keys for ingestion requests.
+/// Authentication handler that validates bearer API keys for telemetry requests.
 /// </summary>
-public sealed class TelemetryApiKeyAuthenticationHandler : AuthenticationHandler<AuthenticationSchemeOptions>
+/// <typeparam name="TOptions">The option type that supplies an API key.</typeparam>
+public sealed class TelemetryApiKeyAuthenticationHandler<TOptions>
+    : AuthenticationHandler<AuthenticationSchemeOptions>
+    where TOptions : class, ITelemetryApiKeyOptions
 {
-    private readonly IOptionsMonitor<TelemetryIngestionOptions> _telemetryOptions;
+    private readonly IOptionsMonitor<TOptions> _telemetryOptions;
 
     public TelemetryApiKeyAuthenticationHandler(
         IOptionsMonitor<AuthenticationSchemeOptions> options,
         ILoggerFactory logger,
         UrlEncoder encoder,
-        ISystemClock clock,
-        IOptionsMonitor<TelemetryIngestionOptions> telemetryOptions
-    ) : base(options, logger, encoder, clock)
+        IOptionsMonitor<TOptions> telemetryOptions
+    )
+        : base(options, logger, encoder)
     {
         _telemetryOptions = telemetryOptions;
     } // End of Constructor TelemetryApiKeyAuthenticationHandler
@@ -32,28 +37,40 @@ public sealed class TelemetryApiKeyAuthenticationHandler : AuthenticationHandler
         var configuredKey = _telemetryOptions.CurrentValue.ApiKey;
         if (string.IsNullOrWhiteSpace(configuredKey))
         {
-            return Task.FromResult(AuthenticateResult.Fail("Telemetry ingestion API key is not configured."));
+            return Task.FromResult(
+                AuthenticateResult.Fail("Telemetry ingestion API key is not configured.")
+            );
         }
 
-        if (!Request.Headers.TryGetValue("Authorization", out var authorizationHeader))
-        {
-            return Task.FromResult(AuthenticateResult.Fail("Authorization header missing."));
-        }
+        var allowCookieFallback = typeof(TOptions) == typeof(TelemetryAdminOptions);
 
-        var headerValue = authorizationHeader.ToString();
-        if (!headerValue.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase))
+        if (
+            !TryResolveApiKey(
+                allowCookieFallback,
+                out var providedKey,
+                out var source,
+                out var failureReason
+            )
+        )
         {
-            return Task.FromResult(AuthenticateResult.Fail("Authorization header must use the Bearer scheme."));
-        }
-
-        var providedKey = headerValue["Bearer ".Length..].Trim();
-        if (string.IsNullOrWhiteSpace(providedKey))
-        {
-            return Task.FromResult(AuthenticateResult.Fail("API key value is empty."));
+            return Task.FromResult(AuthenticateResult.Fail(failureReason));
         }
 
         if (!SecureEquals(providedKey, configuredKey))
         {
+            if (allowCookieFallback && source == ApiKeySource.Cookie)
+            {
+                Response.Cookies.Delete(
+                    TelemetryAdminAuthenticationDefaults.ApiKeyCookieName,
+                    new CookieOptions
+                    {
+                        Path = "/",
+                        Secure = Request.IsHttps,
+                        SameSite = SameSiteMode.Strict
+                    }
+                );
+            }
+
             return Task.FromResult(AuthenticateResult.Fail("Invalid API key."));
         }
 
@@ -70,6 +87,25 @@ public sealed class TelemetryApiKeyAuthenticationHandler : AuthenticationHandler
 
     protected override Task HandleChallengeAsync(AuthenticationProperties properties)
     {
+        if (typeof(TOptions) == typeof(TelemetryAdminOptions))
+        {
+            if (!Request.Path.StartsWithSegments("/api", StringComparison.OrdinalIgnoreCase))
+            {
+                var currentUrl = $"{Request.PathBase}{Request.Path}{Request.QueryString}";
+                var redirectUrl = TelemetryAdminAuthenticationDefaults.LoginPath;
+
+                if (!string.IsNullOrWhiteSpace(currentUrl) && currentUrl != "/")
+                {
+                    redirectUrl = QueryHelpers.AddQueryString(redirectUrl, "returnUrl", currentUrl);
+                }
+
+                redirectUrl = QueryHelpers.AddQueryString(redirectUrl, "missingKey", "1");
+
+                Response.Redirect(redirectUrl);
+                return Task.CompletedTask;
+            }
+        }
+
         Response.StatusCode = StatusCodes.Status401Unauthorized;
         Response.Headers.WWWAuthenticate = "Bearer realm=\"tansu.telemetry\"";
         return Task.CompletedTask;
@@ -93,4 +129,68 @@ public sealed class TelemetryApiKeyAuthenticationHandler : AuthenticationHandler
 
         return CryptographicOperations.FixedTimeEquals(providedBytes, expectedBytes);
     } // End of Method SecureEquals
+
+    private enum ApiKeySource
+    {
+        AuthorizationHeader,
+        Cookie
+    } // End of Enum ApiKeySource
+
+    private bool TryResolveApiKey(
+        bool allowCookieFallback,
+        out string providedKey,
+        out ApiKeySource source,
+        out string failureReason
+    )
+    {
+        const string bearerPrefix = "Bearer ";
+
+        if (Request.Headers.TryGetValue("Authorization", out var authorizationHeader))
+        {
+            var headerValue = authorizationHeader.ToString();
+            if (!headerValue.StartsWith(bearerPrefix, StringComparison.OrdinalIgnoreCase))
+            {
+                providedKey = string.Empty;
+                source = ApiKeySource.AuthorizationHeader;
+                failureReason = "Authorization header must use the Bearer scheme.";
+                return false;
+            }
+
+            var candidate = headerValue[bearerPrefix.Length..].Trim();
+            if (string.IsNullOrWhiteSpace(candidate))
+            {
+                providedKey = string.Empty;
+                source = ApiKeySource.AuthorizationHeader;
+                failureReason = "API key value is empty.";
+                return false;
+            }
+
+            providedKey = candidate;
+            source = ApiKeySource.AuthorizationHeader;
+            failureReason = string.Empty;
+            return true;
+        }
+
+        if (
+            allowCookieFallback
+            && Request.Cookies.TryGetValue(
+                TelemetryAdminAuthenticationDefaults.ApiKeyCookieName,
+                out var cookieValue
+            )
+            && !string.IsNullOrWhiteSpace(cookieValue)
+        )
+        {
+            providedKey = cookieValue;
+            source = ApiKeySource.Cookie;
+            failureReason = string.Empty;
+            return true;
+        }
+
+        providedKey = string.Empty;
+        source = ApiKeySource.AuthorizationHeader;
+        failureReason = allowCookieFallback
+            ? "Authorization header or admin session cookie missing."
+            : "Authorization header missing.";
+        return false;
+    } // End of Method TryResolveApiKey
 } // End of Class TelemetryApiKeyAuthenticationHandler

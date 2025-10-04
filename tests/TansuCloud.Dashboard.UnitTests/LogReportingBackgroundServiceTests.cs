@@ -2,6 +2,7 @@
 using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
+using TansuCloud.Telemetry.Contracts;
 using System.Security.Cryptography;
 using System.Text;
 using FluentAssertions;

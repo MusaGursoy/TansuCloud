@@ -1,0 +1,13 @@
+@{
+    var message = TempData["StatusMessage"] as string;
+    var messageType = TempData["StatusMessageType"] as string ?? "info";
+}
+
+@if (!string.IsNullOrWhiteSpace(message))
+{
+    <div class="status-banner status-banner--@messageType" role="status">
+        <strong>@messageType.ToUpperInvariant()</strong>
+        <span>@message</span>
+        <button type="button" class="status-banner__close" aria-label="Dismiss notification" onclick="this.parentElement.remove();">&times;</button>
+    </div>
+}

@@ -1,4 +1,5 @@
 // Tansu.Cloud Public Repository:    https://github.com/MusaGursoy/TansuCloud
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using TansuCloud.Telemetry.Data;
@@ -13,19 +14,19 @@ namespace TansuCloud.Telemetry.Ingestion;
 public sealed class TelemetryIngestionWorker : BackgroundService
 {
     private readonly ITelemetryIngestionQueue _queue;
-    private readonly TelemetryRepository _repository;
+    private readonly IServiceScopeFactory _scopeFactory;
     private readonly TelemetryMetrics _metrics;
     private readonly ILogger<TelemetryIngestionWorker> _logger;
 
     public TelemetryIngestionWorker(
         ITelemetryIngestionQueue queue,
-        TelemetryRepository repository,
+        IServiceScopeFactory scopeFactory,
         TelemetryMetrics metrics,
         ILogger<TelemetryIngestionWorker> logger
     )
     {
         _queue = queue;
-        _repository = repository;
+        _scopeFactory = scopeFactory;
         _metrics = metrics;
         _logger = logger;
     } // End of Constructor TelemetryIngestionWorker
@@ -57,7 +58,9 @@ public sealed class TelemetryIngestionWorker : BackgroundService
 
     private async Task PersistAsync(TelemetryWorkItem workItem, CancellationToken cancellationToken)
     {
-        await _repository.PersistAsync(workItem.Envelope, cancellationToken).ConfigureAwait(false);
+        await using var scope = _scopeFactory.CreateAsyncScope();
+        var repository = scope.ServiceProvider.GetRequiredService<TelemetryRepository>();
+        await repository.PersistAsync(workItem.Envelope, cancellationToken).ConfigureAwait(false);
         _metrics.RecordPersistedItems(workItem.Envelope.ItemCount);
     } // End of Method PersistAsync
 } // End of Class TelemetryIngestionWorker

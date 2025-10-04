@@ -1,0 +1,234 @@
+@page
+@model TansuCloud.Telemetry.Pages.Admin.Envelopes.IndexModel
+@{
+    ViewData["Title"] = "Envelopes";
+}
+
+<section class="page-header">
+    <div>
+        <h1>Telemetry envelopes</h1>
+        <div class="page-header__meta">
+            <span>Last refreshed @Model.LastRefreshedUtc.ToString("yyyy-MM-dd HH:mm:ss 'UTC'")</span>
+            <span>Total matches @Model.TotalCount.ToString("N0")</span>
+        </div>
+    </div>
+    <div class="page-header__actions">
+        <a class="button" asp-route="TelemetryAdmin_ExportEnvelopesCsv" asp-all-route-data="Model.BuildExportRouteValues()">Export CSV</a>
+        <a class="button button--ghost" asp-route="TelemetryAdmin_ExportEnvelopesJson" asp-all-route-data="Model.BuildExportRouteValues()">Export JSON</a>
+    </div>
+</section>
+
+<div asp-validation-summary="ModelOnly" class="validation-summary"></div>
+
+<form method="get" class="surface-card filter-form">
+    <fieldset class="filter-form__fieldset" aria-label="Filters">
+        <div class="labelled-field">
+            <label asp-for="Filter.Service">Service</label>
+            <input asp-for="Filter.Service" placeholder="api-gateway" />
+        </div>
+        <div class="labelled-field">
+            <label asp-for="Filter.Environment">Environment</label>
+            <input asp-for="Filter.Environment" placeholder="Production" />
+        </div>
+        <div class="labelled-field">
+            <label asp-for="Filter.Host">Host</label>
+            <input asp-for="Filter.Host" placeholder="edge-01" />
+        </div>
+        <div class="labelled-field">
+            <label asp-for="Filter.SeverityThreshold">Severity</label>
+            <select asp-for="Filter.SeverityThreshold">
+                <option value="">Any</option>
+                @foreach (var severity in Model.SeverityChoices)
+                {
+                    <option value="@severity" selected="@(Model.Filter.SeverityThreshold == severity)">@severity</option>
+                }
+            </select>
+        </div>
+        <div class="labelled-field">
+            <label for="Filter_FromUtc">From (UTC)</label>
+            <input type="datetime-local" id="Filter_FromUtc" name="FromUtc" value="@(Model.Filter.FromUtc.HasValue ? Model.Filter.FromUtc.Value.ToLocalTime().ToString("yyyy-MM-ddTHH:mm") : string.Empty)" />
+        </div>
+        <div class="labelled-field">
+            <label for="Filter_ToUtc">To (UTC)</label>
+            <input type="datetime-local" id="Filter_ToUtc" name="ToUtc" value="@(Model.Filter.ToUtc.HasValue ? Model.Filter.ToUtc.Value.ToLocalTime().ToString("yyyy-MM-ddTHH:mm") : string.Empty)" />
+        </div>
+        <div class="labelled-field">
+            <label asp-for="Filter.Search">Search</label>
+            <input asp-for="Filter.Search" placeholder="Host, service, or environment" />
+        </div>
+        <div class="labelled-field">
+            <label asp-for="Filter.PageSize">Page size</label>
+            <input asp-for="Filter.PageSize" type="number" min="1" max="500" />
+        </div>
+        <div class="labelled-field">
+            <label asp-for="Filter.Acknowledged">Acknowledgement</label>
+            <select asp-for="Filter.Acknowledged">
+                <option value="">Anything</option>
+                <option value="true" selected="@(Model.Filter.Acknowledged == true)">Acknowledged</option>
+                <option value="false" selected="@(Model.Filter.Acknowledged == false)">Unacknowledged</option>
+            </select>
+        </div>
+        <div class="labelled-field">
+            <label asp-for="Filter.Deleted">Archive state</label>
+            <select asp-for="Filter.Deleted">
+                <option value="">Active only</option>
+                <option value="true" selected="@(Model.Filter.Deleted == true)">Archived only</option>
+                <option value="false" selected="@(Model.Filter.Deleted == false)">Exclude archived</option>
+            </select>
+        </div>
+        <div class="labelled-field checkbox-field">
+            <input asp-for="Filter.IncludeAcknowledged" id="Filter_IncludeAcknowledged" />
+            <label for="Filter_IncludeAcknowledged">Include acknowledged items</label>
+        </div>
+        <div class="labelled-field checkbox-field">
+            <input asp-for="Filter.IncludeDeleted" id="Filter_IncludeDeleted" />
+            <label for="Filter_IncludeDeleted">Include archived items</label>
+        </div>
+    </fieldset>
+
+    <div class="filter-form__actions">
+        <button class="button" type="submit">Apply filters</button>
+        <a class="button button--ghost" asp-page="./Index">Clear</a>
+    </div>
+</form>
+
+<section class="metrics-grid">
+    <div class="surface-card metric-card">
+        <span class="metric-card__label">Active on page</span>
+        <span class="metric-card__value">@Model.ActiveOnPage.ToString("N0")</span>
+        <span class="metric-card__hint">Items visible and not archived</span>
+    </div>
+    <div class="surface-card metric-card">
+        <span class="metric-card__label">Acknowledged</span>
+        <span class="metric-card__value">@Model.AcknowledgedOnPage.ToString("N0")</span>
+        <span class="metric-card__hint">Acknowledged envelopes this page</span>
+    </div>
+    <div class="surface-card metric-card">
+        <span class="metric-card__label">Archived</span>
+        <span class="metric-card__value">@Model.ArchivedOnPage.ToString("N0")</span>
+        <span class="metric-card__hint">Archived envelopes this page</span>
+    </div>
+    <div class="surface-card metric-card">
+        <span class="metric-card__label">Events in table</span>
+        <span class="metric-card__value">@Model.ItemCountOnPage.ToString("N0")</span>
+        <span class="metric-card__hint">Total log entries inside listed envelopes</span>
+    </div>
+    <div class="surface-card metric-card">
+        <span class="metric-card__label">Queue depth</span>
+        <span class="metric-card__value">@Model.QueueDepth.ToString("N0") / @Model.QueueCapacity.ToString("N0")</span>
+        <span class="metric-card__hint">@Model.QueueUsagePercentage% capacity used</span>
+    </div>
+    <div class="surface-card metric-card">
+        <span class="metric-card__label">Export limit</span>
+        <span class="metric-card__value">@Model.ExportLimit.ToString("N0")</span>
+        <span class="metric-card__hint">Maximum envelopes per download</span>
+    </div>
+</section>
+
+@if (!Model.HasResults)
+{
+    <div class="surface-card empty-state">
+        <h2>No envelopes found</h2>
+        <p>Adjust your filters or try expanding the time window to see telemetry traffic.</p>
+    </div>
+}
+else
+{
+    <div class="surface-card table-shell">
+        <table role="grid">
+            <thead>
+                <tr>
+                    <th scope="col">Received</th>
+                    <th scope="col">Service</th>
+                    <th scope="col">Environment</th>
+                    <th scope="col">Host</th>
+                    <th scope="col">Severity</th>
+                    <th scope="col">Items</th>
+                    <th scope="col">Status</th>
+                    <th scope="col" class="visually-hidden">Actions</th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var envelope in Model.Envelopes)
+                {
+                    <tr>
+                        <td>@Model.FormatTimestamp(envelope.ReceivedAtUtc)</td>
+                        <td>
+                            <a asp-page="./Detail" asp-route-id="@envelope.Id" class="table-link">@envelope.Service</a>
+                        </td>
+                        <td>@envelope.Environment</td>
+                        <td>@envelope.Host</td>
+                        <td>
+                            <span class="badge badge--muted">@envelope.SeverityThreshold</span>
+                        </td>
+                        <td>@envelope.ItemCount.ToString("N0")</td>
+                        <td>
+                            @if (envelope.IsDeleted)
+                            {
+                                <span class="badge badge--warning">Archived</span>
+                            }
+                            else if (envelope.IsAcknowledged)
+                            {
+                                <span class="badge badge--success">Acknowledged</span>
+                            }
+                            else
+                            {
+                                <span class="badge badge--muted">Pending</span>
+                            }
+                        </td>
+                        <td>
+                            <div class="row-actions">
+                                <form method="post" asp-page-handler="Acknowledge" asp-route-id="@envelope.Id">
+                                    <input type="hidden" asp-for="Filter.Page" />
+                                    <input type="hidden" asp-for="Filter.PageSize" />
+                                    <input type="hidden" asp-for="Filter.Service" />
+                                    <input type="hidden" asp-for="Filter.Environment" />
+                                    <input type="hidden" asp-for="Filter.Host" />
+                                    <input type="hidden" asp-for="Filter.SeverityThreshold" />
+                                    <input type="hidden" asp-for="Filter.Search" />
+                                    <input type="hidden" asp-for="Filter.IncludeAcknowledged" />
+                                    <input type="hidden" asp-for="Filter.IncludeDeleted" />
+                                    <input type="hidden" name="Filter.FromUtc" value="@(Model.Filter.FromUtc?.ToString("o"))" />
+                                    <input type="hidden" name="Filter.ToUtc" value="@(Model.Filter.ToUtc?.ToString("o"))" />
+                                    <input type="hidden" name="Filter.Acknowledged" value="@(Model.Filter.Acknowledged?.ToString())" />
+                                    <input type="hidden" name="Filter.Deleted" value="@(Model.Filter.Deleted?.ToString())" />
+                                    <button class="button button--ghost" type="submit" @((envelope.IsDeleted || envelope.IsAcknowledged) ? "disabled" : null)>Acknowledge</button>
+                                </form>
+                                <form method="post" asp-page-handler="Delete" asp-route-id="@envelope.Id">
+                                    <input type="hidden" asp-for="Filter.Page" />
+                                    <input type="hidden" asp-for="Filter.PageSize" />
+                                    <input type="hidden" asp-for="Filter.Service" />
+                                    <input type="hidden" asp-for="Filter.Environment" />
+                                    <input type="hidden" asp-for="Filter.Host" />
+                                    <input type="hidden" asp-for="Filter.SeverityThreshold" />
+                                    <input type="hidden" asp-for="Filter.Search" />
+                                    <input type="hidden" asp-for="Filter.IncludeAcknowledged" />
+                                    <input type="hidden" asp-for="Filter.IncludeDeleted" />
+                                    <input type="hidden" name="Filter.FromUtc" value="@(Model.Filter.FromUtc?.ToString("o"))" />
+                                    <input type="hidden" name="Filter.ToUtc" value="@(Model.Filter.ToUtc?.ToString("o"))" />
+                                    <input type="hidden" name="Filter.Acknowledged" value="@(Model.Filter.Acknowledged?.ToString())" />
+                                    <input type="hidden" name="Filter.Deleted" value="@(Model.Filter.Deleted?.ToString())" />
+                                    <button class="button button--danger" type="submit" @(envelope.IsDeleted ? "disabled" : null)>Archive</button>
+                                </form>
+                            </div>
+                        </td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    </div>
+
+    <div class="surface-card pagination">
+        <div class="pagination__info">
+            Showing page @Model.CurrentPage of @Model.TotalPages — @Model.TotalCount.ToString("N0") total envelopes
+        </div>
+        <div class="pagination__buttons">
+            @{
+                var prevDisabled = Model.CurrentPage <= 1;
+                var nextDisabled = Model.CurrentPage >= Model.TotalPages;
+            }
+            <a class="button button--ghost @(prevDisabled ? "button--disabled" : string.Empty)" asp-page="./Index" asp-all-route-data="Model.BuildRouteParameters(Math.Max(Model.CurrentPage - 1, 1))" aria-disabled="@prevDisabled">Previous</a>
+            <a class="button @(nextDisabled ? "button--ghost button--disabled" : string.Empty)" asp-page="./Index" asp-all-route-data="Model.BuildRouteParameters(Math.Min(Model.CurrentPage + 1, Model.TotalPages))" aria-disabled="@nextDisabled">Next</a>
+        </div>
+    </div>
+}

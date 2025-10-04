@@ -34,10 +34,14 @@ public sealed class TelemetryDbContext : DbContext
             entity.Property(e => e.MaxItems).IsRequired();
             entity.Property(e => e.ItemCount).IsRequired();
             entity.Property(e => e.ReceivedAtUtc).IsRequired();
+            entity.Property(e => e.AcknowledgedAtUtc).HasColumnType("TEXT");
+            entity.Property(e => e.DeletedAtUtc).HasColumnType("TEXT");
 
             entity.HasIndex(e => e.ReceivedAtUtc).HasDatabaseName("IX_envelopes_received_at");
             entity.HasIndex(e => e.Service).HasDatabaseName("IX_envelopes_service");
             entity.HasIndex(e => e.Environment).HasDatabaseName("IX_envelopes_environment");
+            entity.HasIndex(e => e.AcknowledgedAtUtc).HasDatabaseName("IX_envelopes_acknowledged_at");
+            entity.HasIndex(e => e.DeletedAtUtc).HasDatabaseName("IX_envelopes_deleted_at");
         });
 
         modelBuilder.Entity<TelemetryItemEntity>(entity =>

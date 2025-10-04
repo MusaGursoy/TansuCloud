@@ -9,12 +9,18 @@ internal static class TestUrls
 {
     private const string DefaultLoopback = "http://127.0.0.1:8080";
     private const string DefaultGatewayInternal = "http://gateway:8080";
+    private const string DefaultTelemetryBase = "http://127.0.0.1:5279";
 
     private static string? _publicBase;
     private static string? _gatewayBase;
+    private static string? _telemetryBase;
 
     internal static string PublicBaseUrl =>
-        _publicBase ??= Resolve("PUBLIC_BASE_URL", DefaultLoopback, preferLoopback: !IsRunningInContainer());
+        _publicBase ??= Resolve(
+            "PUBLIC_BASE_URL",
+            DefaultLoopback,
+            preferLoopback: !IsRunningInContainer()
+        );
 
     internal static string GatewayBaseUrl =>
         _gatewayBase ??= Resolve(
@@ -23,13 +29,25 @@ internal static class TestUrls
             preferLoopback: !IsRunningInContainer()
         );
 
+    internal static string TelemetryBaseUrl =>
+        _telemetryBase ??= Resolve(
+            "TELEMETRY_BASE_URL",
+            fallback: DefaultTelemetryBase,
+            preferLoopback: !IsRunningInContainer()
+        );
+
     internal static Uri PublicBaseUri => new(PublicBaseUrl);
 
     internal static Uri GatewayBaseUri => new(GatewayBaseUrl);
 
+    internal static Uri TelemetryBaseUri => new(TelemetryBaseUrl);
+
     internal static string JoinGateway(params string[] segments) => Join(GatewayBaseUrl, segments);
 
     internal static string JoinPublic(params string[] segments) => Join(PublicBaseUrl, segments);
+
+    internal static string JoinTelemetry(params string[] segments) =>
+        Join(TelemetryBaseUrl, segments);
 
     private static string Resolve(string key, string fallback, bool preferLoopback)
     {
@@ -66,7 +84,9 @@ internal static class TestUrls
             {
                 builder.Host = "127.0.0.1";
             }
-            else if (!preferLoopback && string.Equals(builder.Host, "::1", StringComparison.Ordinal))
+            else if (
+                !preferLoopback && string.Equals(builder.Host, "::1", StringComparison.Ordinal)
+            )
             {
                 builder.Host = "localhost";
             }

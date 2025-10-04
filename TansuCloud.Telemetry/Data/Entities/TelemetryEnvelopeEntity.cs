@@ -59,7 +59,18 @@ public sealed class TelemetryEnvelopeEntity
     public int ItemCount { get; set; } // End of Property ItemCount
 
     /// <summary>
+    /// Gets or sets the UTC timestamp of when the envelope was acknowledged by an operator.
+    /// </summary>
+    public DateTime? AcknowledgedAtUtc { get; set; } // End of Property AcknowledgedAtUtc
+
+    /// <summary>
+    /// Gets or sets the UTC timestamp of when the envelope was soft-deleted.
+    /// </summary>
+    public DateTime? DeletedAtUtc { get; set; } // End of Property DeletedAtUtc
+
+    /// <summary>
     /// Gets or sets the collection of items belonging to the envelope.
     /// </summary>
     public IList<TelemetryItemEntity> Items { get; set; } = new List<TelemetryItemEntity>(); // End of Property Items
+
 } // End of Class TelemetryEnvelopeEntity

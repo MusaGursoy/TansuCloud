@@ -40,7 +40,7 @@ jobs:
 
       - name: Docker Compose up (apps)
         run: |
-          docker compose --env-file ./.env up -d identity dashboard db storage gateway
+          docker compose --env-file ./.env up -d identity dashboard db storage telemetry gateway
 
       - name: Wait for readiness (gateway)
         run: |

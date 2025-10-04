@@ -1,0 +1,130 @@
+@page "{id:guid}"
+@model TansuCloud.Telemetry.Pages.Admin.Envelopes.DetailModel
+@{
+    ViewData["Title"] = "Envelope detail";
+    var envelope = Model.Envelope;
+}
+
+@if (envelope is null)
+{
+    <div class="surface-card empty-state">
+        <h2>Envelope not available</h2>
+        <p>The requested envelope could not be loaded. Return to the list to continue exploring telemetry.</p>
+        <a class="button" asp-page="./Index">Back to envelopes</a>
+    </div>
+}
+else
+{
+    <section class="page-header">
+        <div>
+            <h1>Envelope @envelope.Id</h1>
+            <div class="page-header__meta">
+                <span>Received @Model.FormatTimestamp(envelope.ReceivedAtUtc)</span>
+                <span>@envelope.ItemCount.ToString("N0") log items</span>
+            </div>
+        </div>
+        <div class="row-actions">
+            <form method="post" asp-page-handler="Acknowledge" asp-route-id="@envelope.Id">
+                <button class="button button--ghost" type="submit" @(Model.IsAcknowledged || Model.IsArchived ? "disabled" : null)>Acknowledge</button>
+            </form>
+            <form method="post" asp-page-handler="Delete" asp-route-id="@envelope.Id">
+                <button class="button button--danger" type="submit" @(Model.IsArchived ? "disabled" : null)>Archive</button>
+            </form>
+            <a class="button button--ghost" asp-page="./Index">Back to list</a>
+        </div>
+    </section>
+
+    <section class="surface-card detail-grid">
+        <div class="detail-grid__item">
+            <div class="detail-grid__label">Service</div>
+            <div class="detail-grid__value">@envelope.Service</div>
+        </div>
+        <div class="detail-grid__item">
+            <div class="detail-grid__label">Environment</div>
+            <div class="detail-grid__value">@envelope.Environment</div>
+        </div>
+        <div class="detail-grid__item">
+            <div class="detail-grid__label">Host</div>
+            <div class="detail-grid__value">@envelope.Host</div>
+        </div>
+        <div class="detail-grid__item">
+            <div class="detail-grid__label">Severity threshold</div>
+            <div class="detail-grid__value">@envelope.SeverityThreshold</div>
+        </div>
+        <div class="detail-grid__item">
+            <div class="detail-grid__label">Window (minutes)</div>
+            <div class="detail-grid__value">@envelope.WindowMinutes</div>
+        </div>
+        <div class="detail-grid__item">
+            <div class="detail-grid__label">Max items</div>
+            <div class="detail-grid__value">@envelope.MaxItems</div>
+        </div>
+        <div class="detail-grid__item">
+            <div class="detail-grid__label">Acknowledged</div>
+            <div class="detail-grid__value">@(Model.IsAcknowledged ? "Yes" : "No")</div>
+        </div>
+        <div class="detail-grid__item">
+            <div class="detail-grid__label">Archived</div>
+            <div class="detail-grid__value">@(Model.IsArchived ? "Yes" : "No")</div>
+        </div>
+        <div class="detail-grid__item">
+            <div class="detail-grid__label">First event</div>
+            <div class="detail-grid__value">@(Model.FirstEventUtc.HasValue ? Model.FormatTimestamp(Model.FirstEventUtc.Value) : "—")</div>
+        </div>
+        <div class="detail-grid__item">
+            <div class="detail-grid__label">Last event</div>
+            <div class="detail-grid__value">@(Model.LastEventUtc.HasValue ? Model.FormatTimestamp(Model.LastEventUtc.Value) : "—")</div>
+        </div>
+    </section>
+
+    <section class="surface-card">
+        <h2>Log items</h2>
+        <div class="log-items">
+            @foreach (var item in Model.Items.OrderByDescending(i => i.TimestampUtc))
+            {
+                <article class="log-item">
+                    <header class="log-item__meta">
+                        <span>@Model.FormatTimestamp(item.TimestampUtc)</span>
+                        <span>Level: @item.Level</span>
+                        <span>Kind: @item.Kind</span>
+                        @if (!string.IsNullOrWhiteSpace(item.Category))
+                        {
+                            <span>Category: @item.Category</span>
+                        }
+                        @if (!string.IsNullOrWhiteSpace(item.CorrelationId))
+                        {
+                            <span>Correlation: @item.CorrelationId</span>
+                        }
+                        @if (!string.IsNullOrWhiteSpace(item.TraceId))
+                        {
+                            <span>Trace: @item.TraceId</span>
+                        }
+                        @if (!string.IsNullOrWhiteSpace(item.SpanId))
+                        {
+                            <span>Span: @item.SpanId</span>
+                        }
+                        @if (item.EventId.HasValue)
+                        {
+                            <span>Event: @item.EventId</span>
+                        }
+                    </header>
+                    <div class="log-item__message">@item.Message</div>
+                    @if (!string.IsNullOrWhiteSpace(item.Exception))
+                    {
+                        <details>
+                            <summary>Exception details</summary>
+                            <pre class="log-item__properties">@item.Exception</pre>
+                        </details>
+                    }
+                    @if (!string.IsNullOrWhiteSpace(item.PropertiesJson))
+                    {
+                        <details>
+                            <summary>Structured properties</summary>
+                            <pre class="log-item__properties">@item.PropertiesJson</pre>
+                        </details>
+                    }
+                </article>
+            }
+        </div>
+    </section>
+}

@@ -6,7 +6,7 @@ namespace TansuCloud.Telemetry.Configuration;
 /// <summary>
 /// Options controlling incoming telemetry ingestion.
 /// </summary>
-public sealed class TelemetryIngestionOptions
+public sealed class TelemetryIngestionOptions : ITelemetryApiKeyOptions
 {
     /// <summary>
     /// Gets or sets the API key required for ingestion requests.

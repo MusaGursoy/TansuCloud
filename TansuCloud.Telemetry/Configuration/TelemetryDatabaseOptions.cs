@@ -13,7 +13,7 @@ public sealed class TelemetryDatabaseOptions
     /// </summary>
     [Required]
     [MinLength(3)]
-    public string FilePath { get; set; } = "App_Data/telemetry.db"; // End of Property FilePath
+    public string FilePath { get; set; } = "App_Data/telemetry/telemetry.db"; // End of Property FilePath
 
     /// <summary>
     /// Gets or sets a value indicating whether to enforce foreign keys on the SQLite connection.

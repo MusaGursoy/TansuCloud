@@ -32,7 +32,7 @@ public sealed class TelemetryQueueHealthCheck : IHealthCheck
         var capacity = Math.Max(1, _options.CurrentValue.QueueCapacity);
         var usage = (double)depth / capacity;
 
-        var data = new Dictionary<string, object?>
+        var data = new Dictionary<string, object>
         {
             ["queueDepth"] = depth,
             ["queueCapacity"] = capacity,

@@ -176,7 +176,7 @@
 			"args": [
 				"-NoProfile",
 				"-Command",
-				"$ErrorActionPreference='Stop'; . \"${workspaceFolder}/dev/tools/common.ps1\"; Import-TansuDotEnv | Out-Null; docker compose --env-file \"${workspaceFolder}/.env\" up -d identity dashboard db storage gateway"
+				"$ErrorActionPreference='Stop'; . \"${workspaceFolder}/dev/tools/common.ps1\"; Import-TansuDotEnv | Out-Null; docker compose --env-file \"${workspaceFolder}/.env\" up -d identity dashboard db storage telemetry gateway"
 			],
 			"isBackground": false,
 			"group": "build"

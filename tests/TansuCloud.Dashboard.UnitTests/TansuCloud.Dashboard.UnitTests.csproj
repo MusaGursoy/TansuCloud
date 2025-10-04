@@ -23,5 +23,6 @@
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\..\TansuCloud.Dashboard\TansuCloud.Dashboard.csproj" />
+    <ProjectReference Include="..\..\TansuCloud.Telemetry.Contracts\TansuCloud.Telemetry.Contracts.csproj" />
   </ItemGroup>
 </Project>
