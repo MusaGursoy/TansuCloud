@@ -6,6 +6,7 @@ using System.Text;
 using System.Text.Json;
 using System.Threading.Channels;
 using Microsoft.AspNetCore.Http;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -13,6 +14,7 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Npgsql;
 using NpgsqlTypes;
+using TansuCloud.Audit;
 
 namespace TansuCloud.Observability.Auditing;
 
@@ -254,6 +256,15 @@ internal static class JsonStringExtensions
 } // End of Class JsonStringExtensions
 
 /// <summary>
+/// No-op audit logger used when audit database is not configured.
+/// Allows services to start and run without audit persistence.
+/// </summary>
+internal sealed class NoOpAuditLogger : IAuditLogger
+{
+    public bool TryEnqueue(AuditEvent evt) => true; // Always succeeds, does nothing
+} // End of Class NoOpAuditLogger
+
+/// <summary>
 /// Hosted background writer: creates table if needed; batches inserts to Postgres.
 /// </summary>
 internal sealed class AuditBackgroundWriter(
@@ -277,32 +288,23 @@ internal sealed class AuditBackgroundWriter(
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
+        // Diagnostic: Log the effective connection target (host:port/db) for troubleshooting configuration precedence.
         try
         {
-            // Diagnostic: Log the effective connection target (host:port/db) for troubleshooting configuration precedence.
-            try
-            {
-                var csb = new NpgsqlConnectionStringBuilder(_opts.ConnectionString);
-                var host = csb.Host;
-                var port = csb.Port;
-                var db = csb.Database;
-                _logger.LogInformation(
-                    "[AuditWriter] Using connection target {Host}:{Port}/{Database}",
-                    host,
-                    port,
-                    db
-                );
-            }
-            catch
-            {
-                // Swallow parse errors; EnsureTableAsync will surface connection issues.
-            }
-
-            await EnsureTableAsync(stoppingToken);
+            var csb = new NpgsqlConnectionStringBuilder(_opts.ConnectionString);
+            var host = csb.Host;
+            var port = csb.Port;
+            var db = csb.Database;
+            _logger.LogInformation(
+                "[AuditWriter] Using connection target {Host}:{Port}/{Database}",
+                host,
+                port,
+                db
+            );
         }
-        catch (Exception ex)
+        catch
         {
-            _logger.LogError(ex, "Audit writer failed to ensure table");
+            // Swallow parse errors; WriteBatchAsync will surface connection issues.
         }
 
         var reader = HttpAuditLogger.Reader;
@@ -349,47 +351,6 @@ internal sealed class AuditBackgroundWriter(
             }
         }
     } // End of Method ExecuteAsync
-
-    private async Task EnsureTableAsync(CancellationToken ct)
-    {
-        await using var conn = new NpgsqlConnection(_opts.ConnectionString);
-        await conn.OpenAsync(ct);
-        var sql =
-            $@"
-CREATE TABLE IF NOT EXISTS {_opts.Table} (
-    id uuid PRIMARY KEY,
-    when_utc timestamptz NOT NULL,
-    service text NOT NULL,
-    environment text NOT NULL,
-    version text NOT NULL,
-    tenant_id text NOT NULL,
-    subject text NOT NULL,
-    action text NOT NULL,
-    category text NOT NULL,
-    route_template text NOT NULL,
-    correlation_id text NOT NULL,
-    trace_id text NOT NULL,
-    span_id text NOT NULL,
-    client_ip_hash text NULL,
-    user_agent text NULL,
-    outcome text NULL,
-    reason_code text NULL,
-    details jsonb NULL,
-    impersonated_by text NULL,
-    source_host text NULL,
-    idempotency_key text NULL,
-    unique_key text NULL
-);
-CREATE INDEX IF NOT EXISTS ix_audit_when_desc ON {_opts.Table} (when_utc DESC);
-CREATE INDEX IF NOT EXISTS ix_audit_tenant ON {_opts.Table} (tenant_id);
-CREATE INDEX IF NOT EXISTS ix_audit_category ON {_opts.Table} (category);
-CREATE INDEX IF NOT EXISTS ix_audit_action ON {_opts.Table} (action);
-CREATE INDEX IF NOT EXISTS ix_audit_service ON {_opts.Table} (service);
-CREATE UNIQUE INDEX IF NOT EXISTS ux_audit_idem ON {_opts.Table} (idempotency_key) WHERE idempotency_key IS NOT NULL;
-";
-        await using var cmd = new NpgsqlCommand(sql, conn);
-        await cmd.ExecuteNonQueryAsync(ct);
-    } // End of Method EnsureTableAsync
 
     private async Task WriteBatchAsync(List<AuditEvent> batch, CancellationToken ct)
     {
@@ -457,6 +418,7 @@ public static class AuditServiceCollectionExtensions
 {
     /// <summary>
     /// Registers the audit logger and background writer and binds Audit options from configuration.
+    /// If ConnectionString is not provided, registers a no-op logger instead (audit disabled).
     /// </summary>
     /// <param name="services">The service collection.</param>
     /// <param name="config">Application configuration used to bind the Audit section.</param>
@@ -469,10 +431,90 @@ public static class AuditServiceCollectionExtensions
         services
             .AddOptions<AuditOptions>()
             .Bind(config.GetSection(AuditOptions.SectionName))
-            .ValidateDataAnnotations()
-            .ValidateOnStart();
+            .ValidateDataAnnotations();
+        
+        // Check if audit is configured; if not, register no-op logger and skip background writer
+        var auditSection = config.GetSection(AuditOptions.SectionName);
+        var connectionString = auditSection.GetValue<string>("ConnectionString");
+        
+        if (string.IsNullOrWhiteSpace(connectionString))
+        {
+            // Audit disabled: register no-op logger
+            services.AddSingleton<IAuditLogger, NoOpAuditLogger>();
+            return services;
+        }
+        
+        // Audit enabled: register full implementation
         services.AddSingleton<IAuditLogger, HttpAuditLogger>();
         services.AddHostedService<AuditBackgroundWriter>();
+        
+        // Register AuditDbContext for EF migrations (connection string from AuditOptions)
+        services.AddDbContext<TansuCloud.Audit.AuditDbContext>((sp, options) =>
+        {
+            var auditOpts = sp.GetRequiredService<IOptions<AuditOptions>>().Value;
+            options.UseNpgsql(
+                auditOpts.ConnectionString,
+                npgsql => npgsql.MigrationsAssembly("TansuCloud.Audit")
+            );
+        });
+        
         return services;
     } // End of Method AddTansuAudit
+    
+    /// <summary>
+    /// Applies audit database migrations if the database is configured. Safe to call on every startup (idempotent).
+    /// Uses PostgreSQL advisory lock to prevent race conditions when multiple services start concurrently.
+    /// If audit is disabled (no connection string), this method returns immediately without error.
+    /// </summary>
+    /// <param name="serviceProvider">Service provider scope with AuditDbContext registered.</param>
+    /// <param name="logger">Logger for diagnostic messages.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    public static async Task ApplyAuditMigrationsAsync(
+        IServiceProvider serviceProvider,
+        ILogger logger,
+        CancellationToken cancellationToken = default
+    )
+    {
+        const long AuditMigrationLockId = 7461626173756100; // Unique ID for audit migration lock
+        
+        try
+        {
+            // Check if audit is configured; if AuditDbContext is not registered, skip migrations
+            var auditDb = serviceProvider.GetService<TansuCloud.Audit.AuditDbContext>();
+            if (auditDb == null)
+            {
+                logger.LogInformation("Audit database not configured; skipping migrations");
+                return;
+            }
+            
+            // Use PostgreSQL advisory lock to serialize migrations across all services
+            // Advisory locks are automatic, session-scoped, and released on connection close
+            logger.LogInformation("Acquiring advisory lock for audit database migrations...");
+            var conn = auditDb.Database.GetDbConnection();
+            await conn.OpenAsync(cancellationToken);
+            
+            await using var lockCmd = conn.CreateCommand();
+            lockCmd.CommandText = $"SELECT pg_advisory_lock({AuditMigrationLockId})";
+            await lockCmd.ExecuteNonQueryAsync(cancellationToken);
+            
+            try
+            {
+                logger.LogInformation("Applying audit database migrations...");
+                await auditDb.Database.MigrateAsync(cancellationToken);
+                logger.LogInformation("Audit database migrations applied successfully");
+            }
+            finally
+            {
+                // Release advisory lock
+                await using var unlockCmd = conn.CreateCommand();
+                unlockCmd.CommandText = $"SELECT pg_advisory_unlock({AuditMigrationLockId})";
+                await unlockCmd.ExecuteNonQueryAsync(cancellationToken);
+            }
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex, "Failed to apply audit database migrations; audit table may need manual creation");
+            // Don't throw; allow service to start even if audit migrations fail (audit is non-critical for service operation)
+        }
+    } // End of Method ApplyAuditMigrationsAsync
 } // End of Class AuditServiceCollectionExtensions

@@ -44,7 +44,7 @@
 			"args": [
 				"-NoProfile",
 				"-Command",
-				"$ErrorActionPreference='Stop'; . \"${workspaceFolder}/dev/tools/common.ps1\"; Import-TansuDotEnv | Out-Null; dotnet build .\\TansuCloud.sln -c Debug; Start-Job -Name tansu-identity -ScriptBlock { dotnet run --no-build --project .\\TansuCloud.Identity\\TansuCloud.Identity.csproj -c Debug } | Out-Null; Start-Job -Name tansu-dashboard -ScriptBlock { dotnet run --no-build --project .\\TansuCloud.Dashboard\\TansuCloud.Dashboard.csproj -c Debug } | Out-Null; Start-Job -Name tansu-database -ScriptBlock { dotnet run --no-build --project .\\TansuCloud.Database\\TansuCloud.Database.csproj -c Debug } | Out-Null; Start-Job -Name tansu-storage -ScriptBlock { dotnet run --no-build --project .\\TansuCloud.Storage\\TansuCloud.Storage.csproj -c Debug } | Out-Null; Start-Sleep -Seconds 15; dotnet run --no-build --project .\\TansuCloud.Gateway\\TansuCloud.Gateway.csproj -c Debug"
+				"& { $ErrorActionPreference='Stop'; . \"${workspaceFolder}/dev/tools/common.ps1\"; Import-TansuDotEnv | Out-Null; dotnet build .\\TansuCloud.sln -c Debug; Start-Job -Name tansu-identity -ScriptBlock { dotnet run --no-build --project .\\TansuCloud.Identity\\TansuCloud.Identity.csproj -c Debug } | Out-Null; Start-Job -Name tansu-dashboard -ScriptBlock { dotnet run --no-build --project .\\TansuCloud.Dashboard\\TansuCloud.Dashboard.csproj -c Debug } | Out-Null; Start-Job -Name tansu-database -ScriptBlock { dotnet run --no-build --project .\\TansuCloud.Database\\TansuCloud.Database.csproj -c Debug } | Out-Null; Start-Job -Name tansu-storage -ScriptBlock { dotnet run --no-build --project .\\TansuCloud.Storage\\TansuCloud.Storage.csproj -c Debug } | Out-Null; Start-Sleep -Seconds 15; dotnet run --no-build --project .\\TansuCloud.Gateway\\TansuCloud.Gateway.csproj -c Debug }"
 			],
 			"group": "build",
 			"isBackground": true
@@ -56,7 +56,7 @@
 			"args": [
 				"-NoProfile",
 				"-Command",
-				"$ErrorActionPreference='Stop'; $jobs = Get-Job | Where-Object { $_.Name -like 'tansu-*' }; if ($jobs) { $jobs | Stop-Job -Force; $jobs | Remove-Job }; Get-Process -Name 'TansuCloud.Gateway' -ErrorAction SilentlyContinue | Stop-Process -Force"
+				"& { $ErrorActionPreference='Stop'; $jobs = Get-Job | Where-Object { $_.Name -like 'tansu-*' }; if ($jobs) { $jobs | Stop-Job -Force; $jobs | Remove-Job }; Get-Process -Name 'TansuCloud.Gateway' -ErrorAction SilentlyContinue | Stop-Process -Force }"
 			],
 			"group": "build"
 		},
@@ -67,7 +67,7 @@
 			"args": [
 				"-NoProfile",
 				"-Command",
-				"$ErrorActionPreference='Stop'; . \"${workspaceFolder}/dev/tools/common.ps1\"; Import-TansuDotEnv | Out-Null; $u=$env:POSTGRES_USER; $p=$env:POSTGRES_PASSWORD; if (-not $u -or -not $p) { throw 'Set POSTGRES_USER and POSTGRES_PASSWORD in your environment or .env'; }; $cmd=\"PGPASSWORD=$p psql -h tansu-pgcat -p 6432 -U $u -d postgres -c 'SHOW DATABASES;'\"; docker exec tansu-postgres bash -lc $cmd"
+				"& { $ErrorActionPreference='Stop'; . \"${workspaceFolder}/dev/tools/common.ps1\"; Import-TansuDotEnv | Out-Null; $u=$env:POSTGRES_USER; $p=$env:POSTGRES_PASSWORD; if (-not $u -or -not $p) { throw 'Set POSTGRES_USER and POSTGRES_PASSWORD in your environment or .env'; }; $cmd=\"PGPASSWORD=$p psql -h tansu-pgcat -p 6432 -U $u -d postgres -c 'SHOW DATABASES;'\"; docker exec tansu-postgres bash -lc $cmd }"
 			]
 		},
 		{
@@ -77,7 +77,7 @@
 			"args": [
 				"-NoProfile",
 				"-Command",
-				"$ErrorActionPreference='Stop'; . \"${workspaceFolder}/dev/tools/common.ps1\"; Import-TansuDotEnv | Out-Null; $urls = Resolve-TansuBaseUrls -PreferLoopbackForGateway; $gateway = $urls.GatewayBaseUrl; if ([string]::IsNullOrWhiteSpace($gateway)) { throw 'GATEWAY_BASE_URL not set. Update .env.' }; $uri = $gateway.TrimEnd('/') + '/db/api/provisioning/tenants'; Invoke-RestMethod -Method Post -Uri $uri -Headers @{ 'X-Provision-Key'='letmein'; 'Content-Type'='application/json' } -Body '{\"tenantId\":\"acme-dev\",\"displayName\":\"Acme Dev\"}' | ConvertTo-Json -Depth 5"
+				"& { $ErrorActionPreference='Stop'; . \"${workspaceFolder}/dev/tools/common.ps1\"; Import-TansuDotEnv | Out-Null; $urls = Resolve-TansuBaseUrls -PreferLoopbackForGateway; $gateway = $urls.GatewayBaseUrl; if ([string]::IsNullOrWhiteSpace($gateway)) { throw 'GATEWAY_BASE_URL not set. Update .env.' }; $uri = $gateway.TrimEnd('/') + '/db/api/provisioning/tenants'; Invoke-RestMethod -Method Post -Uri $uri -Headers @{ 'X-Provision-Key'='letmein'; 'Content-Type'='application/json' } -Body '{\"tenantId\":\"acme-dev\",\"displayName\":\"Acme Dev\"}' | ConvertTo-Json -Depth 5 }"
 			]
 		},
 		{
@@ -87,7 +87,7 @@
 			"args": [
 				"-NoProfile",
 				"-Command",
-				"$ErrorActionPreference='Stop'; . \"${workspaceFolder}/dev/tools/common.ps1\"; Import-TansuDotEnv | Out-Null; docker compose --env-file \"${workspaceFolder}/.env\" up -d --build"
+				"& { $ErrorActionPreference='Stop'; . \"${workspaceFolder}/dev/tools/common.ps1\"; Invoke-TansuCompose up '-d' '--build' }"
 			],
 			"group": "build"
 		},
@@ -98,7 +98,7 @@
 			"args": [
 				"-NoProfile",
 				"-Command",
-				"$ErrorActionPreference='Stop'; . \"${workspaceFolder}/dev/tools/common.ps1\"; Import-TansuDotEnv | Out-Null; docker compose --env-file \"${workspaceFolder}/.env\" down -v"
+				"& { $ErrorActionPreference='Stop'; . \"${workspaceFolder}/dev/tools/common.ps1\"; Invoke-TansuCompose down '-v' }"
 			],
 			"group": "build"
 		},
@@ -109,7 +109,7 @@
 			"args": [
 				"-NoProfile",
 				"-Command",
-				"$ErrorActionPreference='Stop'; . \"${workspaceFolder}/dev/tools/common.ps1\"; Import-TansuDotEnv | Out-Null; docker compose --env-file \"${workspaceFolder}/.env\" logs -f gateway"
+				"& { $ErrorActionPreference='Stop'; . \"${workspaceFolder}/dev/tools/common.ps1\"; Invoke-TansuCompose logs '-f' gateway }"
 			],
 			"isBackground": true
 		},
@@ -120,7 +120,7 @@
 			"args": [
 				"-NoProfile",
 				"-Command",
-				"$ErrorActionPreference=\"Stop\"; . \"${workspaceFolder}/dev/tools/common.ps1\"; Import-TansuDotEnv | Out-Null; docker compose -f .\\docker-compose.prod.yml up -d --build"
+				"& { $ErrorActionPreference='Stop'; . \"${workspaceFolder}/dev/tools/common.ps1\"; $composeFile = Join-Path \"${workspaceFolder}\" 'docker-compose.prod.yml'; Invoke-TansuCompose -ComposeFile $composeFile up '-d' '--build' }"
 			],
 			"group": "build"
 		},
@@ -131,7 +131,7 @@
 			"args": [
 				"-NoProfile",
 				"-Command",
-				"$ErrorActionPreference=\"Stop\"; . \"${workspaceFolder}/dev/tools/common.ps1\"; Import-TansuDotEnv | Out-Null; docker compose -f .\\docker-compose.prod.yml --profile observability up -d --build"
+				"& { $ErrorActionPreference='Stop'; . \"${workspaceFolder}/dev/tools/common.ps1\"; $composeFile = Join-Path \"${workspaceFolder}\" 'docker-compose.prod.yml'; Invoke-TansuCompose -ComposeFile $composeFile '--profile' 'observability' 'up' '-d' '--build' }"
 			],
 			"group": "build"
 		},
@@ -142,7 +142,7 @@
 			"args": [
 				"-NoProfile",
 				"-Command",
-				"$ErrorActionPreference='Stop'; . \"${workspaceFolder}/dev/tools/common.ps1\"; Import-TansuDotEnv | Out-Null; docker compose --env-file \"${workspaceFolder}/.env\" -f .\\docker-compose.prod.yml down -v"
+				"& { $ErrorActionPreference='Stop'; . \"${workspaceFolder}/dev/tools/common.ps1\"; $composeFile = Join-Path \"${workspaceFolder}\" 'docker-compose.prod.yml'; Invoke-TansuCompose -ComposeFile $composeFile down '-v' }"
 			],
 			"group": "build"
 		},
@@ -153,7 +153,7 @@
 			"args": [
 				"-NoProfile",
 				"-Command",
-				"$ErrorActionPreference=Stop; $out = docker exec tansu-pgcat cat /proc/1/cmdline; if ($null -ne $out -and ($out | Out-String).Contains(\"pgcat\")) { Write-Host \"pgcat running\" } else { throw \"pgcat not running\" }"
+				"& { $ErrorActionPreference=Stop; $out = docker exec tansu-pgcat cat /proc/1/cmdline; if ($null -ne $out -and ($out | Out-String).Contains(\"pgcat\")) { Write-Host \"pgcat running\" } else { throw \"pgcat not running\" } }"
 			],
 			"group": "build"
 		},
@@ -164,7 +164,7 @@
 			"args": [
 				"-NoProfile",
 				"-Command",
-				"$ErrorActionPreference='Stop'; . \"${workspaceFolder}/dev/tools/common.ps1\"; Import-TansuDotEnv | Out-Null; docker compose --env-file \"${workspaceFolder}/.env\" up -d postgres redis pgcat pgcat-config"
+				"& { $ErrorActionPreference='Stop'; . \"${workspaceFolder}/dev/tools/common.ps1\"; Invoke-TansuCompose up '-d' postgres redis pgcat pgcat-config }"
 			],
 			"isBackground": false,
 			"group": "build"
@@ -176,7 +176,7 @@
 			"args": [
 				"-NoProfile",
 				"-Command",
-				"$ErrorActionPreference='Stop'; . \"${workspaceFolder}/dev/tools/common.ps1\"; Import-TansuDotEnv | Out-Null; docker compose --env-file \"${workspaceFolder}/.env\" up -d identity dashboard db storage telemetry gateway"
+				"& { $ErrorActionPreference='Stop'; . \"${workspaceFolder}/dev/tools/common.ps1\"; Invoke-TansuCompose up '-d' identity dashboard db storage telemetry gateway }"
 			],
 			"isBackground": false,
 			"group": "build"
@@ -193,7 +193,7 @@
 			"args": [
 				"-NoProfile",
 				"-Command",
-				"{ $ErrorActionPreference=\"Stop\"; . \"${workspaceFolder}/dev/tools/common.ps1\"; Import-TansuDotEnv | Out-Null; docker compose -f .\\docker-compose.yml config | Out-String -Width 4096 }"
+				"{ $ErrorActionPreference='Stop'; . \"${workspaceFolder}/dev/tools/common.ps1\"; Invoke-TansuCompose config | Out-String -Width 4096 }"
 			]
 		},
 		{
@@ -203,7 +203,7 @@
 			"args": [
 				"-NoProfile",
 				"-Command",
-				"{ $ErrorActionPreference=\"Stop\"; . \"${workspaceFolder}/dev/tools/common.ps1\"; Import-TansuDotEnv | Out-Null; docker compose -f .\\docker-compose.prod.yml config | Out-String -Width 4096 }"
+				"{ $ErrorActionPreference='Stop'; . \"${workspaceFolder}/dev/tools/common.ps1\"; $composeFile = Join-Path \"${workspaceFolder}\" 'docker-compose.prod.yml'; Invoke-TansuCompose -ComposeFile $composeFile config | Out-String -Width 4096 }"
 			]
 		},
 		{
@@ -213,7 +213,7 @@
 			"args": [
 				"-NoProfile",
 				"-Command",
-				"$ErrorActionPreference='Stop'; dotnet test .\\tests\\TansuCloud.E2E.Tests\\TansuCloud.E2E.Tests.csproj -c Debug --filter FullyQualifiedName~TansuCloud.E2E.Tests.LoopbackLiteralGuardTests.Loopback_literals_are_not_reintroduced_outside_allowlist"
+				"& { $ErrorActionPreference='Stop'; dotnet test .\\tests\\TansuCloud.E2E.Tests\\TansuCloud.E2E.Tests.csproj -c Debug --filter FullyQualifiedName~TansuCloud.E2E.Tests.LoopbackLiteralGuardTests.Loopback_literals_are_not_reintroduced_outside_allowlist }"
 			]
 		},
 		{
@@ -229,7 +229,7 @@
 			"args": [
 				"-NoProfile",
 				"-Command",
-				"$ErrorActionPreference='Stop'; . \"${workspaceFolder}/dev/tools/common.ps1\"; Import-TansuDotEnv | Out-Null; Write-Host 'Task 40 verification completed.'"
+				"& { $ErrorActionPreference='Stop'; . \"${workspaceFolder}/dev/tools/common.ps1\"; Import-TansuDotEnv | Out-Null; Write-Host 'Task 40 verification completed.' }"
 			]
 		},
 		{
@@ -391,7 +391,7 @@
 			"args": [
 				"-NoProfile",
 				"-Command",
-				"$ErrorActionPreference='Stop'; . '${workspaceFolder}/dev/tools/common.ps1'; Import-TansuDotEnv | Out-Null; pwsh -NoProfile -File '${workspaceFolder}/dev/tools/signoz-apply-governance.ps1' -DefaultsPath '${workspaceFolder}/SigNoz/governance.dev.json'"
+				"& { $ErrorActionPreference='Stop'; . '${workspaceFolder}/dev/tools/common.ps1'; Import-TansuDotEnv | Out-Null; pwsh -NoProfile -File '${workspaceFolder}/dev/tools/signoz-apply-governance.ps1' -DefaultsPath '${workspaceFolder}/SigNoz/governance.dev.json' }"
 			]
 		},
 		{
@@ -401,7 +401,7 @@
 			"args": [
 				"-NoProfile",
 				"-Command",
-				"$ErrorActionPreference='Stop'; . '${workspaceFolder}/dev/tools/common.ps1'; Import-TansuDotEnv | Out-Null; pwsh -NoProfile -File '${workspaceFolder}/dev/tools/signoz-apply-governance.ps1' -DefaultsPath '${workspaceFolder}/SigNoz/governance.dev.json' -Apply"
+				"& { $ErrorActionPreference='Stop'; . '${workspaceFolder}/dev/tools/common.ps1'; Import-TansuDotEnv | Out-Null; pwsh -NoProfile -File '${workspaceFolder}/dev/tools/signoz-apply-governance.ps1' -DefaultsPath '${workspaceFolder}/SigNoz/governance.dev.json' -Apply }"
 			]
 		},
 		{
@@ -411,7 +411,7 @@
 			"args": [
 				"-NoProfile",
 				"-Command",
-				"$ErrorActionPreference=\"Stop\"; . \"${workspaceFolder}/dev/tools/common.ps1\"; Import-TansuDotEnv | Out-Null; docker compose -f .\\docker-compose.prod.yml config | Out-String -Width 4096"
+				"& { $ErrorActionPreference='Stop'; . \"${workspaceFolder}/dev/tools/common.ps1\"; $composeFile = Join-Path \"${workspaceFolder}\" 'docker-compose.prod.yml'; Invoke-TansuCompose -ComposeFile $composeFile config | Out-String -Width 4096 }"
 			]
 		},
 		{
@@ -421,7 +421,7 @@
 			"args": [
 				"-NoProfile",
 				"-Command",
-				"$ErrorActionPreference=\"Stop\"; . \"${workspaceFolder}/dev/tools/common.ps1\"; Import-TansuDotEnv | Out-Null; docker compose -f .\\docker-compose.prod.yml config | Out-String -Width 4096"
+				"& { $ErrorActionPreference='Stop'; . \"${workspaceFolder}/dev/tools/common.ps1\"; $composeFile = Join-Path \"${workspaceFolder}\" 'docker-compose.prod.yml'; Invoke-TansuCompose -ComposeFile $composeFile config | Out-String -Width 4096 }"
 			]
 		},
 		{
@@ -431,7 +431,7 @@
 			"args": [
 				"-NoProfile",
 				"-Command",
-				"$ErrorActionPreference=\"Stop\"; . \"${workspaceFolder}/dev/tools/common.ps1\"; Import-TansuDotEnv | Out-Null; docker compose -f .\\docker-compose.prod.yml config | Out-String -Width 4096"
+				"& { $ErrorActionPreference='Stop'; . \"${workspaceFolder}/dev/tools/common.ps1\"; $composeFile = Join-Path \"${workspaceFolder}\" 'docker-compose.prod.yml'; Invoke-TansuCompose -ComposeFile $composeFile config | Out-String -Width 4096 }"
 			]
 		},
 		{

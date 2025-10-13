@@ -8,6 +8,7 @@ using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.EntityFrameworkCore.Metadata;
 using System.Reflection;
 using TansuCloud.Database.EF;
+using TansuCloud.Database.Services;
 using TansuCloud.Observability;
 
 namespace TansuCloud.Database.Provisioning;
@@ -35,11 +36,13 @@ public sealed record TenantProvisionResult(
 
 internal sealed class TenantProvisioner(
     IOptions<ProvisioningOptions> options,
-    ILogger<TenantProvisioner> logger
+    ILogger<TenantProvisioner> logger,
+    PgCatAdminClient pgcatAdmin
 ) : ITenantProvisioner
 {
     private readonly ProvisioningOptions _options = options.Value;
     private readonly ILogger<TenantProvisioner> _logger = logger;
+    private readonly PgCatAdminClient _pgcatAdmin = pgcatAdmin;
 
     public async Task<TenantProvisionResult> ProvisionAsync(
         TenantProvisionRequest request,
@@ -157,6 +160,29 @@ internal sealed class TenantProvisioner(
 
             _logger.LogTenantProvisioningCompleted(request.TenantId, dbName, !exists);
             success = true;
+
+            // Add PgCat pool synchronously for zero-downtime tenant access
+            // This replaces the old pgcat-config polling approach with immediate pool availability
+            try
+            {
+                var poolAdded = await _pgcatAdmin.AddPoolAsync(dbName, cancellationToken: ct);
+                _logger.LogInformation(
+                    "PgCat pool for tenant {TenantId} (database {Database}): {Status}",
+                    request.TenantId,
+                    dbName,
+                    poolAdded ? "Added" : "Already exists");
+                activity?.SetTag("tansu.provision.pgcat_pool_added", poolAdded);
+            }
+            catch (Exception pgcatEx)
+            {
+                // Log but don't fail provisioning - tenant DB exists, EF retry logic will handle the gap
+                _logger.LogWarning(
+                    pgcatEx,
+                    "Failed to add PgCat pool for tenant {TenantId} (database {Database}). Tenant will be accessible after pgcat-config discovers it or via direct connection.",
+                    request.TenantId,
+                    dbName);
+                activity?.SetTag("tansu.provision.pgcat_pool_error", pgcatEx.Message);
+            }
 
             activity?.SetStatus(ActivityStatusCode.Ok);
             return new TenantProvisionResult(

@@ -101,6 +101,7 @@ The service responds with `202 Accepted` when the batch is queued. A `503` indic
   ```
 
   Replace the host with your public endpoint when testing through a proxy.
+- PowerShell helper: run `pwsh ./dev/tools/call-telemetry-admin.ps1 -Method Get -Path '/api/admin/envelopes?page=1'` from the repo root to hit the admin API without hand-crafting headers. The script loads `.env` via `Import-TansuDotEnv`, enforces that `TELEMETRY__ADMIN__APIKEY` is set, and respects `TELEMETRY__DIRECT__BASEURL` (defaulting to `http://127.0.0.1:5279` when unset). Provide `-Body` for POST/PUT calls or `-Raw` to inspect the raw payload.
 
 ## Docker usage
 

@@ -78,8 +78,41 @@ public class HealthEndpointsE2E
         await WaitForGatewayAsync(client, cts.Token);
 
         var trimmed = basePath.EndsWith('/') ? basePath[..^1] : basePath;
-    var url = $"{GetGatewayBaseUrl()}{trimmed}/health/ready";
+        var url = $"{GetGatewayBaseUrl()}{trimmed}/health/ready";
         using var res = await client.GetAsync(url, cts.Token);
         Assert.Equal(HttpStatusCode.OK, res.StatusCode);
+    }
+
+    [Fact(DisplayName = "Health: Database readiness includes schema validation status")]
+    public async Task Database_Ready_Includes_Schema_Status()
+    {
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        using var client = CreateClient();
+        await WaitForGatewayAsync(client, cts.Token);
+
+        var url = $"{GetGatewayBaseUrl()}/db/health/ready";
+        using var res = await client.GetAsync(url, cts.Token);
+        Assert.Equal(HttpStatusCode.OK, res.StatusCode);
+
+        var content = await res.Content.ReadAsStringAsync(cts.Token);
+        // Verify response contains schema-related information
+        Assert.Contains("Identity", content, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("schema", content, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact(DisplayName = "Health: Database readiness includes tenant count")]
+    public async Task Database_Ready_Includes_Tenant_Count()
+    {
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        using var client = CreateClient();
+        await WaitForGatewayAsync(client, cts.Token);
+
+        var url = $"{GetGatewayBaseUrl()}/db/health/ready";
+        using var res = await client.GetAsync(url, cts.Token);
+        Assert.Equal(HttpStatusCode.OK, res.StatusCode);
+
+        var content = await res.Content.ReadAsStringAsync(cts.Token);
+        // Verify response contains tenant-related information
+        Assert.Contains("tenant", content, StringComparison.OrdinalIgnoreCase);
     }
 } // End of Class HealthEndpointsE2E

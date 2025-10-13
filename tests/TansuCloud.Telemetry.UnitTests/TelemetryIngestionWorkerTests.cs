@@ -1,5 +1,6 @@
 // Tansu.Cloud Public Repository:    https://github.com/MusaGursoy/TansuCloud
 using System.Diagnostics;
+using System.IO;
 using FluentAssertions;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
@@ -20,86 +21,110 @@ public sealed class TelemetryIngestionWorkerTests
     [Fact]
     public async Task IngestionWorker_ShouldDrainQueueUnderBurstLoad()
     {
-        await using var connection = new SqliteConnection("Filename=:memory:");
-        await connection.OpenAsync();
+        var databasePath = Path.Combine(
+            Path.GetTempPath(),
+            $"telemetry-ingestion-tests-{Guid.NewGuid():N}.db"
+        );
+
+        var connectionStringBuilder = new SqliteConnectionStringBuilder
+        {
+            DataSource = databasePath,
+            Mode = SqliteOpenMode.ReadWriteCreate,
+            Cache = SqliteCacheMode.Shared
+        };
 
         var services = new ServiceCollection();
         services.AddLogging();
-        services.AddDbContext<TelemetryDbContext>(options => options.UseSqlite(connection));
+        services.AddDbContext<TelemetryDbContext>(options =>
+            options.UseSqlite(connectionStringBuilder.ToString())
+        );
         services.AddScoped<TelemetryRepository>();
 
-        await using var provider = services.BuildServiceProvider();
-        await using (var scope = provider.CreateAsyncScope())
+        await using (var provider = services.BuildServiceProvider())
         {
-            var dbContext = scope.ServiceProvider.GetRequiredService<TelemetryDbContext>();
-            await dbContext.Database.EnsureCreatedAsync();
-        }
-
-        using var metrics = new TelemetryMetrics();
-        var queueOptions = Options.Create(
-            new TelemetryIngestionOptions
+            await using (var initializationScope = provider.CreateAsyncScope())
             {
-                ApiKey = "0123456789abcdef",
-                QueueCapacity = 32,
-                EnqueueTimeout = TimeSpan.FromSeconds(1)
+                var dbContext = initializationScope.ServiceProvider.GetRequiredService<TelemetryDbContext>();
+                await dbContext.Database.EnsureDeletedAsync();
+                await dbContext.Database.EnsureCreatedAsync();
             }
-        );
 
-        await using var queue = new TelemetryIngestionQueue(
-            queueOptions,
-            metrics,
-            NullLogger<TelemetryIngestionQueue>.Instance
-        );
+            using var metrics = new TelemetryMetrics();
+            var queueOptions = Options.Create(
+                new TelemetryIngestionOptions
+                {
+                    ApiKey = "0123456789abcdef",
+                    QueueCapacity = 32,
+                    EnqueueTimeout = TimeSpan.FromSeconds(1)
+                }
+            );
 
-        var worker = new TelemetryIngestionWorker(
-            queue,
-            provider.GetRequiredService<IServiceScopeFactory>(),
-            metrics,
-            NullLogger<TelemetryIngestionWorker>.Instance
-        );
+            await using var queue = new TelemetryIngestionQueue(
+                queueOptions,
+                metrics,
+                NullLogger<TelemetryIngestionQueue>.Instance
+            );
 
-        await worker.StartAsync(CancellationToken.None);
+            var worker = new TelemetryIngestionWorker(
+                queue,
+                provider.GetRequiredService<IServiceScopeFactory>(),
+                metrics,
+                NullLogger<TelemetryIngestionWorker>.Instance
+            );
 
-        var totalEnvelopes = 64;
-        for (var i = 0; i < totalEnvelopes; i++)
-        {
-            var envelope = CreateEnvelope(i);
-            var enqueued = await queue.TryEnqueueAsync(new TelemetryWorkItem(envelope), CancellationToken.None);
-            enqueued.Should().BeTrue();
-        }
+            await worker.StartAsync(CancellationToken.None);
 
-        await WaitForConditionAsync(
-            async () =>
+            var totalEnvelopes = 64;
+            for (var i = 0; i < totalEnvelopes; i++)
             {
-                await using var scope = provider.CreateAsyncScope();
-                var dbContext = scope.ServiceProvider.GetRequiredService<TelemetryDbContext>();
-                var persistedEnvelopes = await dbContext.Envelopes.CountAsync();
-                return persistedEnvelopes >= totalEnvelopes;
-            },
-            TimeSpan.FromSeconds(5)
-        );
+                var envelope = CreateEnvelope(i);
+                var enqueued = await queue.TryEnqueueAsync(
+                    new TelemetryWorkItem(envelope),
+                    CancellationToken.None
+                );
+                enqueued.Should().BeTrue();
+            }
 
-        await WaitForConditionAsync(
-            () => Task.FromResult(queue.GetDepth() == 0),
-            TimeSpan.FromSeconds(2)
-        );
+            await WaitForConditionAsync(
+                async () =>
+                {
+                    await using var checkScope = provider.CreateAsyncScope();
+                    var dbContext = checkScope.ServiceProvider.GetRequiredService<TelemetryDbContext>();
+                    var persistedEnvelopes = await dbContext.ActiveEnvelopes.CountAsync();
+                    return persistedEnvelopes >= totalEnvelopes;
+                },
+                TimeSpan.FromSeconds(5)
+            );
 
-        await using (var verificationScope = provider.CreateAsyncScope())
-        {
-            var dbContext = verificationScope.ServiceProvider.GetRequiredService<TelemetryDbContext>();
-            var persistedEnvelopes = await dbContext.Envelopes.CountAsync();
-            persistedEnvelopes.Should().Be(totalEnvelopes);
+            await WaitForConditionAsync(
+                () => Task.FromResult(queue.GetDepth() == 0),
+                TimeSpan.FromSeconds(2)
+            );
 
-            var persistedItems = await dbContext.Items.CountAsync();
-            persistedItems.Should().Be(totalEnvelopes * 2);
+            await using (var verificationScope = provider.CreateAsyncScope())
+            {
+                var dbContext = verificationScope.ServiceProvider.GetRequiredService<TelemetryDbContext>();
+                var persistedEnvelopes = await dbContext.ActiveEnvelopes.CountAsync();
+                persistedEnvelopes.Should().Be(totalEnvelopes);
+
+                var persistedItems = await dbContext.ActiveItems.CountAsync();
+                persistedItems.Should().Be(totalEnvelopes * 2);
+            }
+
+            await worker.StopAsync(CancellationToken.None);
         }
 
-        await worker.StopAsync(CancellationToken.None);
+        SqliteConnection.ClearAllPools();
+
+        if (File.Exists(databasePath))
+        {
+            File.Delete(databasePath);
+        }
     } // End of Method IngestionWorker_ShouldDrainQueueUnderBurstLoad
 
     private static TelemetryEnvelopeEntity CreateEnvelope(int seed)
     {
-        var envelopeId = Guid.NewGuid();
+        var envelopeId = Guid.CreateVersion7();
         var receivedAt = DateTime.UtcNow.AddMilliseconds(-seed);
 
         var envelope = new TelemetryEnvelopeEntity

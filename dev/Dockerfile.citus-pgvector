@@ -1,4 +1,21 @@
-# Use Citus Postgres and add pgvector so init scripts can enable it
+# Tansu.Cloud Public Repository:    https://github.com/MusaGursoy/TansuCloud
+
+# Custom PostgreSQL image with Citus (distributed database) + pgvector (embeddings) + pg_trgm (text search)
+#
+# Development: Uses :latest for fast iteration
+# Production: Pin specific versions to prevent surprise upgrades
+#   Example: FROM citusdata/citus:12.1-pg16
+#            RUN ... postgresql-16-pgvector=0.8.0-1 postgresql-16-contrib ...
+#
+# See Guide-For-Admins-and-Tenants.md § 9.3 for upgrade procedures
+#
+# NOTE: As of 2025-10-13, all database initialization (creating databases, installing extensions)
+# is handled automatically by TansuCloud.Database service on startup. No init scripts needed.
+# See docs/Database-Init-Script-Elimination.md for details.
+# postgresql-common package is already included as a dependency of the base PostgreSQL installation.
+# postgresql-contrib package is included to provide additional useful extensions like pg_trgm.
+# Careful! After citus starts using postgesql 18 base image, make sure pgvector and contrib packages are available for postgesql 18.
+
 FROM citusdata/citus:latest
 
 USER root
@@ -6,7 +23,12 @@ RUN set -eux; \
     apt-get update; \
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
         postgresql-17-pgvector \
+        postgresql-contrib \
     && rm -rf /var/lib/apt/lists/*
+
+# Init scripts are deprecated as of 2025-10-13
+# Database service handles all initialization automatically
+# See docs/Database-Init-Script-Elimination.md
 
 # Hand control back to default user
 USER postgres

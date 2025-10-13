@@ -125,7 +125,6 @@ builder.Services.AddRazorPages(options =>
 
             AddSelector(model, "admin/envelopes");
             AddSelector(model, "admin");
-            AddSelector(model, "Admin/Envelopes");
         }
     );
 });
@@ -159,7 +158,6 @@ builder.Services.AddDbContext<TelemetryDbContext>(
                 sqliteOptions.MigrationsAssembly(typeof(Program).Assembly.FullName);
             }
         );
-
         if (env.IsDevelopment())
         {
             optionsBuilder.EnableDetailedErrors();
@@ -201,22 +199,11 @@ builder
         metricBuilder.AddAspNetCoreInstrumentation();
         metricBuilder.AddHttpClientInstrumentation();
         metricBuilder.AddMeter("TansuCloud.Telemetry");
-        metricBuilder.AddTansuOtlpExporter(builder.Configuration, builder.Environment);
     });
-
-builder.Services.AddTansuObservabilityCore();
-
-builder.Logging.AddOpenTelemetry(o =>
-{
-    o.IncludeFormattedMessage = true;
-    o.ParseStateValues = true;
-    o.AddTansuOtlpExporter(builder.Configuration, builder.Environment);
-});
 
 var authenticationBuilder = builder.Services.AddAuthentication(options =>
 {
-    options.DefaultAuthenticateScheme = TelemetryAuthenticationDefaults.IngestionSchemeName;
-    options.DefaultChallengeScheme = TelemetryAuthenticationDefaults.IngestionSchemeName;
+    options.DefaultScheme = TelemetryAuthenticationDefaults.IngestionSchemeName;
 });
 
 authenticationBuilder.AddScheme<
@@ -256,6 +243,8 @@ app.UseExceptionHandler(_ => { });
 
 app.UseStaticFiles();
 app.UseRouting();
+app.UseAuthentication();
+app.UseAuthorization();
 app.UseStatusCodePages(context =>
 {
     var httpContext = context.HttpContext;
@@ -280,8 +269,10 @@ app.UseStatusCodePages(context =>
 
     return Task.CompletedTask;
 });
-app.UseAuthentication();
-app.UseAuthorization();
+
+// Ensure Razor pages (admin UI) are mapped before health endpoints so generic patterns
+// like `/health/*` do not pre-empt `/admin` routes when middleware ordering changes.
+app.MapRazorPages();
 
 app.MapHealthChecks("/health/live", new HealthCheckOptions { Predicate = _ => false });
 
@@ -312,7 +303,6 @@ app.MapHealthChecks(
 );
 
 app.MapGet("/", () => Results.Redirect("/admin/envelopes"));
-app.MapGet("/admin", () => Results.Redirect("/admin/envelopes"));
 
 var apiGroup = app.MapGroup("/api/logs")
     .RequireAuthorization(TelemetryAuthorizationPolicies.Ingestion);
@@ -487,8 +477,6 @@ adminGroup
     .WithName("TelemetryAdmin_DeleteEnvelope")
     .WithSummary("Soft deletes (archives) a telemetry envelope.");
 
-app.MapRazorPages();
-
 apiGroup
     .MapPost(
         "/report",
@@ -624,7 +612,7 @@ apiGroup
 
             var envelope = new TelemetryEnvelopeEntity
             {
-                Id = Guid.NewGuid(),
+                Id = Guid.CreateVersion7(),
                 ReceivedAtUtc = DateTime.UtcNow,
                 Host = request.Host.Trim(),
                 Environment = request.Environment.Trim(),

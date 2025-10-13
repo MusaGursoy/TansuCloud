@@ -3,6 +3,7 @@ using System.IdentityModel.Tokens.Jwt;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Diagnostics.HealthChecks;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Caching.Hybrid;
 using Microsoft.Extensions.Caching.StackExchangeRedis;
 using Microsoft.Extensions.Diagnostics.HealthChecks;
@@ -21,9 +22,10 @@ using TansuCloud.Database.Hosting;
 using TansuCloud.Database.Outbox;
 using TansuCloud.Database.Provisioning;
 using TansuCloud.Database.Security;
+using TansuCloud.Database.Services;
 using TansuCloud.Observability;
-using TansuCloud.Observability.Caching;
 using TansuCloud.Observability.Auditing;
+using TansuCloud.Observability.Caching;
 using TansuCloud.Observability.Shared.Configuration;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -139,10 +141,9 @@ builder
     .AddCheck("self", () => HealthCheckResult.Healthy(), tags: new[] { "self" });
 
 // Readiness: verify OTLP exporter reachability and W3C Activity id format
-builder.Services.AddHealthChecks().AddCheck<OtlpConnectivityHealthCheck>(
-    "otlp",
-    tags: new[] { "ready", "otlp" }
-);
+builder
+    .Services.AddHealthChecks()
+    .AddCheck<OtlpConnectivityHealthCheck>("otlp", tags: new[] { "ready", "otlp" });
 
 // Audit retention options and background job (Phase 3)
 builder
@@ -153,6 +154,26 @@ builder.Services.AddSingleton<
     TansuCloud.Database.Services.IAuditDbConnectionFactory,
     TansuCloud.Database.Services.NpgsqlAuditDbConnectionFactory
 >();
+
+// Extension version pre-flight checks (Task 40 - Production DB container upgrade safety)
+// Automatically updates PostgreSQL extensions (citus, vector) on startup to match library versions
+// Can be disabled via SKIP_EXTENSION_UPDATE=true environment variable if needed
+builder.Services.AddScoped<TansuCloud.Database.Services.ExtensionVersionService>();
+builder.Services.AddHostedService<ExtensionVersionHostedService>();
+
+// Database migration service (Task 43 follow-up)
+// Applies EF Core migrations on startup to ensure audit database and tables exist
+// Runs BEFORE schema validation to create missing schemas automatically
+builder.Services.AddHostedService<DatabaseMigrationHostedService>();
+
+// Schema version tracking and validation (Task 43 - Phase 1 & 2)
+// Validates Identity, Audit, and tenant databases exist with correct schemas before accepting HTTP traffic
+builder.Services.AddScoped<TansuCloud.Database.Services.SchemaVersionService>();
+builder.Services.AddHostedService<DatabaseSchemaHostedService>();
+
+// PgCat pool reconciliation (Task 43 - Phase 2)
+// Discovers tenant databases and ensures PgCat has corresponding pools configured
+builder.Services.AddHostedService<PgCatPoolHostedService>();
 
 // Phase 0: health transition publisher for Info logs on state changes
 builder.Services.AddSingleton<IHealthCheckPublisher, HealthTransitionPublisher>();
@@ -178,6 +199,31 @@ if (!string.IsNullOrWhiteSpace(cacheRedisForHealth))
         );
 }
 
+// Extension version health check (reports current versions of Citus/pgvector in tenant databases)
+builder
+    .Services.AddHealthChecks()
+    .AddCheck<TansuCloud.Database.Services.ExtensionVersionHealthCheck>(
+        "extension_versions",
+        tags: new[] { "ready", "database", "extensions" }
+    );
+
+// Extension version health check (Task 40 - Monitor extension versions across tenant databases)
+builder
+    .Services.AddHealthChecks()
+    .AddCheck<TansuCloud.Database.Services.ExtensionVersionHealthCheck>(
+        "extension-versions",
+        tags: new[] { "ready", "extensions" }
+    );
+
+// Infrastructure validation health check (Task 43 - Phase 3)
+// Reports schema validation, tenant count, PgCat pools, and ClickHouse connectivity
+builder
+    .Services.AddHealthChecks()
+    .AddCheck<TansuCloud.Database.Services.InfrastructureHealthCheck>(
+        "infrastructure",
+        tags: new[] { "ready", "infrastructure", "schema" }
+    );
+
 // Add services to the container.
 
 builder.Services.AddControllers();
@@ -192,6 +238,33 @@ builder
     .ValidateDataAnnotations();
 builder.Services.AddHttpContextAccessor();
 builder.Services.AddSingleton<ITenantProvisioner, TenantProvisioner>();
+
+// PgCat Admin API client for dynamic pool management (zero-downtime tenant provisioning)
+var pgcatAdminBaseUrl = builder.Configuration["PgCat:AdminBaseUrl"] ?? "http://pgcat:9930";
+builder.Services.AddHttpClient<PgCatAdminClient>(client =>
+{
+    client.BaseAddress = new Uri(pgcatAdminBaseUrl);
+    client.Timeout = TimeSpan.FromSeconds(10);
+});
+
+// Audit database context for centralized audit logging
+var auditConnectionString =
+    builder.Configuration.GetConnectionString("DefaultConnection")
+    ?? throw new InvalidOperationException("DefaultConnection string not found.");
+var auditConnBuilder = new Npgsql.NpgsqlConnectionStringBuilder(auditConnectionString)
+{
+    Database = "tansu_audit"
+};
+builder.Services.AddDbContext<TansuCloud.Audit.AuditDbContext>(options =>
+{
+    options.UseNpgsql(auditConnBuilder.ToString());
+    if (builder.Environment.IsDevelopment())
+    {
+        options.EnableSensitiveDataLogging();
+        options.EnableDetailedErrors();
+    }
+});
+
 builder.Services.AddScoped<
     TansuCloud.Database.Services.ITenantDbContextFactory,
     TansuCloud.Database.Services.TenantDbContextFactory
@@ -930,6 +1003,12 @@ builder.Services.AddAuthorization(options =>
 // No OpenIddict validation here; JwtBearer handles access token validation against the issuer's JWKS
 
 var app = builder.Build();
+
+// Apply audit database migrations on startup (Task 31, EF-based)
+await TansuCloud.Observability.Auditing.AuditServiceCollectionExtensions.ApplyAuditMigrationsAsync(
+    app.Services,
+    app.Logger
+);
 
 // Startup diagnostic: log OIDC metadata source choice (Task 38)
 try

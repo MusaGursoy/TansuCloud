@@ -1,6 +1,7 @@
 // Tansu.Cloud Public Repository:    https://github.com/MusaGursoy/TansuCloud
 using Microsoft.EntityFrameworkCore;
-using TansuCloud.Telemetry.Data.Entities;
+using Microsoft.EntityFrameworkCore.Metadata.Builders;
+using TansuCloud.Telemetry.Data.Records;
 
 namespace TansuCloud.Telemetry.Data;
 
@@ -14,56 +15,116 @@ public sealed class TelemetryDbContext : DbContext
     {
     } // End of Constructor TelemetryDbContext
 
-    public DbSet<TelemetryEnvelopeEntity> Envelopes => Set<TelemetryEnvelopeEntity>(); // End of Property Envelopes
+    public DbSet<TelemetryActiveEnvelopeRecord> ActiveEnvelopes =>
+        Set<TelemetryActiveEnvelopeRecord>(); // End of Property ActiveEnvelopes
 
-    public DbSet<TelemetryItemEntity> Items => Set<TelemetryItemEntity>(); // End of Property Items
+    public DbSet<TelemetryArchivedEnvelopeRecord> ArchivedEnvelopes =>
+        Set<TelemetryArchivedEnvelopeRecord>(); // End of Property ArchivedEnvelopes
+
+    public DbSet<TelemetryActiveItemRecord> ActiveItems =>
+        Set<TelemetryActiveItemRecord>(); // End of Property ActiveItems
+
+    public DbSet<TelemetryArchivedItemRecord> ArchivedItems =>
+        Set<TelemetryArchivedItemRecord>(); // End of Property ArchivedItems
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         base.OnModelCreating(modelBuilder);
 
-        modelBuilder.Entity<TelemetryEnvelopeEntity>(entity =>
-        {
-            entity.ToTable("telemetry_envelopes");
-            entity.HasKey(e => e.Id);
-            entity.Property(e => e.Host).IsRequired();
-            entity.Property(e => e.Environment).IsRequired();
-            entity.Property(e => e.Service).IsRequired();
-            entity.Property(e => e.SeverityThreshold).IsRequired();
-            entity.Property(e => e.WindowMinutes).IsRequired();
-            entity.Property(e => e.MaxItems).IsRequired();
-            entity.Property(e => e.ItemCount).IsRequired();
-            entity.Property(e => e.ReceivedAtUtc).IsRequired();
-            entity.Property(e => e.AcknowledgedAtUtc).HasColumnType("TEXT");
-            entity.Property(e => e.DeletedAtUtc).HasColumnType("TEXT");
+        ConfigureEnvelopeSet<TelemetryActiveEnvelopeRecord, TelemetryActiveItemRecord>(
+            modelBuilder.Entity<TelemetryActiveEnvelopeRecord>(),
+            tableName: "telemetry_envelopes_active",
+            receivedIndexName: "IX_active_envelopes_received_at",
+            serviceIndexName: "IX_active_envelopes_service",
+            environmentIndexName: "IX_active_envelopes_environment",
+            acknowledgedIndexName: "IX_active_envelopes_acknowledged_at",
+            deletedIndexName: "IX_active_envelopes_deleted_at"
+        );
 
-            entity.HasIndex(e => e.ReceivedAtUtc).HasDatabaseName("IX_envelopes_received_at");
-            entity.HasIndex(e => e.Service).HasDatabaseName("IX_envelopes_service");
-            entity.HasIndex(e => e.Environment).HasDatabaseName("IX_envelopes_environment");
-            entity.HasIndex(e => e.AcknowledgedAtUtc).HasDatabaseName("IX_envelopes_acknowledged_at");
-            entity.HasIndex(e => e.DeletedAtUtc).HasDatabaseName("IX_envelopes_deleted_at");
-        });
+        ConfigureEnvelopeSet<TelemetryArchivedEnvelopeRecord, TelemetryArchivedItemRecord>(
+            modelBuilder.Entity<TelemetryArchivedEnvelopeRecord>(),
+            tableName: "telemetry_envelopes_archive",
+            receivedIndexName: "IX_archived_envelopes_received_at",
+            serviceIndexName: "IX_archived_envelopes_service",
+            environmentIndexName: "IX_archived_envelopes_environment",
+            acknowledgedIndexName: "IX_archived_envelopes_acknowledged_at",
+            deletedIndexName: "IX_archived_envelopes_deleted_at"
+        );
 
-        modelBuilder.Entity<TelemetryItemEntity>(entity =>
-        {
-            entity.ToTable("telemetry_items");
-            entity.HasKey(e => e.Id);
-            entity.Property(e => e.Kind).IsRequired();
-            entity.Property(e => e.TimestampUtc).IsRequired();
-            entity.Property(e => e.Level).IsRequired();
-            entity.Property(e => e.Message).IsRequired();
-            entity.Property(e => e.TemplateHash).IsRequired();
-            entity.Property(e => e.Count).IsRequired();
-            entity.Property(e => e.PropertiesJson).HasColumnType("TEXT");
+        ConfigureItemSet<TelemetryActiveItemRecord, TelemetryActiveEnvelopeRecord>(
+            modelBuilder.Entity<TelemetryActiveItemRecord>(),
+            tableName: "telemetry_items_active",
+            envelopeIdIndexName: "IX_active_items_envelope_id",
+            timestampIndexName: "IX_active_items_timestamp",
+            levelIndexName: "IX_active_items_level"
+        );
 
-            entity.HasIndex(e => e.EnvelopeId).HasDatabaseName("IX_items_envelope_id");
-            entity.HasIndex(e => e.TimestampUtc).HasDatabaseName("IX_items_timestamp");
-            entity.HasIndex(e => e.Level).HasDatabaseName("IX_items_level");
-
-            entity.HasOne(e => e.Envelope)
-                .WithMany(e => e.Items)
-                .HasForeignKey(e => e.EnvelopeId)
-                .OnDelete(DeleteBehavior.Cascade);
-        });
+        ConfigureItemSet<TelemetryArchivedItemRecord, TelemetryArchivedEnvelopeRecord>(
+            modelBuilder.Entity<TelemetryArchivedItemRecord>(),
+            tableName: "telemetry_items_archive",
+            envelopeIdIndexName: "IX_archived_items_envelope_id",
+            timestampIndexName: "IX_archived_items_timestamp",
+            levelIndexName: "IX_archived_items_level"
+        );
     } // End of Method OnModelCreating
+
+    private static void ConfigureEnvelopeSet<TEnvelope, TItem>(
+        EntityTypeBuilder<TEnvelope> builder,
+        string tableName,
+        string receivedIndexName,
+        string serviceIndexName,
+        string environmentIndexName,
+        string acknowledgedIndexName,
+        string deletedIndexName
+    ) where TEnvelope : TelemetryEnvelopeRecordBase<TItem>
+        where TItem : TelemetryItemRecordBase
+    {
+        builder.ToTable(tableName);
+        builder.HasKey(e => e.Id);
+        builder.Property(e => e.Host).IsRequired();
+        builder.Property(e => e.Environment).IsRequired();
+        builder.Property(e => e.Service).IsRequired();
+        builder.Property(e => e.SeverityThreshold).IsRequired();
+        builder.Property(e => e.WindowMinutes).IsRequired();
+        builder.Property(e => e.MaxItems).IsRequired();
+        builder.Property(e => e.ItemCount).IsRequired();
+        builder.Property(e => e.ReceivedAtUtc).IsRequired();
+        builder.Property(e => e.AcknowledgedAtUtc).HasColumnType("TEXT");
+        builder.Property(e => e.DeletedAtUtc).HasColumnType("TEXT");
+
+        builder.HasIndex(e => e.ReceivedAtUtc).HasDatabaseName(receivedIndexName);
+        builder.HasIndex(e => e.Service).HasDatabaseName(serviceIndexName);
+        builder.HasIndex(e => e.Environment).HasDatabaseName(environmentIndexName);
+        builder.HasIndex(e => e.AcknowledgedAtUtc).HasDatabaseName(acknowledgedIndexName);
+        builder.HasIndex(e => e.DeletedAtUtc).HasDatabaseName(deletedIndexName);
+    } // End of Method ConfigureEnvelopeSet
+
+    private static void ConfigureItemSet<TItem, TEnvelope>(
+        EntityTypeBuilder<TItem> builder,
+        string tableName,
+        string envelopeIdIndexName,
+        string timestampIndexName,
+        string levelIndexName
+    ) where TItem : TelemetryItemRecordBase
+        where TEnvelope : TelemetryEnvelopeRecordBase<TItem>
+    {
+        builder.ToTable(tableName);
+        builder.HasKey(e => e.Id);
+        builder.Property(e => e.Kind).IsRequired();
+        builder.Property(e => e.TimestampUtc).IsRequired();
+        builder.Property(e => e.Level).IsRequired();
+        builder.Property(e => e.Message).IsRequired();
+        builder.Property(e => e.TemplateHash).IsRequired();
+        builder.Property(e => e.Count).IsRequired();
+        builder.Property(e => e.PropertiesJson).HasColumnType("TEXT");
+
+        builder.HasIndex(e => e.EnvelopeId).HasDatabaseName(envelopeIdIndexName);
+        builder.HasIndex(e => e.TimestampUtc).HasDatabaseName(timestampIndexName);
+        builder.HasIndex(e => e.Level).HasDatabaseName(levelIndexName);
+
+        builder.HasOne<TEnvelope>("Envelope")
+            .WithMany("Items")
+            .HasForeignKey(e => e.EnvelopeId)
+            .OnDelete(DeleteBehavior.Cascade);
+    } // End of Method ConfigureItemSet
 } // End of Class TelemetryDbContext

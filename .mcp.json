@@ -1,0 +1,16 @@
+{
+  "inputs": [],
+  "servers": {
+    "playwright": {
+      "type": "stdio",
+      "command": "npx",
+      "args": [ "@playwright/mcp@latest" ],
+      "env": {}
+    },
+    "microsoft-docs": {
+      "type": "http",
+      "url": "https://learn.microsoft.com/api/mcp",
+      "gallery": true
+    }
+  }
+}

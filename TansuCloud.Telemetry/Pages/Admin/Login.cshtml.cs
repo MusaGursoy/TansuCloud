@@ -36,6 +36,16 @@ public sealed class LoginModel : PageModel
     /// </summary>
     public bool ShowMissingKeyHint { get; private set; } // End of Property ShowMissingKeyHint
 
+    /// <summary>
+    /// Optional status message rendered above the login form when redirecting from an authentication failure.
+    /// </summary>
+    public string? StatusMessage { get; private set; } // End of Property StatusMessage
+
+    /// <summary>
+    /// Bootstrap alert class associated with <see cref="StatusMessage"/>.
+    /// </summary>
+    public string StatusMessageCssClass { get; private set; } = "alert-info"; // End of Property StatusMessageCssClass
+
     [BindProperty(SupportsGet = true)]
     public string? ReturnUrl { get; set; } // End of Property ReturnUrl
 
@@ -44,6 +54,34 @@ public sealed class LoginModel : PageModel
         if (Request.Query.ContainsKey("missingKey"))
         {
             ShowMissingKeyHint = true;
+        }
+
+        if (
+            Request.Query.TryGetValue(
+                TelemetryAdminAuthenticationDefaults.AuthMessageQueryParameter,
+                out var reasonValues
+            )
+        )
+        {
+            var reason = reasonValues.ToString();
+            switch (reason)
+            {
+                case TelemetryAdminAuthenticationDefaults.AuthFailureReasons.InvalidSession:
+                    StatusMessage = "Your previous admin session is no longer valid. Enter the current API key to continue.";
+                    StatusMessageCssClass = "alert-warning";
+                    ShowMissingKeyHint = true;
+                    break;
+                case TelemetryAdminAuthenticationDefaults.AuthFailureReasons.InvalidAuthorizationHeader:
+                    StatusMessage = "The Authorization header was malformed. Use \"Authorization: Bearer <admin API key>\" when accessing the admin API.";
+                    StatusMessageCssClass = "alert-warning";
+                    break;
+                case TelemetryAdminAuthenticationDefaults.AuthFailureReasons.MissingSession:
+                default:
+                    StatusMessage = "Enter the configured admin API key to start a session.";
+                    StatusMessageCssClass = "alert-info";
+                    ShowMissingKeyHint = true;
+                    break;
+            }
         }
 
         if (!string.IsNullOrWhiteSpace(ReturnUrl) && !Url.IsLocalUrl(ReturnUrl))
@@ -94,6 +132,8 @@ public sealed class LoginModel : PageModel
         {
             ModelState.AddModelError(nameof(ApiKey), "Invalid API key.");
             ShowMissingKeyHint = true;
+            StatusMessage = "Invalid API key.";
+            StatusMessageCssClass = "alert-danger";
             return Page();
         }
 

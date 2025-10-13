@@ -1,5 +1,6 @@
 // Tansu.Cloud Public Repository:    https://github.com/MusaGursoy/TansuCloud
 using System.Diagnostics;
+using System.Globalization;
 using System.Linq;
 using System.Net;
 using System.Net.Http;
@@ -55,7 +56,10 @@ public sealed class TelemetryServiceE2E
         ingestionKey.Should().NotBeNullOrWhiteSpace();
         adminKey.Should().NotBeNullOrWhiteSpace();
 
-        var serviceName = $"e2e-telemetry-{Guid.NewGuid():N}";
+        var serviceName = string.Create(
+            CultureInfo.InvariantCulture,
+            $"e2e-telemetry-{Guid.NewGuid():N}"
+        );
         var hostName = $"{Environment.MachineName.ToLowerInvariant()}-telemetry";
         var now = DateTimeOffset.UtcNow;
 
@@ -80,7 +84,7 @@ public sealed class TelemetryServiceE2E
                     service = serviceName,
                     environment = "Development",
                     tenantHash = (string?)null,
-                    correlationId = Guid.NewGuid().ToString("N"),
+                    correlationId = Guid.NewGuid().ToString("N", CultureInfo.InvariantCulture),
                     traceId = ActivityTraceId.CreateRandom().ToString(),
                     spanId = ActivitySpanId.CreateRandom().ToString(),
                     category = "TansuCloud.E2E",
@@ -176,7 +180,7 @@ public sealed class TelemetryServiceE2E
         using (
             var detailRequest = new HttpRequestMessage(
                 HttpMethod.Get,
-                $"{baseUrl}/api/admin/envelopes/{envelopeId:guid}"
+                $"{baseUrl}/api/admin/envelopes/{envelopeId:N}"
             )
         )
         {

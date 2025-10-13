@@ -496,6 +496,12 @@ using (var scope = app.Services.CreateScope())
         db.Database.EnsureCreated();
     }
 
+    // Apply audit database migrations (Task 31 Phase 1, EF-based)
+    await TansuCloud.Observability.Auditing.AuditServiceCollectionExtensions.ApplyAuditMigrationsAsync(
+        scope.ServiceProvider,
+        app.Logger
+    );
+
     await DevSeeder.SeedAsync(scope.ServiceProvider, app.Logger, app.Configuration);
 }
 

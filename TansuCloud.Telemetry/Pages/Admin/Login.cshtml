@@ -8,6 +8,13 @@
 <h1 class="mb-3">Telemetry admin login</h1>
 <p class="text-muted">Enter the configured admin API key to access telemetry envelopes.</p>
 
+@if (!string.IsNullOrWhiteSpace(Model.StatusMessage))
+{
+    <div class="alert @Model.StatusMessageCssClass" role="alert">
+        @Model.StatusMessage
+    </div>
+}
+
 @if (Model.ShowMissingKeyHint)
 {
     <div class="alert alert-info" role="note">

@@ -13,6 +13,35 @@ receivers:
       memory: {}
       filesystem: {}
       network: {}
+  prometheus/postgres:
+    config:
+      scrape_configs:
+        - job_name: postgres
+          scrape_interval: 30s
+          static_configs:
+            - targets: ["postgres-exporter:9187"]
+  prometheus/redis:
+    config:
+      scrape_configs:
+        - job_name: redis
+          scrape_interval: 15s
+          static_configs:
+            - targets: ["redis-exporter:9121"]
+  prometheus/zookeeper:
+    config:
+      scrape_configs:
+        - job_name: zookeeper
+          scrape_interval: 30s
+          static_configs:
+            - targets: ["zookeeper:7000"]
+          metrics_path: /metrics
+  prometheus/clickhouse:
+    config:
+      scrape_configs:
+        - job_name: clickhouse
+          scrape_interval: 30s
+          static_configs:
+            - targets: ["clickhouse:9363"]
 
 extensions:
   health_check:
@@ -54,6 +83,6 @@ service:
       processors: [resourcedetection, batch]
       exporters: [clickhouselogsexporter]
     metrics:
-      receivers: [otlp, hostmetrics]
+      receivers: [otlp, hostmetrics, prometheus/postgres, prometheus/redis, prometheus/zookeeper, prometheus/clickhouse]
       processors: [batch]
       exporters: [signozclickhousemetrics]

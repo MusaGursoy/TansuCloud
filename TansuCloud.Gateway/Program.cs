@@ -1352,6 +1352,14 @@ reverseProxyBuilder.ConfigureHttpClient(
 
 var app = builder.Build();
 
+// Apply audit database migrations (EF-based, idempotent across all services)
+using (var scope = app.Services.CreateScope())
+{
+    var logger = scope.ServiceProvider.GetRequiredService<ILogger<Program>>();
+    await TansuCloud.Observability.Auditing.AuditServiceCollectionExtensions
+        .ApplyAuditMigrationsAsync(scope.ServiceProvider, logger);
+}
+
 // Support WebSockets through the gateway and send regular pings
 app.UseWebSockets(new WebSocketOptions { KeepAliveInterval = TimeSpan.FromSeconds(15) });
 
@@ -1448,11 +1456,42 @@ if (!disableOutputCache)
 app.Use(
     async (context, next) =>
     {
-        var result = TenantResolver.Resolve(context.Request.Host.Host, context.Request.Path);
-        if (!string.IsNullOrWhiteSpace(result.TenantId))
+        // If caller already provided X-Tansu-Tenant, honor it (for E2E tests and internal routing)
+        var existingTenant = context.Request.Headers["X-Tansu-Tenant"].FirstOrDefault();
+        string? tenantId = existingTenant;
+
+        // Otherwise resolve from host/path
+        if (string.IsNullOrWhiteSpace(tenantId))
         {
-            context.Request.Headers["X-Tansu-Tenant"] = result.TenantId!;
+            var result = TenantResolver.Resolve(context.Request.Host.Host, context.Request.Path);
+            tenantId = result.TenantId;
         }
+
+        if (!string.IsNullOrWhiteSpace(tenantId))
+        {
+            context.Request.Headers["X-Tansu-Tenant"] = tenantId!;
+
+            // Propagate tenant via activity baggage so OTEL enrichment can tag spans
+            var activity = System.Diagnostics.Activity.Current;
+            if (activity is not null)
+            {
+                activity.SetBaggage(TelemetryConstants.Tenant, tenantId);
+                // Also set the tag directly on the current activity since ASP.NET Core enrichment has already run
+                activity.SetTag(TelemetryConstants.Tenant, tenantId.ToLowerInvariant());
+            }
+        }
+
+        // Register a callback to set http.status_code after the response is generated
+        context.Response.OnStarting(() =>
+        {
+            var currentActivity = System.Diagnostics.Activity.Current;
+            if (currentActivity is not null)
+            {
+                currentActivity.SetTag("http.status_code", context.Response.StatusCode);
+            }
+            return Task.CompletedTask;
+        });
+
         await next();
     }
 ); // End of Middleware Tenant Header

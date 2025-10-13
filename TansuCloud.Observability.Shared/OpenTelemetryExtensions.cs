@@ -89,6 +89,7 @@ public static class OpenTelemetryExtensions
 
     /// <summary>
     /// Adds an OTLP exporter with standardized retry and batching configuration.
+    /// Respects OpenTelemetry:Otlp:Enabled flag - if false, exporter is not added.
     /// </summary>
     public static TracerProviderBuilder AddTansuOtlpExporter(
         this TracerProviderBuilder builder,
@@ -96,6 +97,13 @@ public static class OpenTelemetryExtensions
         IHostEnvironment environment
     )
     {
+        var enabled = configuration.GetValue<bool?>("OpenTelemetry:Otlp:Enabled");
+        if (enabled.HasValue && !enabled.Value)
+        {
+            // OTLP export explicitly disabled in configuration
+            return builder;
+        }
+
         return builder.AddOtlpExporter(options =>
         {
             ConfigureOtlpExporter(options, configuration, environment);
@@ -104,6 +112,7 @@ public static class OpenTelemetryExtensions
 
     /// <summary>
     /// Adds an OTLP exporter with standardized retry and batching configuration.
+    /// Respects OpenTelemetry:Otlp:Enabled flag - if false, exporter is not added.
     /// </summary>
     public static MeterProviderBuilder AddTansuOtlpExporter(
         this MeterProviderBuilder builder,
@@ -111,6 +120,13 @@ public static class OpenTelemetryExtensions
         IHostEnvironment environment
     )
     {
+        var enabled = configuration.GetValue<bool?>("OpenTelemetry:Otlp:Enabled");
+        if (enabled.HasValue && !enabled.Value)
+        {
+            // OTLP export explicitly disabled in configuration
+            return builder;
+        }
+
         return builder.AddOtlpExporter(options =>
         {
             ConfigureOtlpExporter(options, configuration, environment);
@@ -119,6 +135,7 @@ public static class OpenTelemetryExtensions
 
     /// <summary>
     /// Adds an OTLP exporter with standardized retry and batching configuration.
+    /// Respects OpenTelemetry:Otlp:Enabled flag - if false, exporter is not added.
     /// </summary>
     public static OpenTelemetryLoggerOptions AddTansuOtlpExporter(
         this OpenTelemetryLoggerOptions options,
@@ -126,6 +143,13 @@ public static class OpenTelemetryExtensions
         IHostEnvironment environment
     )
     {
+        var enabled = configuration.GetValue<bool?>("OpenTelemetry:Otlp:Enabled");
+        if (enabled.HasValue && !enabled.Value)
+        {
+            // OTLP export explicitly disabled in configuration
+            return options;
+        }
+
         return options.AddOtlpExporter(exporterOptions =>
         {
             ConfigureOtlpExporter(exporterOptions, configuration, environment);

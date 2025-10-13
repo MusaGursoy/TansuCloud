@@ -1,3 +1,6 @@
+# Development: Uses :latest for fast iteration
+# Production: Pin specific versions to prevent surprise upgrades
+
 services:
   postgres:
     image: tansu/citus-pgvector:local
@@ -13,9 +16,30 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
     volumes:
       - tansu-pgdata:/var/lib/postgresql/data
-      - ./dev/db-init:/docker-entrypoint-initdb.d:ro
+      # Init scripts (01-init.sql) are baked into the Docker image (see dev/Dockerfile.citus-pgvector)
+      # No bind mount needed - databases are created automatically on first start
+      # - ./dev/db-init:/docker-entrypoint-initdb.d:ro
     ports:
       - "5432:5432" # Host exposure for EfMigrationsIntegrationTests
+    networks:
+      - tansucloud-network
+
+  postgres-exporter:
+    image: prometheuscommunity/postgres-exporter:latest
+    container_name: tansu-postgres-exporter
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 512M
+    environment:
+      DATA_SOURCE_NAME: "postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/postgres?sslmode=disable"
+    expose:
+      - "9187"
+    depends_on:
+      postgres:
+        condition: service_started
     networks:
       - tansucloud-network
 
@@ -127,6 +151,8 @@ services:
     environment:
       - OTEL_RESOURCE_ATTRIBUTES=host.name=signoz-host,os.type=linux
       - LOW_CARDINAL_EXCEPTION_GROUPING=false
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
     # Expose OTLP endpoints to the host for local tests and readiness checks
     ports:
       - "4317:4317" # OTLP gRPC
@@ -239,7 +265,7 @@ services:
       for f in /patches/*.sql; do echo "Applying patch: $f"; clickhouse-client --host clickhouse --port 9000 --user admin --password admin -n < "$f"; done
 
   redis:
-    image: redis:latest
+    image: ghcr.io/microsoft/garnet:latest
     container_name: tansu-redis
     restart: unless-stopped
     deploy:
@@ -247,15 +273,34 @@ services:
         limits:
           cpus: "1.0"
           memory: 2G
-    command: ["redis-server", "--appendonly", "yes"]
+    command: ["/app/GarnetServer", "--port", "6379", "--checkpointdir", "/data", "--recover"]
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ["CMD", "/app/GarnetServer", "--test-ping"]
       interval: 10s
       timeout: 3s
       retries: 10
       start_period: 5s
     volumes:
-      - tansu-redisdata:/data
+      - tansu-garnetdata:/data
+    networks:
+      - tansucloud-network
+
+  redis-exporter:
+    image: oliver006/redis_exporter:latest
+    container_name: tansu-redis-exporter
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 512M
+    environment:
+      REDIS_ADDR: redis:6379
+    expose:
+      - "9121"
+    depends_on:
+      redis:
+        condition: service_healthy
     networks:
       - tansucloud-network
 
@@ -279,7 +324,7 @@ services:
     command: ["pgcat", "/etc/pgcat/pgcat.toml"]
     expose:
       - "6432"
-      - "9930"
+      - "9930" # Admin API port
     healthcheck:
       # Check that the pgcat process is running (avoid relying on pgrep availability)
       test: ["CMD-SHELL", "cat /proc/1/cmdline | tr '\\0' ' ' | grep -qi pgcat"]
@@ -289,33 +334,6 @@ services:
       start_period: 20s
     networks:
       - tansucloud-network
-
-  pgcat-config:
-    build:
-      context: .
-      dockerfile: Dev.PgcatConfigurator/Dockerfile
-    container_name: tansu-pgcat-config
-    restart: unless-stopped
-    deploy:
-      resources:
-        limits:
-          cpus: "1.0"
-          memory: 2G
-    environment:
-      PG_ADMIN: "Host=postgres;Port=5432;Database=postgres;Username=${POSTGRES_USER};Password=${POSTGRES_PASSWORD}"
-      PG_HOST: postgres
-      PG_USER: ${POSTGRES_USER}
-      PG_PASSWORD: ${POSTGRES_PASSWORD}
-      TENANT_DB_PREFIX: tansu_tenant_
-      PGCAT_ADMIN_USER: ${PGCAT_ADMIN_USER}
-      PGCAT_ADMIN_PASSWORD: ${PGCAT_ADMIN_PASSWORD}
-      PGCAT_CONFIG: /out/pgcat.toml
-    volumes:
-      - ./dev/pgcat:/out
-    networks:
-      - tansucloud-network
-    depends_on:
-      - pgcat
 
   identity:
     build:
@@ -438,10 +456,15 @@ services:
       Outbox__MaxAttempts: 8
       Outbox__DispatchTenant: acme-dev
       Cache__Redis: redis:6379
+      ConnectionStrings__DefaultConnection: "Host=postgres;Port=5432;Database=postgres;Username=${POSTGRES_USER};Password=${POSTGRES_PASSWORD}"
       Provisioning__AdminConnectionString: "Host=postgres;Port=5432;Database=postgres;Username=${POSTGRES_USER};Password=${POSTGRES_PASSWORD}"
       Provisioning__RuntimeConnectionString: "Host=pgcat;Port=6432;Database=postgres;Username=${POSTGRES_USER};Password=${POSTGRES_PASSWORD}"
       Dev__ProvisionBypassKey: letmein
       Audit__ConnectionString: "Host=pgcat;Port=6432;Database=postgres;Username=${POSTGRES_USER};Password=${POSTGRES_PASSWORD}"
+      # PgCat Admin API for dynamic pool management (zero-downtime tenant provisioning)
+      PgCat__AdminBaseUrl: http://pgcat:9930
+      PGCAT_ADMIN_USER: ${PGCAT_ADMIN_USER}
+      PGCAT_ADMIN_PASSWORD: ${PGCAT_ADMIN_PASSWORD}
     healthcheck:
       test: ["CMD", "/bin/busybox", "wget", "-q", "-O", "-", "http://localhost:8080/health/ready"]
       interval: 10s
@@ -553,12 +576,12 @@ services:
       Services__IdentityBaseUrl: http://identity:8080
       Services__DatabaseBaseUrl: http://db:8080
       Services__StorageBaseUrl: http://storage:8080
+      Services__SigNozBaseUrl: http://signoz:8080
       OpenTelemetry__Otlp__Endpoint: http://signoz-otel-collector:4317
       Cache__Redis: redis:6379
       Dev__ProvisionBypassKey: letmein
       Audit__ConnectionString: "Host=pgcat;Port=6432;Database=postgres;Username=${POSTGRES_USER};Password=${POSTGRES_PASSWORD}"
     ports:
-      - "80:8080"
       - "8080:8080"
     healthcheck:
       test: ["CMD", "/bin/busybox", "wget", "-q", "-O", "-", "http://localhost:8080/health/ready"]
@@ -589,7 +612,7 @@ networks:
 volumes:
   tansu-pgdata:
     driver: local
-  tansu-redisdata:
+  tansu-garnetdata:
     driver: local
   tansu-storagedata:
     driver: local

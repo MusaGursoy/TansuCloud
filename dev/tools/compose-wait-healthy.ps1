@@ -61,10 +61,23 @@ function Test-DockerAvailable {
 }
 
 function Get-ContainerId([string]$svc) {
-  $composeArgs = @('--env-file', $EnvFile, '-f', $ComposeFile, 'ps', '-q', $svc)
-  $id = (docker compose @composeArgs 2>$null)
-  if ([string]::IsNullOrWhiteSpace($id)) { return $null }
-  return $id.Trim()
+  try {
+    $ids = Invoke-TansuCompose -ComposeFile $ComposeFile -EnvFile $EnvFile ps '-q' $svc
+  }
+  catch {
+    return $null
+  }
+
+  if (-not $ids) {
+    return $null
+  }
+
+  $id = ($ids | Select-Object -Last 1).Trim()
+  if ([string]::IsNullOrWhiteSpace($id)) {
+    return $null
+  }
+
+  return $id
 }
 
 function Get-ContainerStatus([string]$containerId) {

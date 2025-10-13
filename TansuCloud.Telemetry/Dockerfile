@@ -15,6 +15,9 @@ RUN dotnet publish "./TansuCloud.Telemetry.csproj" -c $BUILD_CONFIGURATION -o /a
 
 # Final runtime image (chiseled, non-root by default)
 FROM busybox:stable-musl AS bb
+RUN mkdir -p /var/opt/tansu/telemetry && \
+    chmod -R 777 /var/opt/tansu/telemetry
+
 FROM mcr.microsoft.com/dotnet/aspnet:9.0-noble-chiseled AS final
 ARG REPOSITORY_URL=https://github.com/MusaGursoy/TansuCloud
 ARG BUILD_VERSION=0.0.0
@@ -27,6 +30,7 @@ LABEL org.opencontainers.image.source=$REPOSITORY_URL \
       org.opencontainers.image.version=$BUILD_VERSION \
       org.opencontainers.image.revision=$BUILD_COMMIT \
       org.opencontainers.image.created=$BUILD_DATE
+
 WORKDIR /app
 EXPOSE 8080
 ENV ASPNETCORE_URLS=http://+:8080 \
@@ -34,5 +38,6 @@ ENV ASPNETCORE_URLS=http://+:8080 \
     TELEMETRY__DATABASE__FILEPATH=/var/opt/tansu/telemetry/telemetry.db
 COPY --from=build /app/publish .
 COPY --from=bb /bin/busybox /bin/busybox
+COPY --from=bb --chown=app:app /var/opt/tansu/telemetry /var/opt/tansu/telemetry
 VOLUME ["/var/opt/tansu/telemetry"]
 ENTRYPOINT ["dotnet", "TansuCloud.Telemetry.dll"]

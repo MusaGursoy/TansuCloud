@@ -155,3 +155,93 @@ function Resolve-TansuBaseUrls {
     GatewayBaseUrl = $gatewayNormalized
   }
 }
+
+function Invoke-TansuCompose {
+  [CmdletBinding()]
+  param(
+    [string]$ComposeFile,
+    [string]$EnvFile,
+    [switch]$AllowMissingEnvFile,
+    [Parameter(Mandatory = $true, ValueFromRemainingArguments = $true)]
+    [string[]]$ComposeArgs
+  )
+
+  if (-not $ComposeArgs -or $ComposeArgs.Count -eq 0) {
+    throw 'Invoke-TansuCompose requires at least one docker compose argument (e.g., "up").'
+  }
+
+  if (-not (Get-Command docker -ErrorAction SilentlyContinue)) {
+    throw 'Docker CLI is not available. Please install/start Docker Desktop.'
+  }
+
+  $repoRoot = Resolve-TansuRepoRoot
+
+  if ([string]::IsNullOrWhiteSpace($ComposeFile)) {
+    $ComposeFile = Join-Path $repoRoot 'docker-compose.yml'
+  }
+
+  $composePath = (Resolve-Path -LiteralPath $ComposeFile -ErrorAction Stop).ProviderPath
+
+  if ([string]::IsNullOrWhiteSpace($EnvFile)) {
+    $EnvFile = Join-Path $repoRoot '.env'
+  }
+
+  $envPath = $null
+  $envExists = $false
+  if (-not [string]::IsNullOrWhiteSpace($EnvFile) -and (Test-Path -LiteralPath $EnvFile)) {
+    $envPath = (Resolve-Path -LiteralPath $EnvFile).ProviderPath
+    $envExists = $true
+  }
+  elseif (-not $AllowMissingEnvFile) {
+    Write-Verbose ("Invoke-TansuCompose: env file not found at '{0}'. Continuing without --env-file." -f $EnvFile)
+  }
+
+  Import-TansuDotEnv | Out-Null
+
+  $composeArgs = @()
+
+  $hasProjectDirectory = $false
+  foreach ($arg in $ComposeArgs) {
+    if ($arg -eq '--project-directory' -or $arg -like '--project-directory=*') {
+      $hasProjectDirectory = $true
+      break
+    }
+  }
+  if (-not $hasProjectDirectory) {
+    $composeArgs += @('--project-directory', $repoRoot)
+  }
+
+  $hasFileArg = $false
+  for ($i = 0; $i -lt $ComposeArgs.Count; $i++) {
+    $current = $ComposeArgs[$i]
+    if ($current -eq '-f' -or $current -eq '--file' -or $current -like '--file=*') {
+      $hasFileArg = $true
+      break
+    }
+  }
+  if (-not $hasFileArg) {
+    $composeArgs += @('-f', $composePath)
+  }
+
+  $hasEnvArg = $false
+  for ($i = 0; $i -lt $ComposeArgs.Count; $i++) {
+    $current = $ComposeArgs[$i]
+    if ($current -eq '--env-file' -or $current -like '--env-file=*') {
+      $hasEnvArg = $true
+      break
+    }
+  }
+  if ($envExists -and -not $hasEnvArg) {
+    $composeArgs += @('--env-file', $envPath)
+  }
+
+  $composeArgs += $ComposeArgs
+
+  $output = & docker compose @composeArgs
+  $exitCode = $LASTEXITCODE
+  if ($exitCode -ne 0) {
+    throw "docker compose exited with code $exitCode"
+  }
+
+  return $output
+}

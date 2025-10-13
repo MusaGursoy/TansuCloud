@@ -18,6 +18,7 @@ namespace TansuCloud.Telemetry.Pages.Admin.Envelopes;
 /// </summary>
 public sealed class IndexModel : PageModel
 {
+    private const string PagePath = "/Admin/Envelopes/Index";
     private static readonly string[] SeverityOptions =
     {
         "Trace",
@@ -120,7 +121,7 @@ public sealed class IndexModel : PageModel
             return Page();
         }
 
-    NormalizeFilter(options, query);
+        NormalizeFilter(options, query);
 
         var result = await _repository
             .QueryEnvelopesAsync(query, cancellationToken)
@@ -131,7 +132,7 @@ public sealed class IndexModel : PageModel
         if (query.Page > 1 && summaries.Length == 0 && result.TotalCount > 0)
         {
             Filter.Page = 1;
-            return RedirectToPage(null, BuildRedirectRoute(pageOverride: 1));
+            return RedirectToPage(PagePath, BuildRedirectRoute(pageOverride: 1));
         }
 
         Envelopes = summaries;
@@ -164,7 +165,7 @@ public sealed class IndexModel : PageModel
             );
         }
 
-        return RedirectToPage(null, BuildRedirectRoute());
+        return RedirectToPage(PagePath, BuildRedirectRoute());
     } // End of Method OnPostAcknowledgeAsync
 
     public async Task<IActionResult> OnPostDeleteAsync(Guid id, CancellationToken cancellationToken)
@@ -185,7 +186,7 @@ public sealed class IndexModel : PageModel
             );
         }
 
-        return RedirectToPage(null, BuildRedirectRoute());
+        return RedirectToPage(PagePath, BuildRedirectRoute());
     } // End of Method OnPostDeleteAsync
 
     private void ApplyValidationErrors(IReadOnlyDictionary<string, string[]> validationErrors)
@@ -213,9 +214,7 @@ public sealed class IndexModel : PageModel
         var currentPage = Filter.Page.GetValueOrDefault(1);
         Filter.Page = query?.Page ?? Math.Max(currentPage, 1);
 
-        var desiredPageSize = query?.PageSize
-            ?? Filter.PageSize
-            ?? options.DefaultPageSize;
+        var desiredPageSize = query?.PageSize ?? Filter.PageSize ?? options.DefaultPageSize;
         if (desiredPageSize <= 0)
         {
             desiredPageSize = options.DefaultPageSize;

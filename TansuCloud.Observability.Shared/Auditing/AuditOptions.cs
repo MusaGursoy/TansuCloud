@@ -7,8 +7,8 @@ public sealed class AuditOptions
 {
     public const string SectionName = "Audit";
 
-    // Postgres connection used by the background writer; may be pgcat in dev/prod
-    [Required]
+    // Postgres connection used by the background writer; may be pgcat in dev/prod.
+    // If null/empty, audit logging is disabled (no-op logger registered instead).
     public string? ConnectionString { get; set; }
 
     // Table name for audit events

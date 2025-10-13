@@ -54,7 +54,14 @@ internal sealed class TenantDbContextFactory(
         catch { }
 
         var dbOptsBuilder = new DbContextOptionsBuilder<TansuDbContext>()
-            .UseNpgsql(b.ConnectionString);
+            .UseNpgsql(
+                b.ConnectionString,
+                npgsqlOptions => npgsqlOptions.EnableRetryOnFailure(
+                    maxRetryCount: 5,
+                    maxRetryDelay: TimeSpan.FromSeconds(10),
+                    errorCodesToAdd: new[] { "58000" } // PgCat "No pool configured" error
+                )
+            );
         TryUseCompiledModel(dbOptsBuilder);
         var ctx = new TansuDbContext(dbOptsBuilder.Options);
         return Task.FromResult(ctx);
@@ -73,7 +80,14 @@ internal sealed class TenantDbContextFactory(
     _logger.LogTenantNormalized(tenantId, NormalizeTenant(tenantId), dbName);
 
         var dbOptsBuilder = new DbContextOptionsBuilder<TansuDbContext>()
-            .UseNpgsql(b.ConnectionString);
+            .UseNpgsql(
+                b.ConnectionString,
+                npgsqlOptions => npgsqlOptions.EnableRetryOnFailure(
+                    maxRetryCount: 5,
+                    maxRetryDelay: TimeSpan.FromSeconds(10),
+                    errorCodesToAdd: new[] { "58000" } // PgCat "No pool configured" error
+                )
+            );
         TryUseCompiledModel(dbOptsBuilder);
         var ctx = new TansuDbContext(dbOptsBuilder.Options);
         return Task.FromResult(ctx);

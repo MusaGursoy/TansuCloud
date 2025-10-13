@@ -581,6 +581,12 @@ builder.Services.AddAuthorization(options =>
 
 var app = builder.Build();
 
+// Apply audit database migrations on startup (Task 31, EF-based)
+await TansuCloud.Observability.Auditing.AuditServiceCollectionExtensions.ApplyAuditMigrationsAsync(
+    app.Services,
+    app.Logger
+);
+
 // Startup diagnostic: log OIDC metadata source choice (Task 38)
 try
 {

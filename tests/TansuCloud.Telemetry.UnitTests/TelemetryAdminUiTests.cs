@@ -17,6 +17,7 @@ using TansuCloud.Telemetry;
 using TansuCloud.Telemetry.Configuration;
 using TansuCloud.Telemetry.Data;
 using TansuCloud.Telemetry.Data.Entities;
+using TansuCloud.Telemetry.Security;
 
 namespace TansuCloud.Telemetry.UnitTests;
 
@@ -28,6 +29,77 @@ public sealed class TelemetryAdminUiTests : IClassFixture<TelemetryWebApplicatio
     {
         _factory = factory;
     } // End of Constructor TelemetryAdminUiTests
+
+    [Fact]
+    public async Task AdminRoute_WithoutAuthentication_ShouldRedirectWithStatusMessage()
+    {
+        await _factory.ResetDatabaseAsync();
+
+        using var client = _factory.CreateClient(
+            new WebApplicationFactoryClientOptions { AllowAutoRedirect = false }
+        );
+
+        var response = await client.GetAsync("/admin");
+
+        response.StatusCode.Should().Be(HttpStatusCode.Redirect);
+        response.Headers.Location.Should().NotBeNull();
+
+        var location = response.Headers.Location!;
+        if (!location.IsAbsoluteUri)
+        {
+            location = new Uri(new Uri("http://localhost"), location);
+        }
+        location.AbsolutePath.Should().Be(TelemetryAdminAuthenticationDefaults.LoginPath);
+
+        var query = QueryHelpers.ParseQuery(location.Query);
+        query.Should().ContainKey("missingKey");
+        query["missingKey"].ToString().Should().Be("1");
+        query.Should().ContainKey(
+            TelemetryAdminAuthenticationDefaults.AuthMessageQueryParameter
+        );
+        query[TelemetryAdminAuthenticationDefaults.AuthMessageQueryParameter]
+            .ToString()
+            .Should()
+            .Be(TelemetryAdminAuthenticationDefaults.AuthFailureReasons.MissingSession);
+    } // End of Test AdminRoute_WithoutAuthentication_ShouldRedirectWithStatusMessage
+
+    [Fact]
+    public async Task AdminRoute_WithInvalidCookie_ShouldRedirectWithInvalidSessionMessage()
+    {
+        await _factory.ResetDatabaseAsync();
+
+        using var client = _factory.CreateClient(
+            new WebApplicationFactoryClientOptions { AllowAutoRedirect = false }
+        );
+
+        client.DefaultRequestHeaders.Add(
+            "Cookie",
+            $"{TelemetryAdminAuthenticationDefaults.ApiKeyCookieName}=stale-key"
+        );
+
+        var response = await client.GetAsync("/admin");
+
+        response.StatusCode.Should().Be(HttpStatusCode.Redirect);
+        response.Headers.Location.Should().NotBeNull();
+
+        var location = response.Headers.Location!;
+        if (!location.IsAbsoluteUri)
+        {
+            location = new Uri(new Uri("http://localhost"), location);
+        }
+        location.AbsolutePath.Should().Be(TelemetryAdminAuthenticationDefaults.LoginPath);
+
+        var query = QueryHelpers.ParseQuery(location.Query);
+        query.Should().ContainKey("missingKey");
+        query["missingKey"].ToString().Should().Be("1");
+        query.Should().ContainKey(
+            TelemetryAdminAuthenticationDefaults.AuthMessageQueryParameter
+        );
+        query[TelemetryAdminAuthenticationDefaults.AuthMessageQueryParameter]
+            .ToString()
+            .Should()
+            .Be(TelemetryAdminAuthenticationDefaults.AuthFailureReasons.InvalidSession);
+    } // End of Test AdminRoute_WithInvalidCookie_ShouldRedirectWithInvalidSessionMessage
 
     [Fact]
     public async Task AdminIndex_ShouldRenderEnvelopesAndMetrics()
@@ -305,7 +377,7 @@ public sealed class TelemetryWebApplicationFactory : WebApplicationFactory<Progr
 
         var envelope = new TelemetryEnvelopeEntity
         {
-            Id = Guid.NewGuid(),
+            Id = Guid.CreateVersion7(),
             ReceivedAtUtc = DateTime.UtcNow.AddMinutes(-5),
             Host = "edge-default",
             Environment = "Production",

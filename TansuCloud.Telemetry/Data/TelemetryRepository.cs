@@ -1,7 +1,11 @@
 // Tansu.Cloud Public Repository:    https://github.com/MusaGursoy/TansuCloud
+using System;
+using System.Collections.Generic;
+using System.Linq;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using TansuCloud.Telemetry.Data.Entities;
+using TansuCloud.Telemetry.Data.Records;
 
 namespace TansuCloud.Telemetry.Data;
 
@@ -27,11 +31,15 @@ public sealed class TelemetryRepository
         CancellationToken cancellationToken
     )
     {
+        ArgumentNullException.ThrowIfNull(envelope);
+
+        var record = ConvertToActiveRecord(envelope);
+
         await using var transaction = await _dbContext
             .Database.BeginTransactionAsync(cancellationToken)
             .ConfigureAwait(false);
 
-        await _dbContext.Envelopes.AddAsync(envelope, cancellationToken).ConfigureAwait(false);
+        await _dbContext.ActiveEnvelopes.AddAsync(record, cancellationToken).ConfigureAwait(false);
         await _dbContext.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
 
@@ -53,22 +61,31 @@ public sealed class TelemetryRepository
     {
         ArgumentNullException.ThrowIfNull(query);
 
-        var envelopeQuery = ApplyEnvelopeFilters(_dbContext.Envelopes.AsNoTracking(), query);
+        var (activeQuery, archivedQuery) = BuildFilteredQueries(query);
+
+        IQueryable<EnvelopeProjection> combinedQuery = CombineActiveArchivedQueries(
+            activeQuery,
+            archivedQuery
+        );
 
         var page = Math.Max(query.Page, 1);
         var pageSize = Math.Max(query.PageSize, 1);
         var skip = Math.Max((page - 1) * pageSize, 0);
 
-        var totalCount = await envelopeQuery
+        var totalCount = await combinedQuery
             .LongCountAsync(cancellationToken)
             .ConfigureAwait(false);
 
-        var envelopes = await envelopeQuery
+        var pageResults = await combinedQuery
             .OrderByDescending(e => e.ReceivedAtUtc)
             .Skip(skip)
             .Take(pageSize)
             .ToListAsync(cancellationToken)
             .ConfigureAwait(false);
+
+        var envelopes = pageResults
+            .Select(p => ConvertToDomain(p))
+            .ToList();
 
         return new PagedResult<TelemetryEnvelopeEntity>(totalCount, envelopes);
     } // End of Method QueryEnvelopesAsync
@@ -76,22 +93,35 @@ public sealed class TelemetryRepository
     /// <summary>
     /// Retrieves a single envelope including its items.
     /// </summary>
-    public Task<TelemetryEnvelopeEntity?> GetEnvelopeAsync(
+    public async Task<TelemetryEnvelopeEntity?> GetEnvelopeAsync(
         Guid id,
         bool includeDeleted,
         CancellationToken cancellationToken
     )
     {
-        var query = _dbContext
-            .Envelopes.AsNoTracking()
+        var active = await _dbContext
+            .ActiveEnvelopes.AsNoTracking()
             .Include(e => e.Items)
-            .Where(e => e.Id == id);
+            .FirstOrDefaultAsync(e => e.Id == id, cancellationToken)
+            .ConfigureAwait(false);
+
+        if (active is not null)
+        {
+            return ConvertToDomain(active);
+        }
 
         if (!includeDeleted)
         {
-            query = query.Where(e => e.DeletedAtUtc == null);
+            return null;
         }
-        return query.FirstOrDefaultAsync(cancellationToken);
+
+        var archived = await _dbContext
+            .ArchivedEnvelopes.AsNoTracking()
+            .Include(e => e.Items)
+            .FirstOrDefaultAsync(e => e.Id == id, cancellationToken)
+            .ConfigureAwait(false);
+
+        return archived is null ? null : ConvertToDomain(archived);
     } // End of Method GetEnvelopeAsync
 
     /// <summary>
@@ -111,18 +141,77 @@ public sealed class TelemetryRepository
             throw new ArgumentOutOfRangeException(nameof(maxItems), "maxItems must be positive.");
         }
 
-        var source = _dbContext.Envelopes.AsNoTracking();
-        if (includeItems)
-        {
-            source = source.Include(e => e.Items);
-        }
-
-        var filtered = ApplyEnvelopeFilters(source, query)
+        var (activeQuery, archivedQuery) = BuildFilteredQueries(query);
+        var combinedQuery = CombineActiveArchivedQueries(activeQuery, archivedQuery)
             .OrderByDescending(e => e.ReceivedAtUtc)
             .Take(maxItems);
 
-        var results = await filtered.ToListAsync(cancellationToken).ConfigureAwait(false);
-        return results;
+        var projections = await combinedQuery.ToListAsync(cancellationToken).ConfigureAwait(false);
+
+        if (projections.Count == 0)
+        {
+            return Array.Empty<TelemetryEnvelopeEntity>();
+        }
+
+        var activeIds = projections.Where(p => !p.IsArchived).Select(p => p.Id).ToArray();
+        var archivedIds = projections.Where(p => p.IsArchived).Select(p => p.Id).ToArray();
+
+        var envelopes = new List<TelemetryEnvelopeEntity>(projections.Count);
+        var lookup = new Dictionary<Guid, TelemetryEnvelopeEntity>();
+
+        if (activeIds.Length > 0)
+        {
+            var activeRecordsQuery = _dbContext
+                .ActiveEnvelopes.AsNoTracking()
+                .Where(e => activeIds.Contains(e.Id));
+
+            if (includeItems)
+            {
+                activeRecordsQuery = activeRecordsQuery.Include(e => e.Items);
+            }
+
+            var records = await activeRecordsQuery
+                .ToListAsync(cancellationToken)
+                .ConfigureAwait(false);
+
+            foreach (var record in records)
+            {
+                var entity = ConvertToDomain(record, includeItems);
+                lookup[entity.Id] = entity;
+            }
+        }
+
+        if (archivedIds.Length > 0)
+        {
+            var archivedRecordsQuery = _dbContext
+                .ArchivedEnvelopes.AsNoTracking()
+                .Where(e => archivedIds.Contains(e.Id));
+
+            if (includeItems)
+            {
+                archivedRecordsQuery = archivedRecordsQuery.Include(e => e.Items);
+            }
+
+            var records = await archivedRecordsQuery
+                .ToListAsync(cancellationToken)
+                .ConfigureAwait(false);
+
+            foreach (var record in records)
+            {
+                var entity = ConvertToDomain(record, includeItems);
+                lookup[entity.Id] = entity;
+            }
+        }
+
+        foreach (var projection in projections.OrderByDescending(p => p.ReceivedAtUtc))
+        {
+            if (lookup.TryGetValue(projection.Id, out var envelope))
+            {
+                envelopes.Add(envelope);
+            }
+        }
+
+        return envelopes;
     } // End of Method ExportEnvelopesAsync
 
     /// <summary>
@@ -135,23 +224,39 @@ public sealed class TelemetryRepository
     )
     {
         var envelope = await _dbContext
-            .Envelopes.FirstOrDefaultAsync(
-                e => e.Id == id && e.DeletedAtUtc == null,
+            .ActiveEnvelopes.FirstOrDefaultAsync(
+                e => e.Id == id,
                 cancellationToken
             )
             .ConfigureAwait(false);
 
-        if (envelope is null)
+        if (envelope is not null)
+        {
+            if (envelope.AcknowledgedAtUtc.HasValue)
+            {
+                return true;
+            }
+
+            envelope.AcknowledgedAtUtc = timestampUtc;
+            await _dbContext.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+            return true;
+        }
+
+        var archived = await _dbContext
+            .ArchivedEnvelopes.FirstOrDefaultAsync(e => e.Id == id, cancellationToken)
+            .ConfigureAwait(false);
+
+        if (archived is null)
         {
             return false;
         }
 
-        if (envelope.AcknowledgedAtUtc.HasValue)
+        if (archived.AcknowledgedAtUtc.HasValue)
         {
             return true;
         }
 
-        envelope.AcknowledgedAtUtc = timestampUtc;
+        archived.AcknowledgedAtUtc = timestampUtc;
         await _dbContext.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
         return true;
     } // End of Method TryAcknowledgeAsync
@@ -166,10 +271,8 @@ public sealed class TelemetryRepository
     )
     {
         var envelope = await _dbContext
-            .Envelopes.FirstOrDefaultAsync(
-                e => e.Id == id && e.DeletedAtUtc == null,
-                cancellationToken
-            )
+            .ActiveEnvelopes.Include(e => e.Items)
+            .FirstOrDefaultAsync(e => e.Id == id, cancellationToken)
             .ConfigureAwait(false);
 
         if (envelope is null)
@@ -177,15 +280,109 @@ public sealed class TelemetryRepository
             return false;
         }
 
-        envelope.DeletedAtUtc = timestampUtc;
+        if (envelope.DeletedAtUtc.HasValue)
+        {
+            return true;
+        }
+
+        var archivedRecord = ConvertToArchivedRecord(envelope, timestampUtc);
+
+        await using var transaction = await _dbContext
+            .Database.BeginTransactionAsync(cancellationToken)
+            .ConfigureAwait(false);
+
+        _dbContext.ActiveEnvelopes.Remove(envelope);
+        await _dbContext.ArchivedEnvelopes.AddAsync(archivedRecord, cancellationToken).ConfigureAwait(false);
         await _dbContext.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+
         return true;
     } // End of Method TrySoftDeleteAsync
 
-    private static IQueryable<TelemetryEnvelopeEntity> ApplyEnvelopeFilters(
-        IQueryable<TelemetryEnvelopeEntity> queryable,
+    private (IQueryable<EnvelopeProjection>? Active, IQueryable<EnvelopeProjection>? Archived)
+        BuildFilteredQueries(TelemetryEnvelopeQuery query)
+    {
+        ArgumentNullException.ThrowIfNull(query);
+
+        var includeActive = query.Deleted is not true;
+        var includeArchived = query.IncludeDeleted || query.Deleted == true;
+
+        IQueryable<EnvelopeProjection>? activeQuery = null;
+        IQueryable<EnvelopeProjection>? archivedQuery = null;
+
+        if (includeActive)
+        {
+            var activeRecords = ApplyEnvelopeFilters<TelemetryActiveEnvelopeRecord, TelemetryActiveItemRecord>(
+                _dbContext.ActiveEnvelopes.AsNoTracking(), query);
+
+            activeQuery = activeRecords.Select(e => new EnvelopeProjection
+            {
+                Id = e.Id,
+                ReceivedAtUtc = e.ReceivedAtUtc,
+                Host = e.Host,
+                Environment = e.Environment,
+                Service = e.Service,
+                SeverityThreshold = e.SeverityThreshold,
+                WindowMinutes = e.WindowMinutes,
+                MaxItems = e.MaxItems,
+                ItemCount = e.ItemCount,
+                AcknowledgedAtUtc = e.AcknowledgedAtUtc,
+                DeletedAtUtc = e.DeletedAtUtc,
+                IsArchived = false
+            });
+        }
+
+        if (includeArchived)
+        {
+            var archivedRecords = ApplyEnvelopeFilters<TelemetryArchivedEnvelopeRecord, TelemetryArchivedItemRecord>(
+                _dbContext.ArchivedEnvelopes.AsNoTracking(), query);
+
+            archivedQuery = archivedRecords.Select(e => new EnvelopeProjection
+            {
+                Id = e.Id,
+                ReceivedAtUtc = e.ReceivedAtUtc,
+                Host = e.Host,
+                Environment = e.Environment,
+                Service = e.Service,
+                SeverityThreshold = e.SeverityThreshold,
+                WindowMinutes = e.WindowMinutes,
+                MaxItems = e.MaxItems,
+                ItemCount = e.ItemCount,
+                AcknowledgedAtUtc = e.AcknowledgedAtUtc,
+                DeletedAtUtc = e.DeletedAtUtc,
+                IsArchived = true
+            });
+        }
+
+        return (activeQuery, archivedQuery);
+    } // End of Method BuildFilteredQueries
+
+    private static IQueryable<EnvelopeProjection> CombineActiveArchivedQueries(
+        IQueryable<EnvelopeProjection>? active,
+        IQueryable<EnvelopeProjection>? archived
+    )
+    {
+        if (active is null && archived is null)
+        {
+            throw new InvalidOperationException(
+                "No telemetry envelope sources were selected for the requested query."
+            );
+        }
+
+        if (active is null)
+        {
+            return archived!;
+        }
+
+        return archived is null ? active : active.Concat(archived);
+    } // End of Method CombineActiveArchivedQueries
+
+    private static IQueryable<TEnvelope> ApplyEnvelopeFilters<TEnvelope, TItem>(
+        IQueryable<TEnvelope> queryable,
         TelemetryEnvelopeQuery query
     )
+        where TEnvelope : TelemetryEnvelopeRecordBase<TItem>
+        where TItem : TelemetryItemRecordBase
     {
         ArgumentNullException.ThrowIfNull(queryable);
         ArgumentNullException.ThrowIfNull(query);
@@ -231,17 +428,6 @@ public sealed class TelemetryRepository
             queryable = queryable.Where(e => e.AcknowledgedAtUtc == null);
         }
 
-        if (query.Deleted.HasValue)
-        {
-            queryable = query.Deleted.Value
-                ? queryable.Where(e => e.DeletedAtUtc != null)
-                : queryable.Where(e => e.DeletedAtUtc == null);
-        }
-        else if (!query.IncludeDeleted)
-        {
-            queryable = queryable.Where(e => e.DeletedAtUtc == null);
-        }
-
         if (!string.IsNullOrWhiteSpace(query.Search))
         {
             var term = query.Search.Trim();
@@ -254,4 +440,234 @@ public sealed class TelemetryRepository
 
         return queryable;
     } // End of Method ApplyEnvelopeFilters
+
+    private static TelemetryEnvelopeEntity ConvertToDomain(EnvelopeProjection projection)
+    {
+        return new TelemetryEnvelopeEntity
+        {
+            Id = projection.Id,
+            ReceivedAtUtc = projection.ReceivedAtUtc,
+            Host = projection.Host,
+            Environment = projection.Environment,
+            Service = projection.Service,
+            SeverityThreshold = projection.SeverityThreshold,
+            WindowMinutes = projection.WindowMinutes,
+            MaxItems = projection.MaxItems,
+            ItemCount = projection.ItemCount,
+            AcknowledgedAtUtc = projection.AcknowledgedAtUtc,
+            DeletedAtUtc = projection.DeletedAtUtc,
+            Items = new List<TelemetryItemEntity>()
+        };
+    } // End of Method ConvertToDomain
+
+    private static TelemetryEnvelopeEntity ConvertToDomain(
+        TelemetryActiveEnvelopeRecord record,
+        bool includeItems = true
+    )
+    {
+        return ConvertToDomainCore<TelemetryActiveEnvelopeRecord, TelemetryActiveItemRecord>(
+            record,
+            includeItems,
+            isArchived: false
+        );
+    } // End of Method ConvertToDomain
+
+    private static TelemetryEnvelopeEntity ConvertToDomain(
+        TelemetryArchivedEnvelopeRecord record,
+        bool includeItems = true
+    )
+    {
+        return ConvertToDomainCore<TelemetryArchivedEnvelopeRecord, TelemetryArchivedItemRecord>(
+            record,
+            includeItems,
+            isArchived: true
+        );
+    } // End of Method ConvertToDomain
+
+    private static TelemetryEnvelopeEntity ConvertToDomainCore<TEnvelope, TItem>(
+        TEnvelope record,
+        bool includeItems,
+        bool isArchived
+    )
+        where TEnvelope : TelemetryEnvelopeRecordBase<TItem>
+        where TItem : TelemetryItemRecordBase
+    {
+        var entity = new TelemetryEnvelopeEntity
+        {
+            Id = record.Id,
+            ReceivedAtUtc = record.ReceivedAtUtc,
+            Host = record.Host,
+            Environment = record.Environment,
+            Service = record.Service,
+            SeverityThreshold = record.SeverityThreshold,
+            WindowMinutes = record.WindowMinutes,
+            MaxItems = record.MaxItems,
+            ItemCount = record.ItemCount,
+            AcknowledgedAtUtc = record.AcknowledgedAtUtc,
+            DeletedAtUtc = isArchived ? record.DeletedAtUtc : null,
+            Items = new List<TelemetryItemEntity>()
+        };
+
+        if (!includeItems)
+        {
+            return entity;
+        }
+
+        foreach (var item in record.Items)
+        {
+            var mapped = ConvertItemToDomain(item, entity);
+            entity.Items.Add(mapped);
+        }
+
+        return entity;
+    } // End of Method ConvertToDomainCore
+
+    private static TelemetryItemEntity ConvertItemToDomain(
+        TelemetryItemRecordBase item,
+        TelemetryEnvelopeEntity envelope
+    )
+    {
+        return new TelemetryItemEntity
+        {
+            Id = item.Id,
+            EnvelopeId = envelope.Id,
+            Envelope = envelope,
+            Kind = item.Kind,
+            TimestampUtc = item.TimestampUtc,
+            Level = item.Level,
+            Message = item.Message,
+            TemplateHash = item.TemplateHash,
+            Exception = item.Exception,
+            Service = item.Service,
+            Environment = item.Environment,
+            TenantHash = item.TenantHash,
+            CorrelationId = item.CorrelationId,
+            TraceId = item.TraceId,
+            SpanId = item.SpanId,
+            Category = item.Category,
+            EventId = item.EventId,
+            Count = item.Count,
+            PropertiesJson = item.PropertiesJson
+        };
+    } // End of Method ConvertItemToDomain
+
+    private static TelemetryActiveEnvelopeRecord ConvertToActiveRecord(
+        TelemetryEnvelopeEntity envelope
+    )
+    {
+        var record = new TelemetryActiveEnvelopeRecord
+        {
+            Id = envelope.Id,
+            Host = envelope.Host,
+            Environment = envelope.Environment,
+            Service = envelope.Service,
+            SeverityThreshold = envelope.SeverityThreshold,
+            ReceivedAtUtc = envelope.ReceivedAtUtc,
+            WindowMinutes = envelope.WindowMinutes,
+            MaxItems = envelope.MaxItems,
+            ItemCount = envelope.ItemCount,
+            AcknowledgedAtUtc = envelope.AcknowledgedAtUtc,
+            DeletedAtUtc = null,
+            Items = new List<TelemetryActiveItemRecord>()
+        };
+
+        foreach (var item in envelope.Items)
+        {
+            var recordItem = new TelemetryActiveItemRecord
+            {
+                EnvelopeId = envelope.Id,
+                Envelope = record,
+                Kind = item.Kind,
+                TimestampUtc = item.TimestampUtc,
+                Level = item.Level,
+                Message = item.Message,
+                TemplateHash = item.TemplateHash,
+                Exception = item.Exception,
+                Service = item.Service,
+                Environment = item.Environment,
+                TenantHash = item.TenantHash,
+                CorrelationId = item.CorrelationId,
+                TraceId = item.TraceId,
+                SpanId = item.SpanId,
+                Category = item.Category,
+                EventId = item.EventId,
+                Count = item.Count,
+                PropertiesJson = item.PropertiesJson
+            };
+
+            record.Items.Add(recordItem);
+        }
+
+        record.ItemCount = record.Items.Count;
+        return record;
+    } // End of Method ConvertToActiveRecord
+
+    private static TelemetryArchivedEnvelopeRecord ConvertToArchivedRecord(
+        TelemetryActiveEnvelopeRecord active,
+        DateTime deletedAtUtc
+    )
+    {
+        var archived = new TelemetryArchivedEnvelopeRecord
+        {
+            Id = active.Id,
+            Host = active.Host,
+            Environment = active.Environment,
+            Service = active.Service,
+            SeverityThreshold = active.SeverityThreshold,
+            ReceivedAtUtc = active.ReceivedAtUtc,
+            WindowMinutes = active.WindowMinutes,
+            MaxItems = active.MaxItems,
+            ItemCount = active.ItemCount,
+            AcknowledgedAtUtc = active.AcknowledgedAtUtc,
+            DeletedAtUtc = deletedAtUtc,
+            Items = new List<TelemetryArchivedItemRecord>()
+        };
+
+        foreach (var item in active.Items)
+        {
+            var archivedItem = new TelemetryArchivedItemRecord
+            {
+                Id = item.Id,
+                EnvelopeId = archived.Id,
+                Envelope = archived,
+                Kind = item.Kind,
+                TimestampUtc = item.TimestampUtc,
+                Level = item.Level,
+                Message = item.Message,
+                TemplateHash = item.TemplateHash,
+                Exception = item.Exception,
+                Service = item.Service,
+                Environment = item.Environment,
+                TenantHash = item.TenantHash,
+                CorrelationId = item.CorrelationId,
+                TraceId = item.TraceId,
+                SpanId = item.SpanId,
+                Category = item.Category,
+                EventId = item.EventId,
+                Count = item.Count,
+                PropertiesJson = item.PropertiesJson
+            };
+
+            archived.Items.Add(archivedItem);
+        }
+
+        archived.ItemCount = archived.Items.Count;
+        return archived;
+    } // End of Method ConvertToArchivedRecord
+
+    private sealed class EnvelopeProjection
+    {
+        public Guid Id { get; init; }
+        public DateTime ReceivedAtUtc { get; init; }
+        public string Host { get; init; } = string.Empty;
+        public string Environment { get; init; } = string.Empty;
+        public string Service { get; init; } = string.Empty;
+        public string SeverityThreshold { get; init; } = string.Empty;
+        public int WindowMinutes { get; init; }
+        public int MaxItems { get; init; }
+        public int ItemCount { get; init; }
+        public DateTime? AcknowledgedAtUtc { get; init; }
+        public DateTime? DeletedAtUtc { get; init; }
+        public bool IsArchived { get; init; }
+    } // End of Class EnvelopeProjection
 } // End of Class TelemetryRepository

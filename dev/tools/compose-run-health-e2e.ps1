@@ -48,8 +48,10 @@ function Write-Section {
 
 function Invoke-ComposeUp {
   Write-Section 'docker compose up -d (infra + apps)'
-  $composeArgs = @('--env-file', $envFile, '-f', $ComposeFile, 'up', '-d', '--build')
-  docker compose @composeArgs | Write-Host
+  $result = Invoke-TansuCompose -ComposeFile $ComposeFile -EnvFile $envFile up '-d' '--build'
+  if ($result) {
+    $result | Write-Host
+  }
 }
 
 function Wait-ComposeHealthy {

@@ -49,10 +49,12 @@ public sealed class TelemetryApiKeyAuthenticationHandler<TOptions>
                 allowCookieFallback,
                 out var providedKey,
                 out var source,
-                out var failureReason
+                out var failureReason,
+                out var failureCode
             )
         )
         {
+            TrackAdminFailure(failureCode);
             return Task.FromResult(AuthenticateResult.Fail(failureReason));
         }
 
@@ -68,6 +70,16 @@ public sealed class TelemetryApiKeyAuthenticationHandler<TOptions>
                         Secure = Request.IsHttps,
                         SameSite = SameSiteMode.Strict
                     }
+                );
+
+                TrackAdminFailure(
+                    TelemetryAdminAuthenticationDefaults.AuthFailureReasons.InvalidSession
+                );
+            }
+            else if (allowCookieFallback)
+            {
+                TrackAdminFailure(
+                    TelemetryAdminAuthenticationDefaults.AuthFailureReasons.InvalidAuthorizationHeader
                 );
             }
 
@@ -93,13 +105,38 @@ public sealed class TelemetryApiKeyAuthenticationHandler<TOptions>
             {
                 var currentUrl = $"{Request.PathBase}{Request.Path}{Request.QueryString}";
                 var redirectUrl = TelemetryAdminAuthenticationDefaults.LoginPath;
+                var failureCode = ResolveAdminFailureReason();
 
                 if (!string.IsNullOrWhiteSpace(currentUrl) && currentUrl != "/")
                 {
                     redirectUrl = QueryHelpers.AddQueryString(redirectUrl, "returnUrl", currentUrl);
                 }
 
-                redirectUrl = QueryHelpers.AddQueryString(redirectUrl, "missingKey", "1");
+                var shouldShowMissingHint = string.IsNullOrWhiteSpace(failureCode)
+                    || string.Equals(
+                        failureCode,
+                        TelemetryAdminAuthenticationDefaults.AuthFailureReasons.MissingSession,
+                        StringComparison.Ordinal
+                    )
+                    || string.Equals(
+                        failureCode,
+                        TelemetryAdminAuthenticationDefaults.AuthFailureReasons.InvalidSession,
+                        StringComparison.Ordinal
+                    );
+
+                if (shouldShowMissingHint)
+                {
+                    redirectUrl = QueryHelpers.AddQueryString(redirectUrl, "missingKey", "1");
+                }
+
+                if (!string.IsNullOrWhiteSpace(failureCode))
+                {
+                    redirectUrl = QueryHelpers.AddQueryString(
+                        redirectUrl,
+                        TelemetryAdminAuthenticationDefaults.AuthMessageQueryParameter,
+                        failureCode
+                    );
+                }
 
                 Response.Redirect(redirectUrl);
                 return Task.CompletedTask;
@@ -140,7 +177,8 @@ public sealed class TelemetryApiKeyAuthenticationHandler<TOptions>
         bool allowCookieFallback,
         out string providedKey,
         out ApiKeySource source,
-        out string failureReason
+        out string failureReason,
+        out string failureCode
     )
     {
         const string bearerPrefix = "Bearer ";
@@ -153,6 +191,7 @@ public sealed class TelemetryApiKeyAuthenticationHandler<TOptions>
                 providedKey = string.Empty;
                 source = ApiKeySource.AuthorizationHeader;
                 failureReason = "Authorization header must use the Bearer scheme.";
+                failureCode = TelemetryAdminAuthenticationDefaults.AuthFailureReasons.InvalidAuthorizationHeader;
                 return false;
             }
 
@@ -162,12 +201,14 @@ public sealed class TelemetryApiKeyAuthenticationHandler<TOptions>
                 providedKey = string.Empty;
                 source = ApiKeySource.AuthorizationHeader;
                 failureReason = "API key value is empty.";
+                failureCode = TelemetryAdminAuthenticationDefaults.AuthFailureReasons.InvalidAuthorizationHeader;
                 return false;
             }
 
             providedKey = candidate;
             source = ApiKeySource.AuthorizationHeader;
             failureReason = string.Empty;
+            failureCode = string.Empty;
             return true;
         }
 
@@ -183,6 +224,7 @@ public sealed class TelemetryApiKeyAuthenticationHandler<TOptions>
             providedKey = cookieValue;
             source = ApiKeySource.Cookie;
             failureReason = string.Empty;
+            failureCode = string.Empty;
             return true;
         }
 
@@ -191,6 +233,34 @@ public sealed class TelemetryApiKeyAuthenticationHandler<TOptions>
         failureReason = allowCookieFallback
             ? "Authorization header or admin session cookie missing."
             : "Authorization header missing.";
+        failureCode = TelemetryAdminAuthenticationDefaults.AuthFailureReasons.MissingSession;
         return false;
     } // End of Method TryResolveApiKey
+
+    private void TrackAdminFailure(string? reasonCode)
+    {
+        if (
+            typeof(TOptions) == typeof(TelemetryAdminOptions)
+            && !string.IsNullOrWhiteSpace(reasonCode)
+        )
+        {
+            Context.Items[TelemetryAdminAuthenticationDefaults.AuthFailureContextItemKey] = reasonCode!;
+        }
+    } // End of Method TrackAdminFailure
+
+    private string? ResolveAdminFailureReason()
+    {
+        if (
+            typeof(TOptions) == typeof(TelemetryAdminOptions)
+            && Context.Items.TryGetValue(
+                TelemetryAdminAuthenticationDefaults.AuthFailureContextItemKey,
+                out var reason
+            )
+        )
+        {
+            return reason as string;
+        }
+
+        return null;
+    } // End of Method ResolveAdminFailureReason
 } // End of Class TelemetryApiKeyAuthenticationHandler

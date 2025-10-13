@@ -1,5 +1,5 @@
 # Full production docker compose
-# - Includes all core app services (gateway, identity, dashboard, db, storage, postgres, redis, pgcat)
+# - Includes all core app services (gateway, identity, dashboard, db, storage, postgres, garnet, pgcat)
 # - Adds an optional "observability" profile (SigNoz + ClickHouse + OTEL collector)
 # - Default posture: internal-only for observability. Only the Gateway publishes a host port (80).
 #
@@ -32,6 +32,9 @@
 # - For HTTPS in production, configure TLS at the gateway and uncomment the 443 mapping.
 # - Keep SigNoz internal-only; expose the UI only behind VPN/SSO if required.
 
+# Development: Uses :latest for fast iteration
+# Production: Pin specific versions to prevent surprise upgrades
+
 services:
   postgres:
     image: tansu/citus-pgvector:local
@@ -47,7 +50,9 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
     volumes:
       - tansu-pgdata:/var/lib/postgresql/data
-      - ./dev/db-init:/docker-entrypoint-initdb.d:ro
+      # Init scripts (01-init.sql) are baked into the Docker image (see dev/Dockerfile.citus-pgvector)
+      # No bind mount needed - databases are created automatically on first start
+      # - ./dev/db-init:/docker-entrypoint-initdb.d:ro
     # In production, keep Postgres internal-only by default. If you need external access for E2E tests or direct admin ops,
     # uncomment the following port mapping and restrict exposure via firewall/security groups.
     # ports:
@@ -55,8 +60,29 @@ services:
     networks:
       - tansucloud-network
 
+  postgres-exporter:
+    image: prometheuscommunity/postgres-exporter:latest
+    container_name: tansu-postgres-exporter
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 512M
+    environment:
+      DATA_SOURCE_NAME: "postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/postgres?sslmode=disable"
+    expose:
+      - "9187"
+    depends_on:
+      postgres:
+        condition: service_started
+    networks:
+      - tansucloud-network
+    profiles:
+      - observability
+
   redis:
-    image: redis:latest
+    image: ghcr.io/microsoft/garnet:latest
     container_name: tansu-redis
     restart: unless-stopped
     deploy:
@@ -64,21 +90,42 @@ services:
         limits:
           cpus: "1.0"
           memory: 2G
-    command: ["redis-server", "--appendonly", "yes"]
+    command: ["/app/GarnetServer", "--port", "6379", "--checkpointdir", "/data", "--recover"]
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ["CMD", "/app/GarnetServer", "--test-ping"]
       interval: 10s
       timeout: 3s
       retries: 10
       start_period: 5s
-    # In production, keep Redis internal-only by default. If you need external access for tests or ops,
+    # In production, keep Garnet (Redis-compatible) internal-only by default. If you need external access for tests or ops,
     # uncomment the following port mapping and restrict exposure via firewall/security groups.
     # ports:
     #   - "6379:6379"
     volumes:
-      - tansu-redisdata:/data
+      - tansu-garnetdata:/data
     networks:
       - tansucloud-network
+
+  redis-exporter:
+    image: oliver006/redis_exporter:latest
+    container_name: tansu-redis-exporter
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 512M
+    environment:
+      REDIS_ADDR: redis:6379
+    expose:
+      - "9121"
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - tansucloud-network
+    profiles:
+      - observability
 
   pgcat:
     image: ghcr.io/postgresml/pgcat:latest
@@ -110,33 +157,6 @@ services:
     networks:
       - tansucloud-network
 
-  pgcat-config:
-    build:
-      context: .
-      dockerfile: Dev.PgcatConfigurator/Dockerfile
-    container_name: tansu-pgcat-config
-    restart: unless-stopped
-    deploy:
-      resources:
-        limits:
-          cpus: "1.0"
-          memory: 2G
-    environment:
-      PG_ADMIN: "Host=postgres;Port=5432;Database=postgres;Username=${POSTGRES_USER};Password=${POSTGRES_PASSWORD}"
-      PG_HOST: postgres
-      PG_USER: ${POSTGRES_USER}
-      PG_PASSWORD: ${POSTGRES_PASSWORD}
-      TENANT_DB_PREFIX: tansu_tenant_
-      PGCAT_ADMIN_USER: ${PGCAT_ADMIN_USER}
-      PGCAT_ADMIN_PASSWORD: ${PGCAT_ADMIN_PASSWORD}
-      PGCAT_CONFIG: /out/pgcat.toml
-    volumes:
-      - ./dev/pgcat:/out
-    depends_on:
-      - pgcat
-    networks:
-      - tansucloud-network
-
   identity:
     build:
       context: .
@@ -155,8 +175,8 @@ services:
       GatewayBaseUrl: ${GATEWAY_BASE_URL}
       # Production issuer visible to browsers
       Oidc__Issuer: ${PUBLIC_BASE_URL}/identity/
-      # Optional OTLP exporter endpoint (set when using observability profile)
-      OpenTelemetry__Otlp__Endpoint: ${OTLP_ENDPOINT:-}
+      # OTLP exporter endpoint - defaults to internal collector when observability profile is active
+      OpenTelemetry__Otlp__Endpoint: ${OTLP_ENDPOINT:-http://signoz-otel-collector:4317}
       # Dashboard client credentials
       Oidc__Dashboard__ClientSecret: ${DASHBOARD_CLIENT_SECRET}
       # Optional: override redirect URIs if not derived automatically
@@ -203,8 +223,8 @@ services:
       Oidc__RequireHttpsMetadata: true
       Oidc__ClientId: tansu-dashboard
       Oidc__ClientSecret: ${DASHBOARD_CLIENT_SECRET}
-      # Optional OTLP exporter endpoint (set when using observability profile)
-      OpenTelemetry__Otlp__Endpoint: ${OTLP_ENDPOINT:-}
+      # OTLP exporter endpoint - defaults to internal collector when observability profile is active
+      OpenTelemetry__Otlp__Endpoint: ${OTLP_ENDPOINT:-http://signoz-otel-collector:4317}
       Cache__Redis: redis:6379
       # Route audit writes via PgCat; override via env in real deployments
       Audit__ConnectionString: "Host=pgcat;Port=6432;Database=postgres;Username=${POSTGRES_USER};Password=${POSTGRES_PASSWORD}"
@@ -250,8 +270,8 @@ services:
       Oidc__Issuer: ${PUBLIC_BASE_URL}/identity/
       # In production, prefer discovery at the public origin (HTTPS)
       Oidc__MetadataAddress: ${PUBLIC_BASE_URL}/identity/.well-known/openid-configuration
-      # Optional OTLP exporter endpoint (set when using observability profile)
-      OpenTelemetry__Otlp__Endpoint: ${OTLP_ENDPOINT:-}
+      # OTLP exporter endpoint - defaults to internal collector when observability profile is active
+      OpenTelemetry__Otlp__Endpoint: ${OTLP_ENDPOINT:-http://signoz-otel-collector:4317}
       Cache__Redis: redis:6379
       Outbox__RedisConnection: redis:6379
       Outbox__Channel: tansu.outbox
@@ -260,10 +280,15 @@ services:
       Outbox__MaxAttempts: 8
       # Optional: specify a tenant for outbox dispatcher context (useful for multi-tenant event routing)
       # Outbox__DispatchTenant: <tenant-id>
+      ConnectionStrings__DefaultConnection: "Host=postgres;Port=5432;Database=postgres;Username=${POSTGRES_USER};Password=${POSTGRES_PASSWORD}"
       Provisioning__AdminConnectionString: "Host=postgres;Port=5432;Database=postgres;Username=${POSTGRES_USER};Password=${POSTGRES_PASSWORD}"
       Provisioning__RuntimeConnectionString: "Host=pgcat;Port=6432;Database=postgres;Username=${POSTGRES_USER};Password=${POSTGRES_PASSWORD}"
       # Route audit writes via PgCat
       Audit__ConnectionString: "Host=pgcat;Port=6432;Database=postgres;Username=${POSTGRES_USER};Password=${POSTGRES_PASSWORD}"
+      # PgCat Admin API for dynamic pool management (zero-downtime tenant provisioning)
+      PgCat__AdminBaseUrl: http://pgcat:9930
+      PGCAT_ADMIN_USER: ${PGCAT_ADMIN_USER}
+      PGCAT_ADMIN_PASSWORD: ${PGCAT_ADMIN_PASSWORD}
     healthcheck:
       test: ["CMD", "/bin/busybox", "wget", "-q", "-O", "-", "http://localhost:8080/health/ready"]
       interval: 10s
@@ -298,8 +323,8 @@ services:
       Oidc__Issuer: ${PUBLIC_BASE_URL}/identity/
       # In production, prefer discovery at the public origin (HTTPS)
       Oidc__MetadataAddress: ${PUBLIC_BASE_URL}/identity/.well-known/openid-configuration
-      # Optional OTLP exporter endpoint (set when using observability profile)
-      OpenTelemetry__Otlp__Endpoint: ${OTLP_ENDPOINT:-}
+      # OTLP exporter endpoint - defaults to internal collector when observability profile is active
+      OpenTelemetry__Otlp__Endpoint: ${OTLP_ENDPOINT:-http://signoz-otel-collector:4317}
       Cache__Redis: redis:6379
       Storage__RootPath: /data
       # Consider providing a strong presign secret via environment/secrets manager in real deployments
@@ -343,8 +368,9 @@ services:
       Services__IdentityBaseUrl: http://identity:8080
       Services__DatabaseBaseUrl: http://db:8080
       Services__StorageBaseUrl: http://storage:8080
-      # Optional OTLP exporter endpoint (set when using observability profile)
-      OpenTelemetry__Otlp__Endpoint: ${OTLP_ENDPOINT:-}
+      Services__SigNozBaseUrl: http://signoz-frontend:3301
+      # OTLP exporter endpoint - defaults to internal collector when observability profile is active
+      OpenTelemetry__Otlp__Endpoint: ${OTLP_ENDPOINT:-http://signoz-otel-collector:4317}
       Cache__Redis: redis:6379
       # Route audit writes via PgCat
       Audit__ConnectionString: "Host=pgcat;Port=6432;Database=postgres;Username=${POSTGRES_USER};Password=${POSTGRES_PASSWORD}"
@@ -585,7 +611,7 @@ networks:
 volumes:
   tansu-pgdata:
     driver: local
-  tansu-redisdata:
+  tansu-garnetdata:
     driver: local
   tansu-storagedata:
     driver: local

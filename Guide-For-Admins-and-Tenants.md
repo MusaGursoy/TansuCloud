@@ -161,20 +161,26 @@ Common pitfalls
 
 ### 8.2 SigNoz metrics & dashboards (Unified Observability)
 
-We use SigNoz as the single UI for metrics, traces, and logs. In Docker Compose (dev), the SigNoz UI is available at:
+We use SigNoz as the single UI for metrics, traces, and logs.
 
-- [http://127.0.0.1:3301/](http://127.0.0.1:3301/)
+**Development**: The SigNoz UI is available at [http://127.0.0.1:3301/](http://127.0.0.1:3301/) via direct port mapping in docker-compose.yml.
 
-All services export OTLP to the in-cluster SigNoz collector. Metrics, traces, and logs appear automatically as you drive traffic through the gateway.
+**Production**: SigNoz is not exposed through the gateway or to end users. For production deployments:
 
-Quick start (dev)
+- Restrict SigNoz access to infrastructure administrators via secure network policies
+- Consider embedding SigNoz observability data into the Admin Dashboard's Observability pages using the SigNoz REST API
+- Alternatively, expose SigNoz on a separate subdomain with appropriate authentication
 
-1) Bring up infra and apps (VS Code tasks: "compose: up infra (pg + redis + pgcat)" then "compose: up apps").
+All services export OTLP to the in-cluster SigNoz collector. Metrics, traces, and logs appear automatically as you drive traffic through the gateway.Quick start (dev)
+
+1) Bring up infra and apps (VS Code tasks: "compose: up infra (pg + garnet + pgcat)" then "compose: up apps").
 2) Drive some traffic: open `/storage/health/ready` and `/db/health/ready` a few times via the gateway.
 3) Open the SigNoz UI at [http://127.0.0.1:3301/](http://127.0.0.1:3301/) and explore:
    - Metrics: Service graphs (requests/sec, error rate, latency percentiles)
    - Traces: End-to-end spans per request
-   - Logs: Centralized structured logs across services
+
+- Logs: Centralized structured logs across services
+- Infrastructure: Postgres, Garnet, and PgCat dashboards now surface automatically through the shared collector (pool saturation, cache hit rate, connection counts)
 
 Legacy in-app charts (Prometheus proxy)
 
@@ -329,7 +335,7 @@ All core services implement standardized health endpoints and Compose startup ga
 
 - Endpoints per service
   - Liveness: `GET /health/live` → returns 200 when the service process is up. Only checks tagged "self" are evaluated (no external dependencies).
-  - Readiness: `GET /health/ready` → returns 200 when required dependencies (Redis, Postgres via PgCat) are reachable. Only checks tagged "ready" are evaluated.
+  - Readiness: `GET /health/ready` → returns 200 when required dependencies (Garnet, Postgres via PgCat) are reachable. Only checks tagged "ready" are evaluated.
 
 - Via Gateway
   - Health endpoints are reachable through the Gateway under each service base path:
@@ -340,9 +346,9 @@ All core services implement standardized health endpoints and Compose startup ga
 
 - Docker Compose gating
   - identity waits for pgcat healthy
-  - db waits for pgcat and redis healthy
-  - storage waits for redis healthy
-  - dashboard waits for redis healthy
+  - db waits for pgcat and garnet healthy
+  - storage waits for garnet healthy
+  - dashboard waits for garnet healthy
   - gateway waits for identity, db, storage, and dashboard to be healthy
   - PgCat healthcheck uses a CMD-SHELL form that checks `/proc/1/cmdline` to avoid image differences (busybox vs bash) and flakiness.
 
@@ -386,15 +392,154 @@ Notes
 
 Collector configuration
 
-- The SigNoz OpenTelemetry Collector config is stored at `dev/signoz-otel-collector-config.yaml`. It enables:
-  - Receivers: `otlp` (gRPC+HTTP) and `hostmetrics` (cpu, load, memory, filesystem, network) every 15s.
+- The SigNoz OpenTelemetry Collector config is stored at `dev/signoz-otel-collector-config.yaml`. It now enables:
+  - Receivers: `otlp` (gRPC+HTTP), `hostmetrics` (cpu, load, memory, filesystem, network) every 15s, `prometheus/postgres` (PostgreSQL metrics via postgres-exporter on port 9187), and `prometheus/redis` (Redis metrics via redis-exporter on port 9121).
   - Exporters: `clickhousetraces` and `clickhouselogsexporter` with `use_new_schema: true`, and `signozclickhousemetrics` to `signoz_metrics`.
-  - Pipelines: traces, logs, and metrics wired to the above exporters.
-  No changes are required for local dev; metrics should appear automatically once v4 tables exist.
+  - Pipelines: traces, logs, and metrics wired to the above exporters so infra and app metrics share the same dashboards.
+
+  Compose ensures the collector receives `POSTGRES_USER` and `POSTGRES_PASSWORD` from `.env`. In production replace these with a low-privilege monitoring role and rotate credentials via secret management. Redis exporters currently expose unauthenticated read-only metrics in dev; secure them behind auth or network policies before shipping to production.
+
+Telemetry service OTLP configuration (production resilience)
+
+- The [`TansuCloud.Telemetry`](TansuCloud.Telemetry ) service can optionally disable OTLP export in production to avoid circular dependencies (Telemetry ingests logs from other services; we don't want it trying to send its own logs to SigNoz if SigNoz is unavailable).
+- Configuration keys:
+  - `OpenTelemetry:Otlp:Enabled` (bool, default true in dev, can be set to false in production)
+  - `OpenTelemetry:Otlp:Endpoint` (string, default http://signoz-otel-collector:4317)
+- If `Enabled=false`, the Telemetry service will skip OTLP export entirely and continue operating normally, storing ingested logs in its local database without attempting to send telemetry to SigNoz.
+- This ensures graceful degradation: if SigNoz is down or unreachable, Telemetry continues to accept and store logs from other services without blocking or failing.
+- Environment variable override: `OpenTelemetry__Otlp__Enabled=false`
+- In production, consider disabling OTLP for Telemetry to keep it self-contained and avoid potential feedback loops.
 
 1. Hardening (recommended)
 
 - Enable HSTS, fine‑tune CORS allowlists, and use secret stores for certificate passwords.
+
+### 5.1 Database Schema Management and Infrastructure Validation (Task 43)
+
+TansuCloud now includes automated schema management and infrastructure validation to ensure all required databases are in a known, valid state before services accept HTTP traffic. This provides safe, reliable deployments and clear operational diagnostics.
+
+#### Overview
+
+The Database service validates and tracks schema state at startup and enriches health checks with infrastructure diagnostics. Key components:
+
+- **DatabaseSchemaHostedService** — startup validation of Identity, Audit, and tenant databases before accepting traffic
+- **SchemaVersionService** — tracks schema versions in `__SchemaVersion` table per database
+- **PgCatPoolHostedService** — reconciles PgCat connection pools with discovered tenant databases
+- **InfrastructureHealthCheck** — enriches `/db/health/ready` with schema validation status, tenant/pool counts, and ClickHouse connectivity
+
+#### Startup Validation Sequence
+
+When the Database service starts:
+
+1. **Identity Database**: Validates `tansu_identity` exists and contains expected OpenIddict tables. Records schema version if validation passes.
+2. **Audit Database**: Validates `tansu_audit` exists with `audit_events` table and indexes. Records schema version if validation passes.
+3. **Tenant Databases**: Discovers all `tansu_tenant_*` databases, validates each has required tables (`documents`, `embeddings`, `schema_migrations`), and records schema versions.
+4. **ClickHouse Connectivity**: Performs a read-only probe to ClickHouse (used by SigNoz). This is informational only and does not fail startup.
+5. **PgCat Pool Reconciliation**: (Background) Discovers tenant databases and ensures PgCat has corresponding connection pools configured.
+
+If any critical validation fails (Identity, Audit, or tenant schemas are invalid), the service logs errors and `/db/health/ready` reports `Unhealthy`. The service will not accept API requests until schemas are valid.
+
+#### Schema Version Tracking
+
+Each validated database gets a row in its own `__SchemaVersion` table with:
+
+- `Version` — semantic version string (e.g., "1.0.0")
+- `AppliedAtUtc` — timestamp of validation
+- `AppliedBy` — source service (e.g., "TansuCloud.Database")
+- `Description` — human-readable note
+
+This provides an audit trail of schema state and supports future migration workflows.
+
+#### Health Check Enrichment
+
+The `/db/health/ready` endpoint now includes infrastructure diagnostics:
+
+```json
+{
+  "status": "Healthy",
+  "totalDuration": "00:00:00.123",
+  "entries": {
+    "infrastructure": {
+      "status": "Healthy",
+      "description": "Schema validation: Healthy. Tenants: 3. PgCat pools: 3. ClickHouse: Connected.",
+      "data": {
+        "schemaValidationStatus": "Healthy",
+        "tenantCount": 3,
+        "pgcatPoolCount": 3,
+        "clickhouseConnected": true
+      }
+    }
+  }
+}
+```
+
+Use this to monitor:
+
+- **Schema validation status** — Healthy if all required databases have valid schemas
+- **Tenant count** — number of provisioned tenant databases
+- **PgCat pool count** — number of connection pools configured (should match tenant count)
+- **ClickHouse connectivity** — whether SigNoz backend is reachable (informational)
+
+#### Operational Procedures
+
+**Initial Setup (New Deployment)**
+
+1. Ensure PostgreSQL is running and accessible (see `POSTGRES_*` variables in `.env`).
+2. Run Identity service first to seed `tansu_identity` with OpenIddict tables.
+3. Run Database service—it will validate Identity and Audit schemas, create `tansu_audit` if missing, and record schema versions.
+4. Provision tenants via `/db/api/provisioning/tenants` (POST with `X-Provision-Key`).
+5. Verify health: `curl http://127.0.0.1:8080/db/health/ready | jq .entries.infrastructure`
+
+**Adding a New Tenant**
+
+1. POST to `/db/api/provisioning/tenants` with tenant ID and display name.
+2. Database service creates `tansu_tenant_<id>` with required schema.
+3. PgCatPoolHostedService (background) discovers the new database and adds a PgCat pool.
+4. Health check `tenantCount` and `pgcatPoolCount` increment automatically.
+
+**Schema Drift Detection**
+
+- If a tenant database is missing required tables, startup validation logs errors and health check reports `Unhealthy`.
+- Review logs: `docker logs <database-container> | grep "Schema validation failed"`
+- Fix: restore missing tables from a backup or re-provision the tenant (destructive—use with care).
+
+**PgCat Pool Reconciliation**
+
+- PgCatPoolHostedService runs every 60 seconds (configurable via `Database:PgCat:ReconcileIntervalSeconds`).
+- If a tenant database exists but has no PgCat pool, the service logs a warning and adds the pool dynamically (if PgCat is configured).
+- Health check `pgcatPoolCount` shows current pool count. If it's less than `tenantCount`, check logs for reconciliation errors.
+
+**ClickHouse Connectivity**
+
+- DatabaseSchemaHostedService probes ClickHouse at startup using `ClickHouse:Http` configuration.
+- If unreachable, logs a warning but does not fail startup (SigNoz is optional for Database API operation).
+- Health check `clickhouseConnected` is `false` if probe failed. This is informational; Database API remains operational.
+
+**Troubleshooting**
+
+- **Health check shows `Unhealthy` for `infrastructure`:**
+  - Check `description` and `data` fields in the health response for details.
+  - Common causes: Identity database missing OpenIddict tables, Audit database missing `audit_events`, tenant database missing required schema.
+  - Review Database service logs for "Schema validation failed" entries.
+
+- **`pgcatPoolCount` is less than `tenantCount`:**
+  - PgCat reconciliation may be disabled or failing. Check `Database:PgCat:Enabled` configuration.
+  - Review logs for "PgCat pool reconciliation" warnings.
+  - Manually verify PgCat config and restart if needed.
+
+- **`clickhouseConnected` is `false`:**
+  - Ensure ClickHouse/SigNoz is running and `ClickHouse:Http` points to the correct endpoint (e.g., `http://clickhouse:8123` in compose).
+  - This does not affect Database API functionality—only observability queries are impacted.
+
+**Configuration Reference**
+
+- `ConnectionStrings:DefaultConnection` — PostgreSQL connection string for system databases and tenant discovery
+- `Database:PgCat:Enabled` — enable/disable PgCat pool reconciliation (default `true` in dev/compose)
+- `Database:PgCat:ReconcileIntervalSeconds` — interval between pool reconciliation runs (default `60`)
+- `ClickHouse:Http` — ClickHouse HTTP endpoint for connectivity probe (e.g., `http://clickhouse:8123`)
+- `Audit:ConnectionString` — connection string for audit database (e.g., `Host=postgres;Database=tansu_audit;...`)
+
+See also: `docs/DatabaseSchemas.md` for authoritative schema definitions and migration history.
 
 ### 5.3 How to provide the certificate password
 
@@ -609,11 +754,62 @@ Notes
 - All audit Details are already redacted at write-time via the SDK; exports do not include raw PII.
 - In Development, non-admin users can still query their own tenant’s audit events via `/db/api/audit` when providing `X-Tansu-Tenant`.
 
+### 7.3 Identity security operations (Task 6)
+
+Task 6 introduced several security controls that operators can manage without redeploying Identity. Use the admin APIs or Dashboard pages below to keep accounts protected while maintaining an auditable trail.
+
+#### Multifactor authentication (MFA) policy switches
+
+- UI: `/dashboard/admin/security` → **Sign-in policy** card.
+- API: `PUT /identity/admin/api/security/policy` with body `{"requireMfa": true}` (additional fields will be preserved).
+- Configuration baseline: `IdentityPolicy:RequireMfa` defaults to `false` in development but is intended to be switched on for production tenants via the admin UX/API.
+- Behavior:
+  - When enabled, the token issuance pipeline (`TokenClaimsHandler`) blocks new access tokens for users lacking a confirmed second factor.
+  - Admins must enforce at least one MFA method (Authenticator app or SMS) per user before toggling `RequireMfa` to avoid issuance failures.
+- Auditing: every change is logged in the `Identity.Security` audit channel with the actor, previous value, new value, and optional reason string.
+
+#### JWKS rotation workflow
+
+- UI: `/dashboard/admin/security/keys` shows active/previous keys and next scheduled rotation.
+- API: `POST /identity/admin/api/security/keys/rotate` triggers an on-demand rotation; schedule is controlled by `IdentityPolicy:JwksRotationPeriod` (default 30 days).
+- Background job: `JwksRotationService` evaluates the schedule on startup and thereafter at the configured cadence, retiring keys after the grace period.
+- Operational guidance:
+  - Prefer on-demand rotation before deploying new signing certificates or when a key compromise is suspected.
+  - Retired keys remain available (with `IsCurrent = false`) until after the `RetireAfter` window, ensuring existing tokens continue to validate.
+- Auditing: manual rotations and automatic retirements both emit audit entries identifying the previous/current key IDs.
+
+#### External OIDC provider management per tenant
+
+- UI: `/dashboard/admin/external-providers` lists providers, including per-tenant overrides.
+- API surface: `GET/POST/PATCH/DELETE /identity/admin/api/external-providers`.
+- Supported fields: `tenantId`, `displayName`, `clientId`, `clientSecret`, `authority`, `scopes`, and `enabled` flag. Omit `tenantId` for global defaults.
+- Lifecycle:
+  1. Create the provider record (disabled by default) with client credentials and scopes.
+  2. Toggle **Enabled** once the upstream issuer is reachable; the registration service wires it into ASP.NET Identity sign-in automatically at runtime.
+  3. Use tenant overrides to point different tenants to distinct upstream IdPs (for example, corporate Azure AD per customer).
+- Security: secrets are stored encrypted in the configuration store; audit entries capture create/update/delete operations and reveal only masked client secrets.
+
+#### Admin impersonation controls
+
+- UI: `/dashboard/admin/impersonation` allows privileged operators to impersonate a tenant user for troubleshooting.
+- API: `POST /identity/admin/api/impersonation/start` with payload `{ "userId": "..." }`; end with `POST /identity/admin/api/impersonation/end`.
+- Safeguards:
+  - Only users with the `admin.full` scope and `Administrator` role may impersonate.
+  - Generated tokens are short-lived and stamped with `impersonated=true` plus the acting admin’s identity.
+- Auditing: both start and end actions produce entries in the `Identity.Security` channel including the impersonated user, actor, and correlation id. Downstream services can detect the `impersonated` claim to show banners or restrict sensitive actions.
+
+#### Monitoring and troubleshooting
+
+- Audit the above actions via `/dashboard/admin/audit` using filters `Category = Identity.Security` or `Action` values `PolicyChanged`, `JwksRotated`, `ExternalProviderUpdated`, and `ImpersonationStarted/Ended`.
+- Background services (`JwksRotationService`, `AuditBackgroundWriter`) log transient database connection warnings in development when PostgreSQL isn’t running; these do not indicate feature failure if the operation itself succeeds.
+- For production, ensure `Audit:ConnectionString` points to the shared audit database so that security events persist even during rotations or impersonation sessions.
+
 ## 8. Health & Monitoring
 
 - Health endpoints and readiness gates
 - OpenTelemetry signals (traces, metrics, logs)
 - Collector endpoint and backends
+- Infrastructure telemetry (PostgreSQL, PgCat, Garnet)
 
 ### 8.1 Caching (HybridCache) overview
 
@@ -655,8 +851,99 @@ Notes
 Troubleshooting tips
 
 - To temporarily disable caching in Development, set `Cache:Disable=1` on the affected service (e.g., Storage) and restart it.
-- Verify Redis availability: check `/health/ready` and service logs for the Redis ping health check. In Compose, ensure the `redis` service is up.
+- Verify Garnet availability: check `/health/ready` and service logs for the Garnet/Redis ping health check. In Compose, ensure the `redis` service (Garnet) is up.
 - If responses seem stale after writes, confirm that the tenant cache version increments (Storage) or that outbox events flow (Database).
+
+### 8.3 Infrastructure telemetry (PostgreSQL, PgCat, Garnet)
+
+Overview
+
+- All infrastructure services now export metrics to the OTLP collector via Prometheus exporters, providing unified observability across the entire stack in SigNoz.
+- This enables correlation between application traces and infrastructure state (e.g., slow DB queries, connection pool saturation, Garnet memory pressure).
+
+Services and exporters
+
+1. **PostgreSQL** (`postgres-exporter`)
+   - Image: `quay.io/prometheuscommunity/postgres-exporter:latest`
+   - Port: 9187
+   - Metrics: connection pool stats, query performance, table/index sizes, replication lag, transaction rates, cache hit ratios
+   - Configuration: `DATA_SOURCE_NAME` points to the main PostgreSQL instance with monitoring credentials
+
+2. **PgCat** (`pgcat-exporter`)
+   - Port: 9188
+   - Metrics: active connections per pool, queued clients, pool saturation, backend health, query routing decisions
+   - Essential for detecting connection exhaustion and routing bottlenecks
+
+3. **Garnet** (`redis-exporter`)
+   - Image: `oliver006/redis_exporter:latest` (compatible with Garnet's Redis protocol)
+   - Port: 9121
+   - Metrics: memory usage, eviction counts, command latency, keyspace stats, replication lag, hit/miss ratios
+   - Configuration: `REDIS_ADDR=redis:6379` (service name remains "redis" for backwards compatibility)
+
+OTLP collector integration
+
+- The collector scrapes all three exporters every 30 seconds via the Prometheus receiver
+- Metrics flow: Prometheus receiver → Batch processor → OTLP exporter → SigNoz → ClickHouse
+- Scrape jobs configured in `dev/signoz-otel-collector-config.yaml` under `receivers.prometheus.config.scrape_configs`
+
+Verification (development)
+
+```powershell
+# Start the stack
+docker compose up -d
+
+# Wait for services to be healthy (~60 seconds)
+
+# Verify exporters are running
+docker ps | grep exporter
+
+# Check metrics endpoints
+curl http://127.0.0.1:9187/metrics  # PostgreSQL
+curl http://127.0.0.1:9188/metrics  # PgCat
+curl http://127.0.0.1:9121/metrics  # Garnet (via redis-exporter)
+
+# Check collector logs
+docker logs signoz-otel-collector | grep -E "postgres|pgcat|redis"
+
+# Open SigNoz UI
+Start-Process http://127.0.0.1:3301/
+```
+
+Production considerations
+
+- **Version pinning**: Use specific exporter versions (e.g., `postgres-exporter:v0.15.0`) instead of `:latest` to ensure stability
+- **Scrape intervals**: Adjust to 60s or 120s for larger deployments to reduce load
+- **Authentication**: Exporters should not be exposed outside the Docker network; keep them internal-only
+- **Resource limits**: Set memory/CPU limits on exporter containers to prevent resource exhaustion
+- **Monitoring credentials**: Use read-only database users for PostgreSQL exporter with minimal privileges
+
+Recommended SigNoz alerts
+
+- **PostgreSQL**:
+  - Connection pool > 80% capacity
+  - Replication lag > 10 seconds
+  - Cache hit ratio < 90%
+  - Long-running queries > 30 seconds
+
+- **PgCat**:
+  - Queued clients > 10
+  - Pool saturation > 90%
+  - Backend health check failures > 3 in 5 minutes
+
+- **Garnet** (Redis-compatible):
+  - Memory usage > 80% of max
+  - Eviction rate > 100/minute
+  - Command latency p95 > 10ms
+  - Connection failures > 5 in 5 minutes
+
+Troubleshooting
+
+- **Exporter not starting**: Check `docker logs <exporter-container>` for connection errors or credential issues
+- **Metrics not appearing in SigNoz**: Verify collector scrape configuration and check collector logs for scrape errors
+- **Stale metrics**: Ensure exporter health checks are passing; restart the exporter if needed
+- **High cardinality**: Some exporters can produce high-cardinality metrics (e.g., per-query stats); review SigNoz retention settings
+
+For detailed implementation notes and acceptance criteria, see Task 08 in `Tasks-M1.md`.
 
 ## 9. Operations
 
@@ -752,12 +1039,15 @@ Durable sink posture
 What it is
 
 - Dedicated minimal API (`TansuCloud.Telemetry`) that receives the Dashboard reporter batches at `POST /api/logs/report`, persists envelopes to SQLite, and now ships a Razor-based admin console at `/admin` for triage, acknowledgement, and archiving.
+- Envelope identifiers are issued as UUID v7 values to preserve chronological ordering and compatibility with downstream analytics. Expect the admin console and export payloads to surface these sortable identifiers.
 - Runs outside the main cluster so product telemetry can continue operating even when tenant infrastructure is offline or being upgraded.
 
 Development note
 
 - In local docker-compose runs the telemetry admin console is exposed directly on <http://127.0.0.1:5279>. Add `Authorization: Bearer $env:TELEMETRY__ADMIN__APIKEY` when testing with a browser plugin or CLI. The gateway deliberately does **not** proxy `/telemetry/*`; keep using the direct port (or your own hardened reverse proxy in production) so auth headers stay under your control.
 - Running the project directly via `dotnet run` or Visual Studio binds the service to <http://127.0.0.1:5279> (and `http://localhost:5279`) by default. Set `ASPNETCORE_URLS` or pass `--urls` if you need a different port for ad-hoc diagnostics; Docker/compose scenarios continue to listen on `http://0.0.0.0:8080` inside the container.
+- Ensure `.env` (or your secret store) includes `TELEMETRY__ADMIN__APIKEY` before starting compose or calling the helper script; both the admin console login flow and CLI helpers require that key.
+- If `/` or `/admin` responds with the health payload instead of the login screen, restart the service to ensure the latest build is running and double-check that no prior `dotnet run` instance is still bound to port 5279. The canonical routing order keeps `app.MapRazorPages()` before `MapHealthChecks()`. If you recently merged code, rebuild the solution so the updated middleware order is picked up before retrying the UI.
 
 Deployment topology
 
@@ -786,6 +1076,7 @@ Deployment topology
 #### Admin console and authentication flow
 
 - The admin console lives at `/admin` (aliases `/admin/envelopes` and detail pages under `/admin/envelopes/{id}`) and shares the same bearer authentication scheme as the JSON admin API. Every request must include `Authorization: Bearer <Telemetry__Admin__ApiKey>`.
+- Browser workflow: navigating to `/admin` without an Authorization header now redirects to `/admin/login` with a guided prompt. Paste the current admin API key into the form to mint a short-lived, HttpOnly session cookie. When the key rotates or the cookie is cleared, the login page surfaces a clear status banner (for example, “session expired — enter the current key”).
 - Because standard browsers cannot add custom Authorization headers, terminate traffic behind a reverse proxy that injects the header for trusted operators. Example snippets:
   - **Nginx**
 
@@ -805,6 +1096,13 @@ Deployment topology
 
   Apply the middleware/headers only on the admin path and scope access via corporate VPN or allowlisted source IPs. Never embed the raw key in client-side code.
 - For command-line validation, run `curl -H "Authorization: Bearer $TELEMETRY__ADMIN__APIKEY" https://telemetry.tansu.cloud/api/admin/envelopes?page=1` to ensure the proxy is forwarding the header correctly before exposing the UI.
+- PowerShell operators can use the helper script `dev/tools/call-telemetry-admin.ps1` to exercise the admin API without crafting headers manually. The script loads `.env` via `Import-TansuDotEnv`, reads `TELEMETRY__ADMIN__APIKEY`, and targets `TELEMETRY__DIRECT__BASEURL` (defaults to `http://127.0.0.1:5279` if unset). Example:
+
+  ```pwsh
+  pwsh ./dev/tools/call-telemetry-admin.ps1 -Method Get -Path '/api/admin/envelopes?page=1'
+  ```
+
+  Provide `-Body` for POST/PUT calls or `-Raw` to print the raw response. If the API key environment variable is missing, the script exits with an error so you can fix `.env`/secret store entries before retrying.
 - Supported workflows today:
   - **Filters and metrics** — the list view provides quick filters (service, environment, host, severity floor, time range, acknowledgement/archive flags, free-text search) plus on-page counters (active/archived/acknowledged envelopes and total item count).
   - **Detail drilling** — click an envelope to inspect log items with structured properties, correlation IDs, and exception payloads ordered newest-first.
@@ -850,6 +1148,314 @@ Integration with Dashboard
 - Update `LogReporting__MainServerUrl` (in `.env`, environment variables, or appsettings) to `https://telemetry.tansu.cloud/api/logs/report`.
 - Align `LogReporting__ApiKey` with the ingestion key above. Restart the Dashboard only if configuration providers require it; `.env` + compose reload picks it up automatically.
 - Maintain parity between dev/staging/production: dev compose already points to the local telemetry container and uses the values in `.env` (`TELEMETRY__INGESTION__APIKEY`, `TELEMETRY__ADMIN__APIKEY`).
+
+### 9.3 Database container upgrades and PostgreSQL extension management
+
+#### The challenge
+
+TansuCloud uses a custom PostgreSQL image (`tansu/citus-pgvector`) that includes:
+
+- **Citus** — distributed PostgreSQL extension for multi-tenant sharding
+- **pgvector** — vector similarity search for embeddings (ML workloads)
+
+When you rebuild or upgrade this base image (e.g., moving from Citus 13.1 to 13.2, or pgvector 0.7 to 0.8), the **shared libraries** inside the container update immediately. However, the **extension metadata** in existing tenant databases remains at the old version until explicitly upgraded via SQL.
+
+This version mismatch triggers PostgreSQL error `XX000`:
+
+```
+loaded Citus library version differs from installed extension version
+Hint: Run ALTER EXTENSION citus UPDATE and try again.
+```
+
+**Impact**: All database writes fail with `500 InternalServerError` until extensions are updated. This can cause production downtime if not handled proactively.
+
+#### Production upgrade strategy
+
+##### 1. Pin specific versions (mandatory for production)
+
+**Development** uses `:latest` tags for convenience, but **production must pin explicit versions**:
+
+```dockerfile
+# dev/Dockerfile.citus-pgvector (production variant)
+FROM citusdata/citus:12.1-pg16  # Pin major.minor.patch
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+      postgresql-16-pgvector=0.8.0-1 && \  # Pin exact version
+    rm -rf /var/lib/apt/lists/*
+```
+
+Tag images with the Citus+pgvector version:
+
+```bash
+docker build -f dev/Dockerfile.citus-pgvector \
+  -t yourorg/citus-pgvector:citus12.1-pg16-pgvector0.8.0 .
+docker push yourorg/citus-pgvector:citus12.1-pg16-pgvector0.8.0
+```
+
+Update `docker-compose.prod.yml` with the pinned tag:
+
+```yaml
+services:
+  postgres:
+    image: yourorg/citus-pgvector:citus12.1-pg16-pgvector0.8.0
+```
+
+**Rationale**: Pinning prevents surprise upgrades. You upgrade deliberately after testing, not automatically when pulling `:latest`.
+
+##### 2. Pre-flight extension checks (automatic safety net)
+
+> ✅ **Implemented**: The TansuCloud Database service includes automatic extension pre-flight checks on startup via `ExtensionVersionService` and `ExtensionVersionHostedService`. This feature is enabled by default in all environments.
+
+**What it does**:
+
+- Automatically discovers all tenant databases (`tansu_tenant_*`)
+- Runs `ALTER EXTENSION citus UPDATE` and `ALTER EXTENSION vector UPDATE` on each database
+- Logs version transitions (e.g., `vector 0.8.0 → 0.8.1`)
+- Fails startup in production if updates fail (prevents partial upgrades)
+- Can be disabled via `SKIP_EXTENSION_UPDATE=true` environment variable if needed
+
+**Startup logs** (example):
+
+```
+info: ExtensionVersionHostedService[0]
+      Running pre-flight extension version checks...
+info: ExtensionVersionService[0]
+      Found 7 tenant database(s) to check
+info: ExtensionVersionService[0]
+      [tansu_tenant_acme_dev] Updated extension vector from 0.8.0 to 0.8.1
+info: ExtensionVersionService[0]
+      Pre-flight extension checks completed. Processed 7 database(s)
+```
+
+**Health check integration**:
+
+- Extension versions are reported at `/db/health/ready` under the `extension_versions` check
+- Example response:
+
+  ```json
+  {
+    "extension_versions": {
+      "status": "Healthy",
+      "description": "All 7 tenant database(s) have consistent extension versions",
+      "data": {
+        "databases": 7,
+        "extensions": ["citus", "vector"],
+        "citus_version": "13.2-1",
+        "vector_version": "0.8.1"
+      }
+    }
+  }
+  ```
+
+**Audit logging**:
+
+- All extension updates are logged to the audit table with action `database.extension.update`
+- Details include: database name, extension name, old version, new version, timestamp
+- Queryable for compliance and forensics
+
+**Implementation details**: See `TansuCloud.Database/Services/ExtensionVersionService.cs` and `TansuCloud.Database/Hosting/ExtensionVersionHostedService.cs`.
+
+**When to disable**: Use `SKIP_EXTENSION_UPDATE=true` only for troubleshooting. In production, keep this enabled to prevent XX000 errors after image upgrades.
+
+##### 3. Blue-green deployment pattern (zero-downtime upgrades)
+
+For large production deployments, use a blue-green strategy:
+
+**Before upgrade:**
+
+1. **Current (blue) stack**: Running `citus12.1-pg16-pgvector0.7.0`
+2. **New (green) stack**: Prepare `citus12.1-pg16-pgvector0.8.0` image
+
+**Upgrade steps:**
+
+```bash
+# 1. Tag current production stack as "blue"
+docker tag yourorg/citus-pgvector:production yourorg/citus-pgvector:blue
+
+# 2. Deploy green stack in parallel (different ports/network)
+docker-compose -f docker-compose.green.yml up -d
+
+# 3. Run extension updates on green databases
+docker exec tansu-postgres-green psql -U postgres <<EOF
+DO \$\$
+DECLARE
+    db text;
+BEGIN
+    FOR db IN SELECT datname FROM pg_database 
+              WHERE datname LIKE 'tansu_tenant_%'
+    LOOP
+        EXECUTE 'ALTER EXTENSION citus UPDATE' 
+            USING DATABASE = db;
+        RAISE NOTICE 'Updated Citus in %', db;
+    END LOOP;
+END \$\$;
+EOF
+
+# 4. Smoke test green stack
+curl -f http://green-gateway:8080/health/ready
+
+# 5. Switch traffic (DNS, load balancer, or gateway config)
+# Point public traffic to green stack
+
+# 6. Monitor for 24-48 hours
+
+# 7. Decommission blue stack
+docker-compose -f docker-compose.blue.yml down
+```
+
+**Rollback**: If issues arise, revert DNS/LB to blue stack within seconds.
+
+##### 4. Migration-based approach (integrated with EF Core)
+
+For teams that prefer explicit migrations over runtime checks:
+
+**Create a migration** that updates extensions:
+
+```csharp
+// TansuCloud.Database/EF/Migrations/20251007_UpdateCitusExtension.cs
+public partial class UpdateCitusExtension : Migration
+{
+    protected override void Up(MigrationBuilder migrationBuilder)
+    {
+        migrationBuilder.Sql("ALTER EXTENSION citus UPDATE;");
+        migrationBuilder.Sql("ALTER EXTENSION vector UPDATE;");
+    }
+
+    protected override void Down(MigrationBuilder migrationBuilder)
+    {
+        // Extensions don't support downgrade; log warning
+        migrationBuilder.Sql("SELECT 1; -- Cannot downgrade extensions");
+    }
+}
+```
+
+**Pros**: Version controlled, auditable, runs automatically during deployment.
+
+**Cons**: Requires EF migration for every extension upgrade; may not catch drift if databases are provisioned outside migrations.
+
+##### 5. Health checks for extension versions
+
+> ✅ **Implemented**: The Database service includes a dedicated health check (`ExtensionVersionHealthCheck`) that reports current extension versions at the `/db/health/ready` endpoint.
+
+**What it provides**:
+
+- Reports extension versions across all tenant databases
+- Detects version mismatches (unhealthy state)
+- Exposes metrics for monitoring systems
+
+**Example response** at `/db/health/ready`:
+
+```json
+{
+  "extension_versions": {
+    "status": "Healthy",
+    "description": "All 7 tenant database(s) have consistent extension versions",
+    "data": {
+      "databases": 7,
+      "extensions": ["citus", "vector"],
+      "citus_version": "13.2-1",
+      "vector_version": "0.8.1"
+    }
+  }
+}
+```
+
+**Monitoring integration**:
+
+- Prometheus can scrape this endpoint for alerting
+- Status changes to `Degraded` or `Unhealthy` if version mismatches are detected
+- Use tags filter: `GET /db/health/ready?tags=extensions`
+
+**Implementation**: See `TansuCloud.Database/Services/ExtensionVersionHealthCheck.cs`.
+
+#### Development workflow (current state)
+
+> ℹ️ **Note**: With automatic pre-flight checks enabled, manual extension updates are no longer required after rebuilding the citus-pgvector image. The Database service handles this automatically on startup.
+
+- Dev uses `citusdata/citus:latest` and rebuilds frequently
+- After rebuilding `tansu/citus-pgvector:local`, the Database service automatically updates extensions on next startup
+- **Optional manual validation** (if pre-flight checks are disabled):
+
+  ```powershell
+  # List all tenant databases
+  docker exec tansu-postgres psql -U postgres -c "\l" | Select-String "tansu_tenant"
+  
+  # Check extension versions
+  docker exec tansu-postgres psql -U postgres -d tansu_tenant_acme_dev -c "
+      SELECT extname, extversion FROM pg_extension WHERE extname IN ('citus', 'vector');
+  "
+  
+  # View pre-flight check logs
+  docker logs tansu-db --tail 50 | Select-String "ExtensionVersion|pre-flight"
+  ```
+
+#### Recommended production policy
+
+| Aspect | Development | Production |
+| --- | --- | --- |
+| **Image tags** | `:latest` (fast iteration) | Pinned versions (e.g., `citus12.1-pg16-pgvector0.8.0`) |
+| **Upgrade trigger** | Manual rebuild when needed | Scheduled maintenance window (quarterly or as needed) |
+| **Extension updates** | Manual `ALTER EXTENSION` after rebuild | Pre-flight checks in Database service OR blue-green deployment |
+| **Validation** | E2E tests after update | Health checks + canary deployment + full E2E suite |
+| **Rollback** | Rebuild previous image | Keep previous image tagged; redeploy if issues arise |
+| **Testing** | Local compose stack | Staging environment mirrors production; test full upgrade path |
+| **Documentation** | Update dev notes in repo | Maintain runbook with rollback steps, contact info, RTO/RPO |
+
+#### Upgrade checklist (production)
+
+Before starting:
+
+- [ ] **Pin versions** in Dockerfile (no `:latest` tags)
+- [ ] **Build and scan** new image: `docker build`, `trivy image`, `cosign sign`
+- [ ] **Test in staging**: Deploy to staging, run full E2E suite, monitor for 24 hours
+- [ ] **Document rollback**: Tag current production image as `rollback-YYYYMMDD`
+- [ ] **Schedule maintenance window**: Off-peak hours, communicate to tenants
+
+During upgrade:
+
+- [ ] **Deploy new image** (blue-green or rolling update)
+- [ ] **Run pre-flight checks**: Database service validates extension versions on startup
+- [ ] **Verify health endpoints**: `/health/ready` returns 200, extension versions match expected
+- [ ] **Smoke test**: Create test tenant, seed documents, run vector search queries
+- [ ] **Monitor logs**: Watch for `XX000` errors, connection pool issues, query latency spikes
+
+After upgrade:
+
+- [ ] **Run E2E suite**: Validate all integration points work
+- [ ] **Monitor metrics**: Database query latency, connection pool utilization, error rates
+- [ ] **Soak test**: Leave running for 24-48 hours before decommissioning old stack
+- [ ] **Document**: Update runbook with actual duration, issues encountered, lessons learned
+
+Rollback triggers:
+
+- Any `XX000` extension version errors in production logs
+- Query latency P95 > 2x baseline for > 15 minutes
+- Error rate > 1% for > 5 minutes
+- Failed E2E tests for critical workflows (auth, storage, vector search)
+
+**Rollback procedure**:
+
+```bash
+# 1. Revert to previous image
+docker tag yourorg/citus-pgvector:rollback-20251001 yourorg/citus-pgvector:production
+docker-compose -f docker-compose.prod.yml up -d postgres
+
+# 2. Extensions auto-downgrade is not supported; may need to restore from backup
+# (This is why thorough staging tests are critical!)
+
+# 3. Restart dependent services
+docker-compose restart pgcat db storage
+
+# 4. Verify health
+curl -f https://apps.example.com/health/ready
+```
+
+#### Future improvements
+
+- **Automated extension detection**: Database service could query `pg_available_extensions` and compare installed vs available versions, logging warnings when drift is detected.
+- **Tenant database inventory**: Maintain a registry of tenant databases in Redis/ClickHouse so pre-flight checks don't need to query `pg_database` on every startup.
+- **CI/CD pipeline**: Automate image builds on Citus/pgvector releases, run matrix tests (all supported versions), publish to registry with SBOMs and signatures.
+- **Observability**: Export extension version metrics to SigNoz so dashboards can alert on version drift across the fleet.
 
 ## 10. Security Hardening
 
@@ -1045,13 +1651,13 @@ This platform ships with lightweight health checks and end-to-end (E2E) tests th
     - Option A (recommended): run `pwsh -NoProfile -File tests/TansuCloud.E2E.Tests/playwright.ps1` once; the script is idempotent and skips if already installed.
     - Option B: set `PLAYWRIGHT_SKIP_INSTALL=1` to skip installs in environments where browsers are pre-baked (e.g., CI agents).
 
-### 13.2.1 Redis-dependent outbox test gating
+### 13.2.1 Garnet/Redis-dependent outbox test gating
 
-Some outbox E2E validation requires a real Redis instance (publishing and subscription). These tests are decorated with a custom attribute `RedisFactAttribute` and will be reported as Skipped unless the environment variable `REDIS_URL` is set.
+Some outbox E2E validation requires a real Garnet or Redis instance (publishing and subscription). These tests are decorated with a custom attribute `RedisFactAttribute` and will be reported as Skipped unless the environment variable `REDIS_URL` is set.
 
-To enable the Redis E2E outbox test locally:
+To enable the Garnet/Redis E2E outbox test locally:
 
-1. Start (or ensure) a Redis container/service is running and reachable.
+1. Start (or ensure) a Garnet/Redis container/service is running and reachable.
 2. Export `REDIS_URL` before running tests:
 
 ```powershell
@@ -1366,22 +1972,24 @@ PGCAT_ADMIN_PASSWORD=your-pgcat-password
 GATEWAY_CERT_PASSWORD=pfx-password
 ```
 
-## Redis and Outbox (Database service)
+## Garnet and Outbox (Database service)
 
 Purpose
 
-- The Outbox pattern ensures reliable event emission: write domain changes and an "outbox event" in the same database transaction. A background worker publishes the event to Redis later.
+- The Outbox pattern ensures reliable event emission: write domain changes and an "outbox event" in the same database transaction. A background worker publishes the event to Garnet later.
+- Garnet is a Redis-compatible cache server from Microsoft with better performance and lower memory footprint.
 
-Local/dev Redis
+Local/dev Garnet
 
-- Docker Compose includes `redis:latest` with a named volume `tansu-redisdata` and default port 6379.
-- The Database service depends on Redis when Outbox is enabled.
+- Docker Compose includes `ghcr.io/microsoft/garnet:latest` with a named volume `tansu-redisdata` and default port 6379.
+- The Database service depends on Garnet when Outbox is enabled.
+- Garnet is fully compatible with existing Redis clients (StackExchange.Redis) without code changes.
 
 Outbox configuration (Database service)
 
-- Outbox is disabled unless a Redis connection is provided.
+- Outbox is disabled unless a Garnet/Redis connection is provided.
 - Keys (env or appsettings):
-  - `Outbox:RedisConnection` (e.g., `redis:6379` in compose)
+  - `Outbox:RedisConnection` (e.g., `redis:6379` in compose - the service name remains "redis" for backwards compatibility)
   - `Outbox:Channel` (default `tansu.outbox`)
   - `Outbox:PollSeconds` (default `2`)
   - `Outbox:BatchSize` (default `100`)
@@ -1395,7 +2003,7 @@ Idempotency for write requests
 
 Operations
 
-- Health: Redis container exposes `PING` in health checks; verify container is healthy before DB starts processing Outbox.
+- Health: Garnet container exposes `PING`-compatible health checks; verify container is healthy before DB starts processing Outbox.
 - Observability: Outbox worker logs dispatched, retried, and dead-lettered events. Metrics are exported via OpenTelemetry when configured.
 - Failure handling: After max attempts, events transition to a dead-letter state; operators should inspect and decide to replay or ignore.
-  - Redis channel: events are published to the configured channel (default `tansu.outbox`) as JSON envelopes including `{ tenant, collectionId?, documentId?, op }`. Consumers should treat the payload as a contract subject to additive changes.
+  - Channel: events are published to the configured channel (default `tansu.outbox`) as JSON envelopes including `{ tenant, collectionId?, documentId?, op }`. Consumers should treat the payload as a contract subject to additive changes.

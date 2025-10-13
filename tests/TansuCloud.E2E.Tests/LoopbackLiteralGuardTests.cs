@@ -34,6 +34,8 @@ public sealed class LoopbackLiteralGuardTests
             Normalize("dev/tools/common.ps1"),
             Normalize("tests/TansuCloud.E2E.Tests/TestUrls.cs"),
             Normalize("tests/TansuCloud.E2E.Tests/LoopbackLiteralGuardTests.cs"),
+            Normalize("tests/TansuCloud.Gateway.UnitTests/TenantResolverTests.cs"),
+            Normalize("tests/TansuCloud.Dashboard.UnitTests/DashboardWebAppFactory.cs"),
             Normalize("TansuCloud.Identity/Properties/launchSettings.json"),
             Normalize("TansuCloud.Gateway/Properties/launchSettings.json"),
             Normalize("TansuCloud.Database/Properties/launchSettings.json"),
