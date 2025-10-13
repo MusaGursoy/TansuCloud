@@ -654,6 +654,7 @@ public async Task Platform_Admin_Login_Still_Works_Without_Tenant_Header()
      - Test gateway routing: `curl http://127.0.0.1:8080/functions/health/live` should route correctly
    - **Add Docker Compose configuration**:
      - Add `functions` service to `docker-compose.yml` and `docker-compose.prod.yml`:
+
        ```yaml
        functions:
          build:
@@ -682,6 +683,7 @@ public async Task Platform_Admin_Login_Still_Works_Without_Tenant_Header()
            retries: 3
            start_period: 10s
        ```
+
      - Ensure consistency between dev and prod compose files per repository guidelines
 
 2. **Implement function code storage layer** (2 days)
