@@ -454,7 +454,7 @@ services:
       Outbox__PollSeconds: 2
       Outbox__BatchSize: 100
       Outbox__MaxAttempts: 8
-      Outbox__DispatchTenant: acme-dev
+      # Outbox__DispatchTenant: acme-dev  # Removed: tenant doesn't exist, outbox will dispatch per-request
       Cache__Redis: redis:6379
       ConnectionStrings__DefaultConnection: "Host=postgres;Port=5432;Database=postgres;Username=${POSTGRES_USER};Password=${POSTGRES_PASSWORD}"
       Provisioning__AdminConnectionString: "Host=postgres;Port=5432;Database=postgres;Username=${POSTGRES_USER};Password=${POSTGRES_PASSWORD}"
@@ -566,6 +566,8 @@ services:
         limits:
           cpus: "1.0"
           memory: 2G
+    volumes:
+      - tansu-gateway-keys:/keys
     environment:
       ASPNETCORE_ENVIRONMENT: Development
       PublicBaseUrl: ${PUBLIC_BASE_URL}
@@ -579,8 +581,10 @@ services:
       Services__SigNozBaseUrl: http://signoz:8080
       OpenTelemetry__Otlp__Endpoint: http://signoz-otel-collector:4317
       Cache__Redis: redis:6379
+      Gateway__TrustForwardedHeaders: "true"
       Dev__ProvisionBypassKey: letmein
       Audit__ConnectionString: "Host=pgcat;Port=6432;Database=postgres;Username=${POSTGRES_USER};Password=${POSTGRES_PASSWORD}"
+      ConnectionStrings__GatewayDb: "Host=pgcat;Port=6432;Database=tansu_identity;Username=${POSTGRES_USER};Password=${POSTGRES_PASSWORD}"
     ports:
       - "8080:8080"
     healthcheck:
@@ -615,6 +619,8 @@ volumes:
   tansu-garnetdata:
     driver: local
   tansu-storagedata:
+    driver: local
+  tansu-gateway-keys:
     driver: local
   tansu-dashboard-keys:
     driver: local

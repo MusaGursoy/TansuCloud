@@ -1,0 +1,275 @@
+@page "/admin/observability-config"
+@using System.Net.Http.Json
+@using TansuCloud.Dashboard.Models
+@attribute [Authorize(Policy = "AdminOnly")]
+@layout AdminLayout
+@inject IHttpClientFactory HttpClientFactory
+@inject ILogger<ObservabilityConfig> Logger
+
+<PageTitle>Observability Governance | TansuCloud Admin</PageTitle>
+
+<div class="container-fluid py-4">
+    <div class="row mb-4">
+        <div class="col">
+            <h2 class="mb-0">Observability Governance</h2>
+            <p class="text-muted">Configure retention, sampling, and alert SLO templates for SigNoz observability.</p>
+        </div>
+    </div>
+
+    @if (!string.IsNullOrWhiteSpace(_errorMessage))
+    {
+        <div class="alert alert-danger alert-dismissible fade show" role="alert">
+            <strong>Error:</strong> @_errorMessage
+            <button type="button" class="btn-close" @onclick="() => _errorMessage = null"></button>
+        </div>
+    }
+
+    @if (_loading)
+    {
+        <div class="d-flex justify-content-center py-5">
+            <div class="spinner-border text-primary" role="status">
+                <span class="visually-hidden">Loading...</span>
+            </div>
+        </div>
+    }
+    else if (_config != null)
+    {
+        <div class="row">
+            <!-- Retention Configuration -->
+            <div class="col-lg-4 mb-4">
+                <div class="card">
+                    <div class="card-header bg-primary text-white">
+                        <h5 class="mb-0">Retention Periods</h5>
+                    </div>
+                    <div class="card-body">
+                        <div class="mb-3">
+                            <label for="retentionTraces" class="form-label">Traces (days)</label>
+                            <input type="number" class="form-control" id="retentionTraces" 
+                                   value="@_config.RetentionDays.Traces" min="1" max="365" disabled />
+                            <small class="form-text text-muted">How long to keep trace data in ClickHouse</small>
+                        </div>
+
+                        <div class="mb-3">
+                            <label for="retentionLogs" class="form-label">Logs (days)</label>
+                            <input type="number" class="form-control" id="retentionLogs" 
+                                   value="@_config.RetentionDays.Logs" min="1" max="365" disabled />
+                            <small class="form-text text-muted">How long to keep log data in ClickHouse</small>
+                        </div>
+
+                        <div class="mb-3">
+                            <label for="retentionMetrics" class="form-label">Metrics (days)</label>
+                            <input type="number" class="form-control" id="retentionMetrics" 
+                                   value="@_config.RetentionDays.Metrics" min="1" max="365" disabled />
+                            <small class="form-text text-muted">How long to keep metric data in ClickHouse</small>
+                        </div>
+
+                        <div class="alert alert-info small mb-0">
+                            <strong>Note:</strong> Retention affects disk usage. Development defaults are 7 days for traces/logs, 14 days for metrics.
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Sampling Configuration -->
+            <div class="col-lg-4 mb-4">
+                <div class="card">
+                    <div class="card-header bg-warning">
+                        <h5 class="mb-0">Sampling</h5>
+                    </div>
+                    <div class="card-body">
+                        <div class="mb-3">
+                            <label for="samplingRatio" class="form-label">Trace Sampling Ratio</label>
+                            <input type="number" class="form-control" id="samplingRatio" 
+                                   value="@_config.Sampling.TraceRatio" min="0" max="1" step="0.1" disabled />
+                            <small class="form-text text-muted">Head-based sampling rate (0.0 = none, 1.0 = all traces)</small>
+                        </div>
+
+                        <div class="alert alert-info small mb-3">
+                            <strong>Current:</strong> @(GetSamplingDescription(_config.Sampling.TraceRatio))
+                        </div>
+
+                        <div class="alert alert-warning small mb-0">
+                            <strong>Production tip:</strong> Set to 0.1 (10%) or lower to reduce costs while maintaining observability for errors.
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Alert SLOs Summary -->
+            <div class="col-lg-4 mb-4">
+                <div class="card">
+                    <div class="card-header bg-info text-white">
+                        <h5 class="mb-0">Alert SLO Templates</h5>
+                    </div>
+                    <div class="card-body">
+                        @if (_config.AlertSLOs.Any())
+                        {
+                            <p class="mb-3">
+                                <strong>@_config.AlertSLOs.Count</strong> alert SLO templates configured
+                            </p>
+
+                            <div class="list-group">
+                                @foreach (var alert in _config.AlertSLOs)
+                                {
+                                    <div class="list-group-item">
+                                        <div class="d-flex w-100 justify-content-between align-items-start">
+                                            <h6 class="mb-1">@alert.Service</h6>
+                                            <span class="badge bg-secondary">@alert.Kind</span>
+                                        </div>
+                                        <p class="mb-1 small">@alert.Description</p>
+                                        <small class="text-muted">
+                                            Window: @alert.WindowMinutes min | Threshold: @alert.Threshold @alert.Comparison
+                                        </small>
+                                    </div>
+                                }
+                            </div>
+                        }
+                        else
+                        {
+                            <p class="text-muted">No alert SLO templates configured.</p>
+                        }
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Alert SLOs Detailed Table -->
+        @if (_config.AlertSLOs.Any())
+        {
+            <div class="row">
+                <div class="col-12 mb-4">
+                    <div class="card">
+                        <div class="card-header bg-secondary text-white">
+                            <h5 class="mb-0">Alert SLO Details</h5>
+                        </div>
+                        <div class="card-body">
+                            <div class="table-responsive">
+                                <table class="table table-sm table-hover">
+                                    <thead>
+                                        <tr>
+                                            <th>ID</th>
+                                            <th>Service</th>
+                                            <th>Kind</th>
+                                            <th>Description</th>
+                                            <th>Window</th>
+                                            <th>Threshold</th>
+                                            <th>Comparison</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        @foreach (var alert in _config.AlertSLOs)
+                                        {
+                                            <tr>
+                                                <td><code>@alert.Id</code></td>
+                                                <td>@alert.Service</td>
+                                                <td><span class="badge bg-info">@alert.Kind</span></td>
+                                                <td>@alert.Description</td>
+                                                <td>@alert.WindowMinutes min</td>
+                                                <td>@alert.Threshold</td>
+                                                <td>@alert.Comparison</td>
+                                            </tr>
+                                        }
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        }
+
+        <!-- Instructions -->
+        <div class="row">
+            <div class="col">
+                <div class="alert alert-info">
+                    <h6><i class="bi bi-info-circle"></i> How to Update Configuration</h6>
+                    <p class="mb-2">
+                        Observability governance settings are managed via the <code>SigNoz/governance.defaults.json</code> file.
+                        To apply changes:
+                    </p>
+                    <ol class="mb-2">
+                        <li>Edit <code>SigNoz/governance.defaults.json</code> in your repository</li>
+                        <li>Run the VS Code task: <strong>Terminal → Run Task → "SigNoz: governance (apply)"</strong></li>
+                        <li>Or manually run: <code>pwsh dev/tools/signoz-apply-governance.ps1 -Apply</code></li>
+                        <li>Refresh this page to see updated values</li>
+                    </ol>
+                    <p class="mb-0">
+                        <strong>Note:</strong> Changes affect ClickHouse TTL policies and SigNoz sampling configuration.
+                        See <code>Guide-For-Admins-and-Tenants.md</code> section 6.5 for detailed documentation.
+                    </p>
+                </div>
+
+                <button class="btn btn-outline-primary" @onclick="RefreshConfig" disabled="@_loading">
+                    <i class="bi bi-arrow-clockwise"></i> Refresh Configuration
+                </button>
+            </div>
+        </div>
+    }
+</div>
+
+@code {
+    private bool _loading = true;
+    private string? _errorMessage;
+    private ObservabilityGovernanceConfig? _config;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadConfig();
+    } // End of Method OnInitializedAsync
+
+    private async Task LoadConfig()
+    {
+        _loading = true;
+        _errorMessage = null;
+
+        try
+        {
+            var client = HttpClientFactory.CreateClient("Gateway");
+            var response = await client.GetAsync("/admin/api/observability/governance");
+
+            if (response.IsSuccessStatusCode)
+            {
+                _config = await response.Content.ReadFromJsonAsync<ObservabilityGovernanceConfig>();
+            }
+            else if (response.StatusCode == System.Net.HttpStatusCode.NotFound)
+            {
+                // Graceful handling: API endpoint not implemented yet
+                _errorMessage = "Observability governance API endpoint is not yet implemented. This feature is coming soon.";
+                Logger.LogInformation("Observability governance API endpoint not found (expected for placeholder page)");
+            }
+            else
+            {
+                var problemDetails = await response.Content.ReadAsStringAsync();
+                _errorMessage = $"Failed to load observability governance config: {response.StatusCode}";
+                Logger.LogWarning("Failed to load observability governance config: {StatusCode}, {Details}", 
+                    response.StatusCode, problemDetails);
+            }
+        }
+        catch (Exception ex)
+        {
+            _errorMessage = $"Error loading observability governance config: {ex.Message}";
+            Logger.LogError(ex, "Error loading observability governance config");
+        }
+        finally
+        {
+            _loading = false;
+        }
+    } // End of Method LoadConfig
+
+    private async Task RefreshConfig()
+    {
+        await LoadConfig();
+    } // End of Method RefreshConfig
+
+    private string GetSamplingDescription(double ratio)
+    {
+        return ratio switch
+        {
+            1.0 => "100% - All traces captured (development default)",
+            >= 0.5 => $"{ratio * 100:F0}% - High sampling rate",
+            >= 0.1 => $"{ratio * 100:F0}% - Moderate sampling rate",
+            > 0 => $"{ratio * 100:F1}% - Low sampling rate (production recommended)",
+            _ => "0% - No traces captured"
+        };
+    } // End of Method GetSamplingDescription
+} // End of Class ObservabilityConfig

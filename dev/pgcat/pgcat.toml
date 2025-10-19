@@ -70,93 +70,48 @@ pool_size = 20
 servers = [["postgres", 5432, "primary"]]
 database = "tansu_tenant_nightly_server_ank"
 
-[pools.tansu_tenant_obs_smoke_1760285494]
+[pools.tansu_tenant_obs_smoke_1760559640]
 pool_mode = "transaction"
 query_parser_enabled = true
 primary_reads_enabled = true
 load_balancing_mode = "random"
 
-[pools.tansu_tenant_obs_smoke_1760285494.users.0]
+[pools.tansu_tenant_obs_smoke_1760559640.users.0]
 username = "postgres"
 password = "postgres"
 pool_size = 20
 
-[pools.tansu_tenant_obs_smoke_1760285494.shards.0]
+[pools.tansu_tenant_obs_smoke_1760559640.shards.0]
 servers = [["postgres", 5432, "primary"]]
-database = "tansu_tenant_obs_smoke_1760285494"
+database = "tansu_tenant_obs_smoke_1760559640"
 
-[pools.tansu_tenant_obs_smoke_1760297918]
+[pools.tansu_tenant_obs_smoke_1760565020]
 pool_mode = "transaction"
 query_parser_enabled = true
 primary_reads_enabled = true
 load_balancing_mode = "random"
 
-[pools.tansu_tenant_obs_smoke_1760297918.users.0]
+[pools.tansu_tenant_obs_smoke_1760565020.users.0]
 username = "postgres"
 password = "postgres"
 pool_size = 20
 
-[pools.tansu_tenant_obs_smoke_1760297918.shards.0]
+[pools.tansu_tenant_obs_smoke_1760565020.shards.0]
 servers = [["postgres", 5432, "primary"]]
-database = "tansu_tenant_obs_smoke_1760297918"
+database = "tansu_tenant_obs_smoke_1760565020"
 
-[pools.tansu_tenant_retry_test_1760297423]
+[pools.tansu_tenant_tc_traces_fd333f61236341d2a91ea9f722e578c4]
 pool_mode = "transaction"
 query_parser_enabled = true
 primary_reads_enabled = true
 load_balancing_mode = "random"
 
-[pools.tansu_tenant_retry_test_1760297423.users.0]
+[pools.tansu_tenant_tc_traces_fd333f61236341d2a91ea9f722e578c4.users.0]
 username = "postgres"
 password = "postgres"
 pool_size = 20
 
-[pools.tansu_tenant_retry_test_1760297423.shards.0]
+[pools.tansu_tenant_tc_traces_fd333f61236341d2a91ea9f722e578c4.shards.0]
 servers = [["postgres", 5432, "primary"]]
-database = "tansu_tenant_retry_test_1760297423"
-
-[pools.tansu_tenant_retry_test_1760297515]
-pool_mode = "transaction"
-query_parser_enabled = true
-primary_reads_enabled = true
-load_balancing_mode = "random"
-
-[pools.tansu_tenant_retry_test_1760297515.users.0]
-username = "postgres"
-password = "postgres"
-pool_size = 20
-
-[pools.tansu_tenant_retry_test_1760297515.shards.0]
-servers = [["postgres", 5432, "primary"]]
-database = "tansu_tenant_retry_test_1760297515"
-
-[pools.tansu_tenant_tc_traces_0ef4d660664c4388b90c0815eaef4a11]
-pool_mode = "transaction"
-query_parser_enabled = true
-primary_reads_enabled = true
-load_balancing_mode = "random"
-
-[pools.tansu_tenant_tc_traces_0ef4d660664c4388b90c0815eaef4a11.users.0]
-username = "postgres"
-password = "postgres"
-pool_size = 20
-
-[pools.tansu_tenant_tc_traces_0ef4d660664c4388b90c0815eaef4a11.shards.0]
-servers = [["postgres", 5432, "primary"]]
-database = "tansu_tenant_tc_traces_0ef4d660664c4388b90c0815eaef4a11"
-
-[pools.tansu_tenant_tc_traces_5f6bfb1802dd4f8782fd5895e02a5207]
-pool_mode = "transaction"
-query_parser_enabled = true
-primary_reads_enabled = true
-load_balancing_mode = "random"
-
-[pools.tansu_tenant_tc_traces_5f6bfb1802dd4f8782fd5895e02a5207.users.0]
-username = "postgres"
-password = "postgres"
-pool_size = 20
-
-[pools.tansu_tenant_tc_traces_5f6bfb1802dd4f8782fd5895e02a5207.shards.0]
-servers = [["postgres", 5432, "primary"]]
-database = "tansu_tenant_tc_traces_5f6bfb1802dd4f8782fd5895e02a5207"
+database = "tansu_tenant_tc_traces_fd333f61236341d2a91ea9f722e578c4"
 

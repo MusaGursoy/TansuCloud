@@ -390,6 +390,97 @@ Notes
 - Replace 127.0.0.1:8080 with your PublicBaseUrl host/port in other environments.
 - jq is optional; omit it if not installed.
 
+### 5.5 Dashboard UI Configuration (MudBlazor Components)
+
+The Dashboard uses **MudBlazor** (MIT License) - a 100% open-source Material Design component library for Blazor. **No license keys or registration required.**
+
+#### Why MudBlazor
+
+- ✅ **Open-Source**: MIT License, completely free for any use (personal, commercial, open-source)
+- ✅ **No License Keys**: Zero registration or license management overhead
+- ✅ **Contributor-Friendly**: Just `dotnet add package MudBlazor` and start coding
+- ✅ **Production-Ready**: Used by Microsoft internally and thousands of projects
+- ✅ **Material Design**: Modern, clean aesthetic aligned with Google's design system
+- ✅ **Active Community**: 19k+ GitHub stars, excellent documentation and support
+
+#### Setup (One-Time)
+
+**1. Add NuGet Package** (in `TansuCloud.Dashboard` directory):
+```bash
+dotnet add package MudBlazor
+```
+
+**2. Configure Services** (in `Program.cs` before `builder.Build()`):
+```csharp
+builder.Services.AddMudServices();
+```
+
+**3. Add References** (in `App.razor` or `_Host.cshtml` `<head>` section):
+```html
+<link href="https://fonts.googleapis.com/css?family=Roboto:300,400,500,700&display=swap" rel="stylesheet" />
+<link href="_content/MudBlazor/MudBlazor.min.css" rel="stylesheet" />
+<script src="_content/MudBlazor/MudBlazor.min.js"></script>
+```
+
+**4. Add Providers** (in `App.razor` or `MainLayout.razor`):
+```razor
+<MudThemeProvider />
+<MudDialogProvider />
+<MudSnackbarProvider />
+```
+
+That's it! No keys, no registration. All contributors and deployments use the same setup.
+
+#### Resources
+
+- **Documentation**: https://mudblazor.com/
+- **GitHub**: https://github.com/MudBlazor/MudBlazor
+- **Discord Community**: https://discord.gg/mudblazor
+- **Design Guidelines**: See `.github/copilot-instructions.md` section "Dashboard Design Guidelines (MudBlazor Components)"
+
+#### Customization (Optional)
+
+**Custom Theme** (in `App.razor`):
+```razor
+<MudThemeProvider Theme="@_customTheme" />
+
+@code {
+    private MudTheme _customTheme = new()
+    {
+        Palette = new PaletteLight
+        {
+            Primary = "#594AE2",      // TansuCloud brand color
+            Secondary = "#FF4081",
+            AppbarBackground = "#594AE2"
+        }
+    };
+}
+```
+
+**Dark Mode** (toggle):
+```razor
+<MudThemeProvider @bind-IsDarkMode="@_isDarkMode" />
+<MudIconButton Icon="@Icons.Material.Filled.Brightness4" OnClick="@(() => _isDarkMode = !_isDarkMode)" />
+
+@code {
+    private bool _isDarkMode = false;
+}
+```
+
+#### Troubleshooting
+
+**Components not styled:**
+- Ensure `MudBlazor.min.css` is loaded in `<head>`
+- Check browser console for 404 errors on CSS file
+
+**Dialogs/Snackbars not working:**
+- Add `<MudDialogProvider />` and `<MudSnackbarProvider />` in `App.razor`
+- Inject `IDialogService` or `ISnackbar` in components
+
+**Icons not showing:**
+- Material Design icons are built-in, no extra packages needed
+- Use `@Icons.Material.Filled.*` or `@Icons.Material.Outlined.*`
+
 Collector configuration
 
 - The SigNoz OpenTelemetry Collector config is stored at `dev/signoz-otel-collector-config.yaml`. It now enables:
@@ -598,6 +689,386 @@ Notes
   - In environments where CSRF is enabled, the Dashboard attaches `X-Tansu-Csrf` when the `DASHBOARD_CSRF` environment variable is set.
 - In CI/dev E2Es, Identity discovery readiness is checked at `/identity/.well-known/openid-configuration` to avoid flakiness. If discovery is unavailable and strict mode is disabled, UI tests may skip.
 
+### 6.2 OutputCache policy editor
+
+- To edit Gateway output-cache TTL values in development:
+  - Navigate to `/dashboard/admin/output-cache`.
+  - Click "Load current", adjust DefaultTtlSeconds (for general API responses) and StaticTtlSeconds (for public static assets), and save.
+  - Changes take effect **immediately** for new requests; existing cached responses continue using their original TTL until expiration.
+  - Validation ensures TTL values are >= 0 (zero disables caching for that policy).
+  - A confirmation modal shows before/after values before applying changes.
+- Configuration keys (set in `.env` or compose environment):
+  - `Gateway:OutputCache:DefaultTtlSeconds` (default: 15) — TTL for base policy (general API responses)
+  - `Gateway:OutputCache:StaticTtlSeconds` (default: 300) — TTL for static assets (PublicStaticLong policy)
+- The admin API endpoints (`GET/POST /admin/api/output-cache`) are protected by the `AdminOnly` authorization policy in non-Development environments.
+
+### 6.3 YARP Routes and health monitoring
+
+- To manage Gateway YARP routes in development:
+  - Navigate to `/dashboard/admin/routes`.
+  - Click "Refresh" to load current routes and clusters configuration (JSON format).
+  - Edit routes and clusters JSON as needed, then click "Apply" to update the Gateway.
+  - If changes cause issues, click "Rollback" to revert to the previous configuration.
+  - Click "Check health" to probe all cluster destinations and view their health status.
+- Health probe display:
+  - Shows each cluster with its destinations in a table format.
+  - Color-coded rows: green for healthy (HTTP 200), red for errors or unreachable destinations.
+  - Displays HTTP status code, response time (ms), and error details if any.
+  - Raw JSON response available in a collapsible section for debugging.
+- Configuration:
+  - Routes configuration is managed at runtime via the Gateway admin API.
+  - Changes are applied immediately without restart.
+  - A rollback snapshot is stored automatically on Apply for quick recovery.
+- The admin API endpoints (`GET/POST /admin/api/routes`, `POST /admin/api/routes/rollback`, `GET /admin/api/routes/health`) are protected by the `AdminOnly` authorization policy in non-Development environments.
+
+### 6.4 Identity Policies (Admin)
+
+View and manage Identity service password policies, account lockout settings, and token lifetimes from the Dashboard.
+
+Admin UI
+
+- Navigate to `/dashboard/admin/identity-policies`.
+- The page displays three configuration sections:
+  - **Password Policy**: Minimum length, complexity requirements (digit, uppercase, lowercase, special character).
+  - **Account Lockout**: Enable/disable lockout, maximum failed attempts before lockout, lockout duration in minutes.
+  - **Token Lifetimes**: Access token lifetime (seconds, 60-86400), refresh token lifetime (seconds, 3600-7776000).
+- Click "Edit Policies (View Only)" to enter edit mode and modify values.
+- Click "Save Changes (Requires Restart)" to submit changes (see note below).
+- Click "Cancel" to discard edits and restore original values.
+- Click "Refresh" to reload current configuration from the Identity service.
+
+Admin API endpoints
+
+- `GET /identity/admin/api/identity/policies`: Retrieve current identity policies configuration.
+  - Returns JSON with password, lockout, and token lifetime settings.
+  - Protected by `AdminOnly` authorization policy in non-Development environments.
+- `POST /identity/admin/api/identity/policies`: Submit updated configuration (not implemented for runtime changes).
+  - Returns HTTP 501 Not Implemented with a message explaining that changes require service restart.
+  - Configuration changes must be applied via environment variables, appsettings, or .env files, followed by an Identity service restart.
+
+Configuration notes
+
+- **Service restart required**: Identity policies (password options, lockout settings, token lifetimes) are configured at Identity service startup. Runtime updates via the API are not supported; changes must be applied through configuration files and the service must be restarted for them to take effect.
+- **Configuration keys** (in appsettings or environment variables):
+  - ASP.NET Core Identity password options are set at `builder.Services.AddIdentity` configuration (see `TansuCloud.Identity/Program.cs`).
+  - Token lifetimes are configured via the `IdentityPolicies` section: `IdentityPolicies:AccessTokenLifetime`, `IdentityPolicies:RefreshTokenLifetime`.
+- **Default values** (as of Task 17 implementation):
+  - Password: minimum 6 characters, no complexity requirements by default.
+  - Lockout: enabled for new users, 5 max failed attempts, 15-minute lockout duration.
+  - Tokens: 1 hour access token lifetime, 30 days refresh token lifetime.
+- **Security considerations**: Adjust password complexity and lockout thresholds based on your environment's security requirements. Shorter access token lifetimes reduce risk of token theft but increase refresh frequency.
+
+Recommended workflow
+
+1. Review current settings in the Dashboard UI.
+2. Plan configuration changes (validate ranges: password length 1-128, lockout minutes 1-43200, access token 60-86400s, refresh token 3600-7776000s).
+3. Update configuration files (appsettings.json or .env) with new values.
+4. Restart the Identity service for changes to take effect.
+5. Verify new settings appear correctly in the Dashboard UI after restart.
+
+### 6.5 Observability Governance (Admin)
+
+View and manage SigNoz observability governance settings from the Dashboard admin UI.
+
+Admin UI
+
+- Navigate to `/dashboard/admin/observability-config`.
+- The page displays three configuration sections:
+  - **Retention Periods**: Days to retain traces, logs, and metrics in ClickHouse (minimum 1 day, maximum 365 days).
+  - **Sampling**: Trace head-based sampling ratio (0.0 = no traces, 1.0 = all traces captured).
+  - **Alert SLO Templates**: Curated alert rules for services (error rate, latency, availability thresholds).
+- Configuration is read-only in the UI; changes are applied via file edits and VS Code tasks.
+- Click "Refresh Configuration" to reload current settings from the governance file.
+
+Admin API endpoints
+
+- `GET /api/admin/observability/governance`: Retrieve current observability governance configuration.
+  - Returns JSON with `retentionDays`, `sampling`, and `alertSLOs` from `SigNoz/governance.defaults.json`.
+  - Protected by `AdminOnly` authorization policy in non-Development environments.
+- `POST /api/admin/observability/governance`: Submit updated configuration (not implemented for direct edits).
+  - Returns HTTP 501 Not Implemented with a message explaining that changes must be applied via the governance file and VS Code task.
+  - Configuration changes require editing `SigNoz/governance.defaults.json` and running the apply task.
+
+Configuration file
+
+- **Location**: `SigNoz/governance.defaults.json` in repository root
+- **Schema**: JSON with three main sections:
+  - `retentionDays`: Object with `traces`, `logs`, `metrics` (integer days, minimum 1)
+  - `sampling`: Object with `traceRatio` (number 0.0-1.0)
+  - `alertSLOs`: Array of alert SLO template objects with `id`, `description`, `service`, `kind`, `windowMinutes`, `threshold`, `comparison`
+- **Development defaults**:
+  - Traces: 7 days
+  - Logs: 7 days
+  - Metrics: 14 days
+  - Sampling: 1.0 (100% - all traces captured)
+  - Alert SLOs: Gateway error rate, Identity latency templates
+
+Applying changes
+
+1. Edit `SigNoz/governance.defaults.json` with desired retention/sampling/alert values.
+2. Validate JSON syntax (VS Code will highlight errors).
+3. Run the VS Code task:
+   - **Terminal → Run Task → "SigNoz: governance (apply)"**
+   - Or manually: `pwsh dev/tools/signoz-apply-governance.ps1 -Apply`
+4. The script will:
+   - Read the governance file
+   - Connect to ClickHouse (default: `http://127.0.0.1:8123`)
+   - Apply TTL policies for retention
+   - Update SigNoz sampling configuration
+   - Output summary of applied changes
+5. Refresh the Dashboard UI to see updated values.
+
+**Dry-run mode**: Omit the `-Apply` flag to preview changes without applying them.
+
+Production considerations
+
+- **Retention**: Balance disk usage vs. compliance requirements. Lower retention (7-14 days) for dev; higher (30-90 days) for prod.
+- **Sampling**: In production, set `traceRatio` to 0.1 (10%) or lower to reduce costs while maintaining observability for errors. Use 1.0 (100%) in development for full visibility.
+- **Alert SLOs**: Adjust thresholds based on your service SLAs. Consider adding alerts for:
+  - Database query latency (p95 < 100ms)
+  - Storage operation success rate (> 99%)
+  - Gateway availability (> 99.9%)
+- **ClickHouse connectivity**: Ensure the apply script can reach ClickHouse at the configured endpoint. In production, this may require VPN or internal network access.
+
+Troubleshooting
+
+- **"Configuration file not found"**: Ensure `SigNoz/governance.defaults.json` exists in the repository root.
+- **"ClickHouse not reachable"**: Verify SigNoz/ClickHouse is running and accessible at the configured endpoint. Check `CLICKHOUSE_HTTP` environment variable.
+- **Apply script errors**: Run with verbose output to see detailed SQL commands: `pwsh dev/tools/signoz-apply-governance.ps1 -Apply -Verbose`
+- **Changes not reflected**: Wait a few minutes for ClickHouse TTL policies to take effect, then refresh the Dashboard page.
+
+Security notes
+
+- Observability governance endpoints require `Admin` role or `admin.full` scope (enforced by `AdminOnly` authorization policy).
+- ClickHouse credentials (if required) should be stored securely via environment variables or Azure Key Vault, not hardcoded in scripts.
+- Audit logging captures all reads of observability governance configuration with user context.
+
+### 6.6 Policy Center (Admin)
+
+Manage CORS and IP access policies with staged rollout capabilities from the Dashboard admin UI.
+
+Admin UI
+
+- Navigate to `/dashboard/admin/policy-center`.
+- The page displays a list of all policies with:
+  - **Type badge**: CORS (primary), IP Allow (success), IP Deny (danger)
+  - **Mode badge**: Shadow (secondary), Audit Only (warning), Enforce (danger)
+  - **Filters**: Filter by policy type and enforcement mode
+  - **Create/Edit/Delete**: Full CRUD operations via modal dialogs
+- Click "Create Policy" to add a new policy with JSON configuration.
+- Click "Edit" on any policy to modify its configuration.
+- Click "Delete" to remove a policy (with confirmation dialog).
+
+Policy types
+
+- **CORS (Cross-Origin Resource Sharing)**:
+  - Controls which external origins can call Gateway APIs
+  - Configuration fields:
+    - `origins`: Array of allowed origins (e.g., `["https://app.example.com"]`)
+    - `methods`: Array of allowed HTTP methods (e.g., `["GET", "POST"]`)
+    - `headers`: Array of allowed request headers (e.g., `["Content-Type", "Authorization"]`)
+    - `exposedHeaders`: Optional array of headers exposed to clients
+    - `allowCredentials`: Boolean - whether to allow cookies/auth headers
+    - `maxAgeSeconds`: Cache duration for preflight responses (default 3600)
+  - Example config:
+    ```json
+    {
+      "origins": ["https://app.example.com", "https://admin.example.com"],
+      "methods": ["GET", "POST", "PUT", "DELETE"],
+      "headers": ["Content-Type", "Authorization", "X-Tansu-Tenant"],
+      "allowCredentials": true,
+      "maxAgeSeconds": 3600
+    }
+    ```
+
+- **IP Allow**:
+  - Whitelist approach - only listed IPs/CIDRs can access Gateway
+  - Configuration fields:
+    - `cidrs`: Array of IP addresses or CIDR blocks (e.g., `["203.0.113.0/24", "198.51.100.42"]`)
+    - `description`: Optional explanation of the IP list
+  - Example config:
+    ```json
+    {
+      "cidrs": ["203.0.113.0/24", "198.51.100.42"],
+      "description": "Corporate office and VPN gateway"
+    }
+    ```
+
+- **IP Deny**:
+  - Blacklist approach - listed IPs/CIDRs are blocked from Gateway access
+  - Configuration fields:
+    - `cidrs`: Array of IP addresses or CIDR blocks to deny
+    - `description`: Optional explanation of the IP list
+  - Example config:
+    ```json
+    {
+      "cidrs": ["192.0.2.0/24"],
+      "description": "Known malicious subnet"
+    }
+    ```
+
+Enforcement modes (staged rollout)
+
+The Policy Center supports three enforcement modes to enable gradual rollout and validation before full enforcement:
+
+- **Shadow (0)**: Log decisions only, no blocking
+  - Policy is evaluated for each request
+  - Would-block decisions are logged with full context
+  - No actual blocking occurs - all requests proceed normally
+  - Use this to test policy correctness and observe impact in logs before enforcement
+
+- **Audit Only (1)**: Log decisions + emit metrics/alerts
+  - Policy is evaluated and would-block decisions are logged
+  - Metrics counters increment for policy violations
+  - Alert rules can fire based on violation rates
+  - No actual blocking - all requests proceed normally
+  - Use this to validate monitoring/alerting coverage before enforcement
+
+- **Enforce (2)**: Actually block/allow requests
+  - Policy is fully enforced - violating requests are blocked
+  - Blocked requests return appropriate HTTP error (403 Forbidden for IP, CORS rejection headers, etc.)
+  - Enforcement decisions are logged and metrics emitted
+  - Use this only after Shadow and Audit Only validation confirms policy is correct
+
+Recommended workflow: Shadow (validate logs) → Audit Only (validate alerts) → Enforce (production)
+
+Admin API endpoints
+
+All endpoints require `Admin` role or `admin.full` scope (enforced by `AdminOnly` authorization policy in non-Development environments). All mutations are audit logged.
+
+- `GET /admin/api/policies`: List all policies
+  - Returns JSON array of policy objects
+  - Each policy includes `id`, `type`, `mode`, `description`, `config` (JsonElement), `enabled`, `createdAt`, `updatedAt`
+
+- `GET /admin/api/policies/{id}`: Get single policy by ID
+  - Returns single policy object or 404 Not Found
+
+- `POST /admin/api/policies`: Create or update policy
+  - Request body: JSON policy object with required fields:
+    - `id`: Unique identifier (string)
+    - `type`: PolicyType enum value (0=Cors, 1=IpAllow, 2=IpDeny)
+    - `mode`: PolicyEnforcementMode enum value (0=Shadow, 1=AuditOnly, 2=Enforce)
+    - `description`: Human-readable description (string)
+    - `config`: JSON object matching the policy type's config schema
+    - `enabled`: Boolean (optional, default true)
+  - Returns created/updated policy object with timestamps
+  - Validates config JSON structure before persisting
+  - Audit logs create and update actions with user context
+
+- `DELETE /admin/api/policies/{id}`: Delete policy
+  - Returns 204 No Content on success, 404 if not found
+  - Audit logs deletion with user context
+
+Configuration workflow
+
+1. **Plan policy**: Determine type (CORS/IP Allow/IP Deny), prepare config JSON
+2. **Create in Shadow mode**: Test policy logic without affecting traffic
+3. **Review logs**: Validate policy decisions in Gateway logs and SigNoz traces
+4. **Upgrade to Audit Only**: Enable metrics/alerting for policy violations
+5. **Validate alerts**: Confirm alert rules fire correctly for policy violations
+6. **Upgrade to Enforce**: Enable full enforcement after validation
+7. **Monitor**: Continuously watch for false positives and adjust as needed
+
+Best practices
+
+- **Start with Shadow**: Always create policies in Shadow mode first to validate correctness
+- **Incremental rollout**: Move Shadow → Audit Only → Enforce over days/weeks, not minutes
+- **Alert on violations**: Set up SigNoz alerts for Audit Only violations before moving to Enforce
+- **Document policies**: Use clear descriptions explaining business reason for each policy
+- **IP ranges**: Use CIDR notation for ranges instead of individual IPs when possible
+- **CORS origins**: Be specific - avoid wildcards (`*`) in production
+- **Audit trail**: All policy changes are audit logged for compliance and troubleshooting
+
+Policy enforcement
+
+The Gateway's `PolicyEnforcementMiddleware` actively enforces all enabled policies based on their enforcement mode:
+
+- **CORS enforcement**:
+  - Validates `Origin` header against configured origins
+  - Handles OPTIONS preflight requests (returns 204 with appropriate headers)
+  - Sets `Access-Control-Allow-*` headers for allowed origins
+  - Blocks disallowed origins in Enforce mode (returns 403 Forbidden)
+  - Supports wildcard (`*`) for development, specific origins for production
+  - Respects `allowCredentials`, `maxAgeSeconds`, exposed headers configuration
+
+- **IP Deny enforcement**:
+  - Blocks requests from IPs in the deny list (CIDR notation supported)
+  - Evaluates before IP Allow policies (deny takes precedence)
+  - Supports both IPv4 and IPv6 addresses
+  - Logs all matches with client IP and policy ID
+
+- **IP Allow enforcement**:
+  - When allow policies exist, blocks all IPs not in any allow list
+  - Allows requests from IPs matching any allow policy
+  - No blocking if no allow policies exist (open by default)
+  - Supports CIDR ranges (e.g., `10.0.0.0/8`, `192.168.1.0/24`)
+
+- **Enforcement mode behavior**:
+  - **Shadow (0)**: Logs would-block decisions, no actual blocking
+  - **Audit Only (1)**: Logs decisions + emits metrics, no actual blocking
+  - **Enforce (2)**: Fully enforces policy, blocks violating requests with 403 Forbidden
+
+- **Evaluation order**: IP Deny → IP Allow → CORS (early rejection of denied IPs)
+
+- **Client IP detection**:
+  - Respects `X-Forwarded-For` header if `Gateway:TrustForwardedHeaders=true` (production behind LB)
+  - Falls back to `HttpContext.Connection.RemoteIpAddress` in development
+
+- **Telemetry and Observability**:
+  - **Structured logging**: Every policy evaluation logged with policy ID, client IP, decision, mode, reason
+  - **OpenTelemetry activities**: Each request creates activity with tags (client.ip, origin, result)
+  - **Metrics**: Four metric types exported to SigNoz via OTLP:
+    - `tansu_gateway_policy_evaluations_total` (counter): Total evaluations by policy ID, type, mode, event type
+    - `tansu_gateway_policy_violations_total` (counter): Total violations detected (all modes) by policy ID, type, mode
+    - `tansu_gateway_policy_blocks_total` (counter): Total requests blocked (Enforce mode only) by policy ID, type, mode
+    - `tansu_gateway_policy_evaluation_duration_ms` (histogram): Evaluation latency by policy type and result
+  - **Tags/Dimensions**: All metrics tagged with policy.id, policy.type, policy.mode for granular filtering in dashboards
+  - **SigNoz queries**: Query violations by policy ID, alert on block rate thresholds, track p95/p99 evaluation latency
+
+Current limitations
+
+- **No policy conflicts detected**: If you create overlapping IP Allow and IP Deny policies, the system does not currently detect or warn about conflicts.
+- **Cross-instance cache sync**: Policy changes made via one Gateway instance's admin API are not immediately visible to other instances' in-memory caches. Changes persist to the database and are loaded on instance restart. For production with multiple instances, consider adding pub/sub notifications for cache invalidation (future work).
+
+Policy persistence and database requirements
+
+As of 2025-10-15, policies are stored in PostgreSQL and survive Gateway restarts:
+
+- **Database**: Policies stored in `gateway_policies` table in the `tansu_identity` database (shared with Identity service)
+- **Automatic migration**: Gateway applies EF Core migrations on startup (`Database.MigrateAsync()`) - idempotent and safe to run multiple times
+- **Connection string**: Configure `ConnectionStrings:GatewayDb` in Gateway appsettings or environment variable `ConnectionStrings__GatewayDb`
+  - Development: `appsettings.json` points to localhost:5432
+  - Docker Compose: Set via environment variable to PgCat (port 6432) for connection pooling
+  - Production: Same as compose but with production database credentials
+- **Multi-instance support**: All Gateway instances read from the same database on startup. Policies persist across restarts and are shared across instances (with eventual consistency for cache).
+- **Cache behavior**: Each Gateway instance maintains an in-memory cache for read performance. Write operations (create/update/delete) update the database immediately and invalidate the local cache.
+
+Example connection string (Docker Compose):
+```
+ConnectionStrings__GatewayDb=Host=pgcat;Port=6432;Database=tansu_identity;Username=postgres;Password=postgres
+```
+
+Production considerations
+
+- **IP Allow lists**: Ensure you include all legitimate sources (corporate VPN, load balancers, health checkers) before moving to Enforce mode to avoid outages
+- **CORS wildcards**: Avoid `origins: ["*"]` in production; explicitly list trusted domains
+- **IP Deny lists**: Use reputable threat intelligence feeds to populate deny lists; update regularly
+- **Enforcement mode**: Keep high-risk policies (IP Deny for known threats) in Enforce; keep low-confidence policies (new CORS rules) in Audit Only until validated
+- **Policy persistence**: Current in-memory storage is lost on Gateway restart. For production, consider backing policies to a database or configuration file that reloads on startup.
+
+Troubleshooting
+
+- **Policy not taking effect**: Check enforcement mode - Shadow and Audit Only do not block requests
+- **Logs not appearing**: Verify Gateway logging level includes Information for policy evaluations
+- **API returns 400**: Validate config JSON structure matches policy type schema (use examples above)
+- **Unauthorized**: Ensure your auth token includes `admin.full` scope or `Admin` role claim
+
+Security notes
+
+- Policy endpoints require `Admin` role or `admin.full` scope (enforced by `AdminOnly` authorization policy).
+- All policy mutations (create, update, delete) are audit logged with user context, policy ID, and timestamp.
+- Enforcement mode should be carefully controlled - test in Shadow first to prevent accidental service outages.
+
 - Identity issuer and discovery under /identity
 - Configuring OIDC issuer for downstream services (Oidc:Issuer)
 - Dashboard OIDC authority configuration
@@ -698,6 +1169,248 @@ Auditing
 
 - Admin actions (bind, rotate, delete) create audit entries in the `Gateway.Admin` channel with non-secret summaries (host, thumbprint, validity window, hostname match).
 - In development without Postgres, audit writes may log transient connection errors; this does not affect the admin operation itself.
+
+### 6.7 Cache and Rate Limit Policies (Admin)
+
+Manage Gateway-level cache and rate limit policies with an interactive simulator for testing before deployment.
+
+Admin UI
+
+- Navigate to `/dashboard/admin/cache-rate-policies`.
+- The page displays two tabs:
+  - **Cache Policies**: HTTP response caching at the Gateway (OutputCache)
+  - **Rate Limit Policies**: Request rate limiting with partition strategies
+- Each policy shows:
+  - **Name**: Descriptive policy name
+  - **Route Pattern**: URL pattern to match (e.g., `/api/products`)
+  - **Enforcement Mode**: Shadow / Audit Only / Enforce
+  - **Status**: Enabled/Disabled toggle
+  - **Test button**: Launch interactive simulator
+- **Filters**: Filter policies by enforcement mode
+- **Create/Edit/Delete**: Full CRUD operations via modal dialogs
+
+Cache Policies
+
+Cache policies control Gateway-level HTTP response caching via ASP.NET Core OutputCache middleware with Garnet (Redis-compatible) as the backing store.
+
+Configuration fields:
+- `name`: Policy name (e.g., "API Product List Cache")
+- `routePattern`: URL pattern to match (e.g., `/api/products`)
+- `enforcementMode`: 0=Shadow, 1=AuditOnly, 2=Enforce
+- `enabled`: Boolean - whether policy is active
+- `ttlSeconds`: Cache time-to-live (default 60)
+- `varyByQuery`: Array of query parameter names to vary cache by (null=all, empty=none, e.g., `["page", "category"]`)
+- `varyByHeaders`: Array of header names to vary cache by (e.g., `["Accept-Language"]`)
+- `varyByRouteValues`: Array of route value names to vary cache by (e.g., `["tenantId"]`)
+- `varyByHost`: Boolean - vary cache by Host header (useful for multi-tenant)
+- `useDefaultVaryByRules`: Boolean - apply ASP.NET Core default VaryBy rules
+
+Example cache policy:
+```json
+{
+  "name": "Product List Cache",
+  "routePattern": "/api/products",
+  "type": 3,
+  "enforcementMode": 2,
+  "enabled": true,
+  "priority": 100,
+  "config": {
+    "ttlSeconds": 300,
+    "varyByQuery": ["page", "category"],
+    "varyByHeaders": ["Accept-Language"],
+    "varyByRouteValues": [],
+    "varyByHost": true,
+    "useDefaultVaryByRules": false
+  }
+}
+```
+
+Rate Limit Policies
+
+Rate limit policies define request throttling rules with flexible partition strategies. Note: These are currently used for simulation and documentation; actual rate limiting uses ASP.NET Core's built-in RateLimiter middleware.
+
+Configuration fields:
+- `name`: Policy name (e.g., "API Rate Limit")
+- `routePattern`: URL pattern to match (e.g., `/api/*`)
+- `enforcementMode`: 0=Shadow, 1=AuditOnly, 2=Enforce
+- `enabled`: Boolean - whether policy is active
+- `windowSeconds`: Time window for rate limit (default 60)
+- `permitLimit`: Maximum requests allowed in window (default 100)
+- `queueLimit`: Number of requests to queue when limit exceeded (default 0)
+- `partitionStrategy`: How to partition rate limits:
+  - `Global`: Single limit across all requests
+  - `PerIp`: Separate limit per IP address (X-Forwarded-For)
+  - `PerUser`: Separate limit per authenticated user ID
+  - `PerHost`: Separate limit per Host header (multi-tenant)
+- `statusCode`: HTTP status to return when denied (default 429)
+- `retryAfterSeconds`: Optional Retry-After header value
+
+Example rate limit policy:
+```json
+{
+  "name": "API Rate Limit (Per IP)",
+  "routePattern": "/api/*",
+  "type": 4,
+  "enforcementMode": 2,
+  "enabled": true,
+  "priority": 100,
+  "config": {
+    "windowSeconds": 60,
+    "permitLimit": 100,
+    "queueLimit": 0,
+    "partitionStrategy": "PerIp",
+    "statusCode": 429,
+    "retryAfterSeconds": 60
+  }
+}
+```
+
+Interactive Simulator
+
+The simulator allows you to test policies before deployment without affecting production traffic.
+
+Using the simulator:
+1. Click the **"Test"** button on any policy
+2. The simulator widget appears with request configuration inputs:
+   - **URL Path**: The request path (e.g., `/api/products?page=1`)
+   - **HTTP Method**: GET, POST, PUT, DELETE (dropdown)
+   - **Request Headers**: Key-value pairs (one per line, e.g., `Accept-Language: en-US`)
+   - **Authenticated User ID**: Optional user identifier for PerUser partition
+3. Click **"Run Simulation"** to test the policy
+4. Results display:
+   - **Cache Policies**: Cache hit/miss verdict, cache key, TTL, VaryBy parameters
+   - **Rate Limit Policies**: Allowed/denied verdict, partition key, permits remaining
+5. Color-coded results:
+   - **Green**: Cache hit or rate limit allowed
+   - **Gray**: Cache miss
+   - **Red**: Rate limit denied
+
+Enforcement Modes (Staged Rollout)
+
+Use enforcement modes to gradually roll out policies and validate behavior before full enforcement:
+
+- **Shadow (0)**: Evaluate policy but don't cache/block
+  - Policy logic runs for each request
+  - Results are logged with full context
+  - No actual caching or blocking occurs
+  - Use this to test policy correctness in logs before enforcement
+
+- **Audit Only (1)**: Enforce and log everything
+  - Policy is fully enforced (cache hits served, rate limits applied)
+  - All evaluations are logged verbosely
+  - OpenTelemetry metrics emitted for all events
+  - Use this to observe policy impact with full visibility
+
+- **Enforce (2)**: Normal production enforcement
+  - Policy is enforced with standard logging
+  - Only policy matches and violations are logged
+  - OpenTelemetry metrics emitted for hits/misses/denials
+  - Use this for production after validation in Shadow/Audit modes
+
+Two-Layer Caching Architecture
+
+TansuCloud uses a two-layer caching architecture with Garnet as the backing store for all layers:
+
+**Gateway Layer (Cache Policies - This Section):**
+- ASP.NET Core OutputCache middleware
+- Policy-based configuration via Dashboard UI
+- Caches entire HTTP responses
+- TTL configured per policy (typically 300s)
+- Backing store: Garnet (Redis-compatible)
+- Metrics: `tansu.gateway.cache.hits`, `tansu.gateway.cache.misses`, `tansu.gateway.cache.evictions`
+
+**Service Layer (Task 15 - HybridCache):**
+- ASP.NET Core HybridCache (L1 in-process + L2 distributed)
+- L1: In-process memory (per service instance) - 95% hit rate, 0μs latency
+- L2: Garnet distributed cache (shared across instances) - 4% hit rate, 0.4ms latency
+- Configured in code (not via policies)
+- TTL: 30-60s (shorter than Gateway)
+- Database queries: 1% miss rate, 10-50ms latency
+
+**Cache Hit Sequence (Typical Request):**
+1. Request arrives at Gateway
+2. Gateway OutputCache checks L1 (Garnet) - 0.4ms if hit
+3. If miss, request forwarded to service
+4. Service checks HybridCache L1 (in-process) - 0μs if hit
+5. If miss, service checks HybridCache L2 (Garnet) - 0.4ms if hit
+6. If miss, service queries PostgreSQL/MinIO - 10-50ms
+7. Service stores in L1+L2, returns to Gateway
+8. Gateway stores in OutputCache, returns to client
+
+**Why Garnet for Everything:**
+- Feature completeness: Pub/Sub, atomic ops, locks, data structures, persistence
+- Operational simplicity: One system to manage instead of multiple
+- HybridCache design: L1 in-process + L2 distributed built-in (no need for Memcached)
+- Performance: 3M ops/sec, network latency dominates, L1 eliminates 95% of calls
+- .NET native: C#, optimized for .NET workloads
+
+OpenTelemetry Metrics
+
+Cache policies emit the following metrics (accessible via SigNoz or other OTLP-compatible backends):
+
+- `tansu.gateway.cache.hits` (counter): Cache hits
+  - Tags: `policy.id`, `policy.type=3`, `policy.mode`
+- `tansu.gateway.cache.misses` (counter): Cache misses
+  - Tags: `policy.id`, `policy.type=3`, `policy.mode`
+- `tansu.gateway.cache.evictions` (counter): Cache evictions
+  - Tags: `policy.id`, `policy.type=3`, `policy.mode`
+
+Rate limit policies (when fully implemented) will emit:
+- `tansu.gateway.ratelimit.allowed` (counter): Requests allowed
+- `tansu.gateway.ratelimit.denied` (counter): Requests denied
+
+Policy Persistence
+
+- **Storage**: PostgreSQL database (same as other policies from Policy Center)
+- **Multi-instance**: All Gateway instances share the same policy database
+- **Cache behavior**: Each Gateway maintains an in-memory cache for read performance; writes invalidate local cache
+- **Restart-safe**: Policies survive Gateway restarts (verified by `CacheRatePolicyPersistenceE2E` test)
+
+Production Considerations
+
+Cache Policies:
+- Start with shorter TTL values (60-120s), increase based on metrics
+- Use `varyByQuery=null` carefully - it varies by ALL query parameters, which can fragment cache
+- For multi-tenant systems, always set `varyByHost=true` or include tenant identifier in `varyByHeaders`
+- Monitor cache hit ratio via SigNoz; aim for 70%+ hit rate for read-heavy endpoints
+- Use Shadow mode first to ensure cache keys are correct before Enforce mode
+
+Rate Limit Policies:
+- Choose appropriate windows: 10-60s for burst protection, 1hr+ for quota enforcement
+- Use `PerIp` for anonymous APIs, `PerUser` for authenticated endpoints
+- Set `queueLimit=0` initially; increase if you need request buffering (adds latency)
+- Test partition keys in simulator before deployment to avoid over-blocking
+- Combine policies: Use Global (baseline) + PerIp (burst protection) together
+
+General:
+- Keep high-confidence policies (e.g., cache for static content) in Enforce mode
+- Keep experimental policies in Audit Only until validated via metrics
+- Use simulator extensively - it prevents production issues by catching misconfiguration early
+- Review SigNoz dashboards daily to monitor cache hit rates and rate limit denials
+
+Troubleshooting
+
+- **Policy not taking effect**: Check enforcement mode - Shadow does not enforce, only logs
+- **Cache always misses**: Verify `varyByQuery`/`varyByHeaders` are correct; check cache key in simulator
+- **Cache key unexpected**: Use simulator to see generated cache key; adjust VaryBy settings
+- **Rate limit always denies**: Check partition strategy and permit limits; test in simulator first
+- **Simulator shows error**: Validate config JSON structure; check Gateway logs for details
+- **Metrics not appearing**: Ensure OpenTelemetry is configured and SigNoz is reachable
+- **Policy deleted but still active**: Each Gateway caches policies; wait 60s or restart Gateway
+
+Security Notes
+
+- Policy endpoints require `Admin` role or `admin.full` scope
+- All policy mutations (create, update, delete) are audit logged
+- Simulator is read-only and does not affect production traffic
+- Be cautious with IP-based rate limits - ensure load balancers forward X-Forwarded-For correctly
+- Cache policies can expose data across tenants if `varyByHost` is not set in multi-tenant environments
+
+Related Documentation
+
+- `docs/Cache-And-RateLimit-Policy-Examples.md`: 8 example policies with detailed explanations
+- `docs/Cache-RateLimit-Policy-Editor-Implementation-Summary.md`: Implementation details
+- `docs/Running-Cache-RateLimit-Policy-Tests.md`: E2E test guide
 
 ## 7. Configuration & Secrets
 
@@ -2007,3 +2720,174 @@ Operations
 - Observability: Outbox worker logs dispatched, retried, and dead-lettered events. Metrics are exported via OpenTelemetry when configured.
 - Failure handling: After max attempts, events transition to a dead-letter state; operators should inspect and decide to replay or ignore.
   - Channel: events are published to the configured channel (default `tansu.outbox`) as JSON envelopes including `{ tenant, collectionId?, documentId?, op }`. Consumers should treat the payload as a contract subject to additive changes.
+
+## Docker Volumes and Data Persistence
+
+TansuCloud uses Docker named volumes to persist critical application data across container restarts and updates. These volumes must be configured in both `docker-compose.yml` (development) and `docker-compose.prod.yml` (production).
+
+### Required Named Volumes
+
+#### 1. PostgreSQL Data (`tansu-pgdata`)
+- **Purpose:** Stores all relational database data (identity, tenants, policies, audit logs)
+- **Mount Point:** `/var/lib/postgresql/data` in postgres container
+- **Backup:** Critical - contains all application state
+- **Lifecycle:** Persistent across container updates; delete only to reset database completely
+
+#### 2. Garnet/Redis Data (`tansu-garnetdata`)
+- **Purpose:** Stores cached data, rate limit counters, and session affinity keys
+- **Mount Point:** `/data` in redis/garnet container
+- **Configuration:** Enabled with `--checkpointdir /data --recover` flags
+- **Backup:** Important - contains Gateway policy cache and rate limits
+- **Lifecycle:** Persistent; policies loaded from PostgreSQL on Gateway startup but cached here
+
+#### 3. Storage Service Data (`tansu-storagedata`)
+- **Purpose:** Stores bucket files and object metadata
+- **Mount Point:** `/data` in storage container
+- **Backup:** Critical - contains user-uploaded files and documents
+- **Lifecycle:** Persistent; delete only to reset all storage buckets
+
+#### 4. Gateway Data Protection Keys (`tansu-gateway-keys`)
+- **Purpose:** Stores ASP.NET Core Data Protection encryption keys for session affinity cookies
+- **Mount Point:** `/keys` in gateway container
+- **Backup:** Recommended - losing these keys invalidates existing session cookies
+- **Lifecycle:** Persistent; regenerated automatically if missing but causes user re-authentication
+- **Added:** October 2025 - Critical fix for Gateway proxy functionality
+
+**Why This Matters:**
+Without the `/keys` volume, the Gateway cannot persist Data Protection encryption keys, causing:
+- `System.UnauthorizedAccessException: Access to the path '/keys' is denied` errors
+- Gateway unable to proxy Dashboard responses (all requests fail)
+- Session affinity cookies cannot be encrypted/decrypted correctly
+- Users forced to re-authenticate on every Gateway restart
+
+#### 5. Dashboard Data Protection Keys (`tansu-dashboard-keys`)
+- **Purpose:** Stores Dashboard-specific encryption keys for authentication cookies
+- **Mount Point:** `/keys` in dashboard container  
+- **Backup:** Recommended - losing these invalidates active sessions
+- **Lifecycle:** Persistent; regenerated automatically if missing
+
+#### 6. SigNoz Data (`signoz-data`, `signoz-clickhouse-data`, `signoz-zookeeper-data`)
+- **Purpose:** Stores observability metrics, traces, and logs (optional observability profile)
+- **Mount Points:** Various in SigNoz containers
+- **Backup:** Optional - can be rebuilt from live telemetry
+- **Lifecycle:** Can be deleted to reset observability history
+
+#### 7. Telemetry SQLite (`tansu-telemetrydata`)
+- **Purpose:** Local telemetry buffer when SigNoz is unavailable
+- **Mount Point:** `/data` in telemetry container
+- **Backup:** Optional - temporary buffer only
+- **Lifecycle:** Can be deleted; data is ephemeral
+
+### Volume Configuration Example
+
+Both compose files must define these volumes:
+
+```yaml
+volumes:
+  tansu-pgdata:
+    driver: local
+  tansu-garnetdata:
+    driver: local
+  tansu-storagedata:
+    driver: local
+  tansu-gateway-keys:        # REQUIRED (added Oct 2025)
+    driver: local
+  tansu-dashboard-keys:
+    driver: local
+  tansu-telemetrydata:
+    driver: local
+  # ... SigNoz volumes if using observability profile
+```
+
+### Service Volume Mounts
+
+Each service must mount its respective volume:
+
+```yaml
+services:
+  gateway:
+    volumes:
+      - tansu-gateway-keys:/keys    # CRITICAL - enables Data Protection
+      - ./certs:/certs:ro            # TLS certificates (bind mount)
+  
+  postgres:
+    volumes:
+      - tansu-pgdata:/var/lib/postgresql/data
+  
+  redis:  # Garnet
+    volumes:
+      - tansu-garnetdata:/data
+  
+  storage:
+    volumes:
+      - tansu-storagedata:/data
+  
+  dashboard:
+    volumes:
+      - tansu-dashboard-keys:/keys
+```
+
+### Backup and Disaster Recovery
+
+**Critical Volumes (Must Backup):**
+1. `tansu-pgdata` - All database state
+2. `tansu-storagedata` - User files and documents
+
+**Important Volumes (Recommended Backup):**
+3. `tansu-gateway-keys` - Session affinity (users re-auth if lost)
+4. `tansu-dashboard-keys` - Dashboard sessions (users re-auth if lost)
+
+**Optional Volumes (Can Rebuild):**
+5. `tansu-garnetdata` - Cache and rate limits (rebuilt from PostgreSQL)
+6. `tansu-telemetrydata` - Temporary telemetry buffer
+7. SigNoz volumes - Historical observability data
+
+**Backup Commands:**
+
+```powershell
+# Backup PostgreSQL data
+docker run --rm --volumes-from tansu-postgres -v ${PWD}/backups:/backup alpine tar czf /backup/pgdata-$(Get-Date -Format 'yyyy-MM-dd').tar.gz /var/lib/postgresql/data
+
+# Backup Storage data
+docker run --rm --volumes-from tansu-storage -v ${PWD}/backups:/backup alpine tar czf /backup/storagedata-$(Get-Date -Format 'yyyy-MM-dd').tar.gz /data
+
+# List volumes
+docker volume ls | Select-String tansu
+
+# Inspect volume location
+docker volume inspect tansu-pgdata
+```
+
+### Troubleshooting Volume Issues
+
+**Issue: Gateway logs "Access to the path '/keys' is denied"**
+- **Cause:** Missing `tansu-gateway-keys` volume mount
+- **Solution:** Add volume to `docker-compose.yml` and `docker-compose.prod.yml`, restart Gateway
+- **Impact:** Gateway cannot proxy Dashboard responses; all Dashboard requests fail with 403/500 errors
+
+**Issue: Policies persist after deletion**
+- **Cause:** Garnet volume retains policy cache even after PostgreSQL deletion
+- **Solution:** Delete from PostgreSQL AND restart Gateway to reload cache
+- **Full Reset:** `docker volume rm tansucloud_tansu-garnetdata` + restart
+
+**Issue: Storage files missing after restart**
+- **Cause:** Volume not mounted or container recreated without volume
+- **Solution:** Verify `tansu-storagedata` volume exists and is mounted correctly
+
+**Issue: Users forced to re-authenticate frequently**
+- **Cause:** Dashboard or Gateway keys volumes missing; keys regenerated on restart
+- **Solution:** Add keys volumes to both services, verify persistence across restarts
+
+### Volume Lifecycle Management
+
+**Development:**
+- Keep volumes across `docker compose down` (don't use `-v` flag)
+- Delete volumes intentionally to reset state: `docker compose down -v`
+- Volumes are prefixed with project name (e.g., `tansucloud_tansu-pgdata`)
+
+**Production:**
+- Never use `docker compose down -v` in production
+- Backup before any volume operations
+- Test restore procedures regularly
+- Monitor volume disk usage with alerts
+

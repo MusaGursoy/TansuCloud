@@ -616,6 +616,133 @@ public sealed class DocumentsController(
         return Ok(new DocumentDto(e.Id, e.CollectionId, ToElement(e.Content), e.CreatedAt));
     } // End of Method Update
 
+    /// <summary>
+    /// Partially updates a document using JSON Patch (RFC 6902) operations.
+    /// </summary>
+    /// <param name="id">Document ID.</param>
+    /// <param name="patchDoc">JSON Patch document with operations (add, remove, replace, move, copy, test).</param>
+    /// <param name="ct">Cancellation token.</param>
+    /// <returns>The updated document.</returns>
+    /// <response code="200">Document successfully patched.</response>
+    /// <response code="400">Invalid JSON Patch document.</response>
+    /// <response code="404">Document not found.</response>
+    /// <response code="412">Precondition failed (If-Match mismatch).</response>
+    /// <remarks>
+    /// JSON Patch allows efficient partial updates. Example:
+    /// [
+    ///   { "op": "replace", "path": "/content/title", "value": "New Title" },
+    ///   { "op": "add", "path": "/content/tags/-", "value": "new-tag" }
+    /// ]
+    /// </remarks>
+    [HttpPatch("{id:guid}")]
+    [Authorize(Policy = "db.write")]
+    [Consumes("application/json-patch+json")]
+    [ProducesResponseType(typeof(DocumentDto), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    [ProducesResponseType(StatusCodes.Status412PreconditionFailed)]
+    public async Task<ActionResult<DocumentDto>> Patch(
+        [FromRoute] Guid id,
+        [FromBody] Microsoft.AspNetCore.JsonPatch.JsonPatchDocument<UpdateDocumentDto> patchDoc,
+        CancellationToken ct
+    )
+    {
+        if (patchDoc == null)
+            return Problem(title: "JSON Patch document is required", statusCode: StatusCodes.Status400BadRequest);
+
+        await using var db = await _factory.CreateAsync(HttpContext, ct);
+        var e = await db.Documents.FirstOrDefaultAsync(x => x.Id == id, ct);
+        if (e is null)
+            return NotFound();
+
+        // If-Match precondition
+        var currentEtag = ETagHelper.ComputeWeakETag(
+            e.Id.ToString(),
+            e.CreatedAt.ToUnixTimeMilliseconds().ToString()
+        );
+        var ifm = Request.Headers.IfMatch;
+        if (!StringValues.IsNullOrEmpty(ifm) && !AnyIfMatchMatches(ifm, currentEtag))
+        {
+            Response.Headers.ETag = currentEtag;
+            _audit?.TryEnqueueRedacted(
+                new AuditEvent
+                {
+                    Category = "Database",
+                    Action = "DocumentPatch",
+                    Outcome = "Failure",
+                    ReasonCode = "PreconditionFailed",
+                    Subject = HttpContext.User?.Identity?.Name ?? "system"
+                },
+                new { id },
+                new[] { nameof(id) }
+            );
+            return StatusCode(StatusCodes.Status412PreconditionFailed);
+        }
+
+        // Create a DTO from current state
+        var dto = new UpdateDocumentDto(
+            ToElement(e.Content),
+            null // Don't expose embedding in patch operations for simplicity
+        );
+
+        // Apply patch operations
+        patchDoc.ApplyTo(dto);
+        
+        // Validate the model after patching
+        if (!TryValidateModel(dto))
+        {
+            return ValidationProblem(ModelState);
+        }
+
+        // Update entity with patched values
+        if (dto.content.HasValue)
+        {
+            e.Content = JsonDocument.Parse(dto.content.Value.GetRawText());
+        }
+
+        // Outbox event
+        try
+        {
+            var tenant = Request.Headers["X-Tansu-Tenant"].ToString();
+            var payloadObj = new
+            {
+                tenant,
+                collectionId = e.CollectionId,
+                documentId = e.Id,
+                op = "document.patched"
+            };
+            var payloadDoc = JsonDocument.Parse(JsonSerializer.Serialize(payloadObj));
+            _outbox.Enqueue(db, "document.patched", payloadDoc);
+        }
+        catch { }
+
+        await db.SaveChangesAsync(ct);
+
+        // Cache invalidation
+        try
+        {
+            _versions?.Increment(Tenant());
+            HybridCacheMetrics.RecordEviction("database", "documents.patch", "tenant_version_increment");
+        }
+        catch { }
+
+        // Audit success
+        _audit?.TryEnqueueRedacted(
+            new AuditEvent
+            {
+                Category = "Database",
+                Action = "DocumentPatch",
+                Outcome = "Success",
+                Subject = HttpContext.User?.Identity?.Name ?? "system"
+            },
+            new { e.Id, e.CollectionId },
+            new[] { nameof(e.Id), nameof(e.CollectionId) }
+        );
+
+        Response.Headers.ETag = currentEtag;
+        return Ok(new DocumentDto(e.Id, e.CollectionId, ToElement(e.Content), e.CreatedAt));
+    } // End of Method Patch
+
     [HttpDelete("{id:guid}")]
     [Authorize(Policy = "db.write")]
     public async Task<ActionResult> Delete([FromRoute] Guid id, CancellationToken ct)

@@ -195,6 +195,40 @@ builder.Services.Configure<IdentityPolicyOptions>(
     builder.Configuration.GetSection(IdentityPolicyOptions.SectionName)
 );
 
+// Register runtime identity policies holder (read-only for now; requires restart to change)
+builder.Services.AddSingleton<TansuCloud.Identity.Infrastructure.Runtime.IIdentityPoliciesRuntime>(
+    sp =>
+    {
+        var identityOpts = sp.GetRequiredService<
+            Microsoft.Extensions.Options.IOptions<Microsoft.AspNetCore.Identity.IdentityOptions>
+        >();
+        var policyOpts = sp.GetRequiredService<
+            Microsoft.Extensions.Options.IOptions<TansuCloud.Identity.Infrastructure.Options.IdentityPolicyOptions>
+        >();
+        var config = new TansuCloud.Identity.Infrastructure.Runtime.IdentityPoliciesConfig
+        {
+            PasswordRequiredLength = identityOpts.Value.Password.RequiredLength,
+            PasswordRequireDigit = identityOpts.Value.Password.RequireDigit,
+            PasswordRequireUppercase = identityOpts.Value.Password.RequireUppercase,
+            PasswordRequireLowercase = identityOpts.Value.Password.RequireLowercase,
+            PasswordRequireNonAlphanumeric = identityOpts
+                .Value
+                .Password
+                .RequireNonAlphanumeric,
+            LockoutEnabled = identityOpts.Value.Lockout.AllowedForNewUsers,
+            LockoutMaxFailedAttempts = identityOpts.Value.Lockout.MaxFailedAccessAttempts,
+            LockoutDurationMinutes = (int)identityOpts
+                .Value
+                .Lockout
+                .DefaultLockoutTimeSpan
+                .TotalMinutes,
+            AccessTokenLifetimeSeconds = (int)policyOpts.Value.AccessTokenLifetime.TotalSeconds,
+            RefreshTokenLifetimeSeconds = (int)policyOpts.Value.RefreshTokenLifetime.TotalSeconds
+        };
+        return new TansuCloud.Identity.Infrastructure.Runtime.IdentityPoliciesRuntime(config);
+    }
+);
+
 // HybridCache + Redis (optional)
 var redisConn = builder.Configuration["Cache:Redis"];
 var cacheDisabled = builder.Configuration.GetValue("Cache:Disable", false);
@@ -533,6 +567,70 @@ app.UseMiddleware<RequestEnrichmentMiddleware>();
 app.UseStaticFiles();
 app.UseAuthentication();
 app.UseAuthorization();
+
+// Admin API endpoints for Identity policies configuration
+var adminGroup = app.MapGroup("/admin/api");
+if (app.Environment.IsDevelopment())
+{
+    adminGroup.AllowAnonymous();
+}
+else
+{
+    adminGroup.RequireAuthorization("AdminOnly");
+}
+
+adminGroup
+    .MapGet(
+        "/identity/policies",
+        (
+            Microsoft.Extensions.Options.IOptions<Microsoft.AspNetCore.Identity.IdentityOptions> identityOpts,
+            Microsoft.Extensions.Options.IOptions<TansuCloud.Identity.Infrastructure.Options.IdentityPolicyOptions> policyOpts
+        ) =>
+        {
+            var identity = identityOpts.Value;
+            var policy = policyOpts.Value;
+            return Results.Json(
+                new
+                {
+                    password = new
+                    {
+                        requiredLength = identity.Password.RequiredLength,
+                        requireDigit = identity.Password.RequireDigit,
+                        requireUppercase = identity.Password.RequireUppercase,
+                        requireLowercase = identity.Password.RequireLowercase,
+                        requireNonAlphanumeric = identity.Password.RequireNonAlphanumeric
+                    },
+                    lockout = new
+                    {
+                        enabled = identity.Lockout.AllowedForNewUsers,
+                        maxFailedAttempts = identity.Lockout.MaxFailedAccessAttempts,
+                        durationMinutes = (int)identity.Lockout.DefaultLockoutTimeSpan.TotalMinutes
+                    },
+                    tokens = new
+                    {
+                        accessTokenLifetimeSeconds = (int)policy.AccessTokenLifetime.TotalSeconds,
+                        refreshTokenLifetimeSeconds = (int)policy.RefreshTokenLifetime.TotalSeconds
+                    }
+                }
+            );
+        }
+    )
+    .WithDisplayName("Admin: Get identity policies");
+
+adminGroup
+    .MapPost(
+        "/identity/policies",
+        (HttpContext http) =>
+        {
+            return Results.Problem(
+                title: "Not implemented",
+                detail:
+                    "Identity policy updates require service restart. Use configuration files or environment variables to change these settings.",
+                statusCode: StatusCodes.Status501NotImplemented
+            );
+        }
+    )
+    .WithDisplayName("Admin: Update identity policies (not implemented)");
 
 // Map endpoints using minimal routing (OpenIddict registers its routes during UseOpenIddict)
 app.MapControllers();

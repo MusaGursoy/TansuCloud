@@ -12,8 +12,12 @@ using TansuCloud.Observability.Caching;
 
 namespace TansuCloud.Database.Controllers;
 
+/// <summary>
+/// Manages collections of documents with CRUD operations, caching, and conditional requests.
+/// </summary>
 [ApiController]
 [Route("api/collections")]
+[Produces("application/json")]
 public sealed class CollectionsController(
     ITenantDbContextFactory factory,
     ILogger<CollectionsController> logger,
@@ -38,8 +42,18 @@ public sealed class CollectionsController(
         return $"t:{tenant}:v{ver}:db:collections:{string.Join(':', parts)}";
     }
 
+    /// <summary>
+    /// Request DTO for creating a new collection.
+    /// </summary>
+    /// <param name="name">The name of the collection (required).</param>
     public sealed record CreateCollectionDto(string name);
 
+    /// <summary>
+    /// Response DTO representing a collection.
+    /// </summary>
+    /// <param name="id">Unique identifier of the collection.</param>
+    /// <param name="name">Name of the collection.</param>
+    /// <param name="createdAt">Timestamp when the collection was created.</param>
     public sealed record CollectionDto(Guid id, string name, DateTimeOffset createdAt);
 
     // Conditional helpers (weak ETag compare + header parsing)
@@ -99,8 +113,23 @@ public sealed class CollectionsController(
         return false;
     } // End of Method AnyIfMatchMatches
 
+    /// <summary>
+    /// Lists all collections with pagination support.
+    /// </summary>
+    /// <param name="page">Page number (default: 1).</param>
+    /// <param name="pageSize">Number of items per page (default: 50, max: 500).</param>
+    /// <param name="ct">Cancellation token.</param>
+    /// <returns>Paginated list of collections with weak ETag support.</returns>
+    /// <response code="200">Returns the list of collections.</response>
+    /// <response code="304">Not Modified - ETag matches (If-None-Match).</response>
+    /// <response code="400">Invalid pagination parameters.</response>
+    /// <response code="401">Unauthorized - missing or invalid JWT token.</response>
     [HttpGet]
     [Authorize(Policy = "db.read")]
+    [ProducesResponseType(typeof(object), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status304NotModified)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status401Unauthorized)]
     public async Task<ActionResult<object>> List(
         [FromQuery] int page = 1,
         [FromQuery] int pageSize = 50,

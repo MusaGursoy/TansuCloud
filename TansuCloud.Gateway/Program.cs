@@ -19,6 +19,7 @@ using Microsoft.AspNetCore.DataProtection.StackExchangeRedis;
 using Microsoft.AspNetCore.Diagnostics.HealthChecks;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.OutputCaching;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Caching.Hybrid;
 using Microsoft.Extensions.Caching.StackExchangeRedis;
 using Microsoft.Extensions.Diagnostics.HealthChecks;
@@ -29,6 +30,7 @@ using OpenTelemetry.Metrics;
 using OpenTelemetry.Resources;
 using OpenTelemetry.Trace;
 using StackExchange.Redis;
+using TansuCloud.Gateway.Middleware;
 using TansuCloud.Gateway.Observability;
 using TansuCloud.Gateway.Services;
 using TansuCloud.Observability;
@@ -129,6 +131,7 @@ builder
         metrics.AddHttpClientInstrumentation();
         // Export custom gateway proxy meter so SigNoz captures our series via OTLP
         metrics.AddMeter("TansuCloud.Gateway.Proxy");
+        metrics.AddMeter("TansuCloud.Gateway.Policy");
         metrics.AddMeter("TansuCloud.Audit");
         // Export OTLP diagnostics/gauges
         metrics.AddMeter("tansu.otel.exporter");
@@ -366,6 +369,10 @@ else
 
 // Gateway knobs: rate limit window for Retry-After, and static assets cache TTL
 var rateLimitWindowSeconds = builder.Configuration.GetValue("Gateway:RateLimits:WindowSeconds", 10);
+var defaultOutputCacheTtl = builder.Configuration.GetValue(
+    "Gateway:OutputCache:DefaultTtlSeconds",
+    15
+);
 var staticAssetsTtlSeconds = builder.Configuration.GetValue(
     "Gateway:OutputCache:StaticTtlSeconds",
     300
@@ -449,6 +456,20 @@ builder.Services.AddSingleton<RateLimitRejectionAggregator>(sp =>
 // Domains/TLS runtime registry (Iteration 2 Task 17 - scaffold)
 var domainTlsRuntime = new DomainTlsRuntime();
 builder.Services.AddSingleton<IDomainTlsRuntime>(domainTlsRuntime);
+
+// OutputCache runtime configuration (Task 17 - OutputCache editor)
+var outputCacheRuntime = new OutputCacheRuntime(defaultOutputCacheTtl, staticAssetsTtlSeconds);
+builder.Services.AddSingleton<IOutputCacheRuntime>(outputCacheRuntime);
+
+// Policy Center runtime with PostgreSQL persistence (Task 17 - Policy Center)
+var gatewayDbConnectionString = builder.Configuration.GetConnectionString("GatewayDb")
+    ?? throw new InvalidOperationException("GatewayDb connection string not configured");
+
+builder.Services.AddDbContext<TansuCloud.Gateway.Data.PolicyDbContext>(options =>
+    options.UseNpgsql(gatewayDbConnectionString));
+
+builder.Services.AddScoped<TansuCloud.Gateway.Data.IPolicyStore, TansuCloud.Gateway.Data.PolicyStore>();
+builder.Services.AddSingleton<IPolicyRuntime, PolicyRuntime>();
 
 // Safety controls: Rate Limiting
 builder.Services.AddRateLimiter(options =>
@@ -535,29 +556,19 @@ builder.Services.AddRateLimiter(options =>
     });
 });
 
-// Output caching: tenant-aware variation and safe defaults
+// Output caching: tenant-aware variation and safe defaults with runtime TTL
 builder.Services.AddOutputCache(options =>
 {
-    var defaultTtlSeconds = builder.Configuration.GetValue(
-        "Gateway:OutputCache:DefaultTtlSeconds",
-        15
-    );
-    options.AddBasePolicy(policy =>
-        policy
-            .Cache() // default: GET/HEAD, 200s
-            .Expire(TimeSpan.FromSeconds(Math.Max(0, defaultTtlSeconds)))
-            .SetVaryByHeader("X-Tansu-Tenant", "Accept", "Accept-Encoding")
-            .SetVaryByHost(true)
-    );
-    // Named policy for public static assets (longer TTL, minimal vary-by)
+    options.AddBasePolicy(new RuntimeOutputCachePolicy(outputCacheRuntime, isStatic: false));
     options.AddPolicy(
         "PublicStaticLong",
-        policy =>
-            policy
-                .Cache()
-                .Expire(TimeSpan.FromSeconds(Math.Max(0, staticAssetsTtlSeconds)))
-                .SetVaryByHeader("Accept-Encoding")
-                .SetVaryByHost(true)
+        new RuntimeOutputCachePolicy(outputCacheRuntime, isStatic: true)
+    );
+    
+    // Add dynamic cache policy that reads from PolicyRuntime
+    options.AddPolicy(
+        "DynamicCachePolicy",
+        builder => builder.AddPolicy<TansuCloud.Gateway.OutputCache.DynamicCachePolicy>()
     );
 });
 
@@ -1356,8 +1367,33 @@ var app = builder.Build();
 using (var scope = app.Services.CreateScope())
 {
     var logger = scope.ServiceProvider.GetRequiredService<ILogger<Program>>();
-    await TansuCloud.Observability.Auditing.AuditServiceCollectionExtensions
-        .ApplyAuditMigrationsAsync(scope.ServiceProvider, logger);
+    await TansuCloud.Observability.Auditing.AuditServiceCollectionExtensions.ApplyAuditMigrationsAsync(
+        scope.ServiceProvider,
+        logger
+    );
+}
+
+// Apply policy database migrations and load policies from database
+using (var scope = app.Services.CreateScope())
+{
+    var logger = scope.ServiceProvider.GetRequiredService<ILogger<Program>>();
+    try
+    {
+        // Apply migrations idempotently
+        var policyDbContext = scope.ServiceProvider.GetRequiredService<TansuCloud.Gateway.Data.PolicyDbContext>();
+        await policyDbContext.Database.MigrateAsync();
+        logger.LogInformation("Policy database migrations applied successfully");
+
+        // Load policies from database into runtime cache
+        var policyRuntime = app.Services.GetRequiredService<IPolicyRuntime>();
+        await policyRuntime.LoadFromStoreAsync();
+        logger.LogInformation("Policies loaded from database into runtime cache");
+    }
+    catch (Exception ex)
+    {
+        logger.LogError(ex, "Failed to apply policy database migrations or load policies");
+        throw;
+    }
 }
 
 // Support WebSockets through the gateway and send regular pings
@@ -1394,7 +1430,8 @@ app.Use(
 app.UseRateLimiter();
 
 // CORS before proxy to ensure preflight and headers are handled at the edge
-app.UseCors("Default");
+// DISABLED: CORS is now handled by PolicyEnforcementMiddleware for policy-based control
+// app.UseCors("Default");
 
 // Startup diagnostic: log OIDC metadata source choice (Task 38)
 try
@@ -1697,6 +1734,9 @@ app.MapHealthChecks(
         }
     )
     .AllowAnonymous();
+
+// Policy enforcement middleware (CORS, IP allow/deny with staged rollout)
+app.UseMiddleware<PolicyEnforcementMiddleware>();
 
 // Enable authentication/authorization (required for admin API JWT validation)
 app.UseAuthentication();
@@ -2190,6 +2230,474 @@ adminGroup
         }
     )
     .WithDisplayName("Admin: Set rate limits");
+
+// Policy Center admin endpoints (Task 17 - Policy Center)
+adminGroup
+    .MapGet("/policies", async (IPolicyRuntime runtime) =>
+    {
+        var policies = await runtime.GetAllAsync();
+        return Results.Json(policies);
+    })
+    .WithDisplayName("Admin: List all policies");
+
+adminGroup
+    .MapGet(
+        "/policies/{id}",
+        async (IPolicyRuntime runtime, string id) =>
+        {
+            var policy = await runtime.GetByIdAsync(id);
+            return policy is not null ? Results.Json(policy) : Results.NotFound();
+        }
+    )
+    .WithDisplayName("Admin: Get policy by ID");
+
+adminGroup
+    .MapPost(
+        "/policies",
+        async (
+            HttpContext http,
+            IPolicyRuntime runtime,
+            JsonElement body,
+            ILoggerFactory loggerFactory,
+            IAuditLogger audit
+        ) =>
+        {
+            var adminLogger = loggerFactory.CreateLogger("Gateway.Admin");
+            var remote = http.Connection.RemoteIpAddress?.ToString() ?? "unknown";
+
+            try
+            {
+                // Parse policy entry
+                var id = body.GetProperty("id").GetString();
+                
+                // Handle both integer and string formats for type
+                var typeProp = body.GetProperty("type");
+                string? typeStr = typeProp.ValueKind == JsonValueKind.Number 
+                    ? typeProp.GetInt32().ToString()
+                    : typeProp.GetString();
+                
+                // Handle both integer and string formats for mode
+                var modeProp = body.GetProperty("mode");
+                string? modeStr = modeProp.ValueKind == JsonValueKind.Number
+                    ? modeProp.GetInt32().ToString()
+                    : modeProp.GetString();
+                
+                var description = body.TryGetProperty("description", out var descProp)
+                    ? descProp.GetString()
+                    : string.Empty;
+                var config = body.GetProperty("config");
+
+                if (
+                    string.IsNullOrWhiteSpace(id)
+                    || string.IsNullOrWhiteSpace(typeStr)
+                    || string.IsNullOrWhiteSpace(modeStr)
+                )
+                {
+                    return Results.Problem(
+                        title: "Invalid policy",
+                        detail: "Policy must have id, type, and mode.",
+                        statusCode: StatusCodes.Status400BadRequest
+                    );
+                }
+
+                if (
+                    !Enum.TryParse<PolicyType>(typeStr, ignoreCase: true, out var policyType)
+                    || !Enum.TryParse<PolicyEnforcementMode>(
+                        modeStr,
+                        ignoreCase: true,
+                        out var enforcementMode
+                    )
+                )
+                {
+                    return Results.Problem(
+                        title: "Invalid policy",
+                        detail: "Invalid type or mode value.",
+                        statusCode: StatusCodes.Status400BadRequest
+                    );
+                }
+
+                var policy = new PolicyEntry
+                {
+                    Id = id!,
+                    Type = policyType,
+                    Mode = enforcementMode,
+                    Description = description ?? string.Empty,
+                    Config = config,
+                    CreatedAt = DateTime.UtcNow,
+                    UpdatedAt = DateTime.UtcNow,
+                    Enabled = true
+                };
+
+                await runtime.UpsertAsync(policy);
+
+                adminLogger.LogInformation(
+                    "Policy upserted by {Remote}: Id={PolicyId}, Type={Type}, Mode={Mode}",
+                    remote,
+                    policy.Id,
+                    policy.Type,
+                    policy.Mode
+                );
+
+                // Audit success
+                try
+                {
+                    var ev = new TansuCloud.Observability.Auditing.AuditEvent
+                    {
+                        Category = "Admin",
+                        Action = "PolicyUpsert",
+                        Outcome = "Success",
+                        Subject = http.User?.Identity?.Name ?? "anonymous",
+                        CorrelationId = http.TraceIdentifier
+                    };
+                    audit.TryEnqueueRedacted(
+                        ev,
+                        new { PolicyId = policy.Id, Type = policy.Type, Mode = policy.Mode },
+                        new[] { "PolicyId", "Type", "Mode" }
+                    );
+                }
+                catch { }
+
+                return Results.Json(policy);
+            }
+            catch (Exception ex)
+            {
+                adminLogger.LogError(ex, "Failed to upsert policy");
+                return Results.Problem(
+                    title: "Error upserting policy",
+                    detail: ex.Message,
+                    statusCode: StatusCodes.Status500InternalServerError
+                );
+            }
+        }
+    )
+    .WithDisplayName("Admin: Create or update policy");
+
+adminGroup
+    .MapDelete(
+        "/policies/{id}",
+        async (
+            HttpContext http,
+            IPolicyRuntime runtime,
+            string id,
+            ILoggerFactory loggerFactory,
+            IAuditLogger audit
+        ) =>
+        {
+            var adminLogger = loggerFactory.CreateLogger("Gateway.Admin");
+            var remote = http.Connection.RemoteIpAddress?.ToString() ?? "unknown";
+
+            var policy = await runtime.GetByIdAsync(id);
+            if (policy is null)
+            {
+                return Results.NotFound();
+            }
+
+            var removed = await runtime.DeleteAsync(id);
+            if (removed)
+            {
+                adminLogger.LogInformation(
+                    "Policy deleted by {Remote}: Id={PolicyId}, Type={Type}",
+                    remote,
+                    id,
+                    policy.Type
+                );
+
+                // Audit success
+                try
+                {
+                    var ev = new TansuCloud.Observability.Auditing.AuditEvent
+                    {
+                        Category = "Admin",
+                        Action = "PolicyDelete",
+                        Outcome = "Success",
+                        Subject = http.User?.Identity?.Name ?? "anonymous",
+                        CorrelationId = http.TraceIdentifier
+                    };
+                    audit.TryEnqueueRedacted(
+                        ev,
+                        new { PolicyId = id, Type = policy.Type },
+                        new[] { "PolicyId", "Type" }
+                    );
+                }
+                catch { }
+
+                return Results.NoContent();
+            }
+
+            return Results.Problem(
+                title: "Error deleting policy",
+                detail: "Failed to remove policy.",
+                statusCode: StatusCodes.Status500InternalServerError
+            );
+        }
+    )
+    .WithDisplayName("Admin: Delete policy");
+
+// Policy simulator endpoints (Task 17 - Cache & Rate Limit Policies)
+adminGroup
+    .MapPost(
+        "/policies/simulate/cache",
+        async (
+            HttpContext http,
+            HttpRequest request,
+            JsonElement body,
+            ILoggerFactory loggerFactory
+        ) =>
+        {
+            var logger = loggerFactory.CreateLogger("Gateway.PolicySimulator");
+            try
+            {
+                // Parse request
+                var policyId = body.GetProperty("policyId").GetString();
+                var config = body.GetProperty("config");
+                var req = body.GetProperty("request");
+                var url = req.GetProperty("url").GetString();
+                var method = req.GetProperty("method").GetString() ?? "GET";
+                var headers = req.TryGetProperty("headers", out var hdrProp)
+                    ? JsonSerializer.Deserialize<Dictionary<string, string>>(hdrProp.GetRawText())
+                    : new Dictionary<string, string>();
+
+                if (headers is null)
+                {
+                    headers = new Dictionary<string, string>();
+                }
+
+                if (string.IsNullOrWhiteSpace(url))
+                {
+                    return Results.Problem(
+                        title: "Invalid request",
+                        detail: "URL is required.",
+                        statusCode: StatusCodes.Status400BadRequest
+                    );
+                }
+
+                // Parse cache config
+                var jsonOptions = new JsonSerializerOptions
+                {
+                    PropertyNameCaseInsensitive = true
+                };
+                var cacheConfig = JsonSerializer.Deserialize<CacheConfig>(config.GetRawText(), jsonOptions);
+                if (cacheConfig is null)
+                {
+                    return Results.Problem(
+                        title: "Invalid config",
+                        detail: "Cache configuration is required.",
+                        statusCode: StatusCodes.Status400BadRequest
+                    );
+                }
+
+                // Build cache key (simplified simulation)
+                var keyParts = new List<string> { method.ToUpperInvariant(), url };
+
+                var varyByParams = new List<string>();
+                
+                if (cacheConfig.VaryByHost && headers.ContainsKey("Host"))
+                {
+                    keyParts.Add($"h:{headers["Host"]}");
+                    varyByParams.Add("Host");
+                }
+
+                if (cacheConfig.VaryByQuery is not null)
+                {
+                    var uri = new Uri(url, UriKind.RelativeOrAbsolute);
+                    if (!uri.IsAbsoluteUri)
+                    {
+                        uri = new Uri("http://localhost" + url);
+                    }
+                    var query = System.Web.HttpUtility.ParseQueryString(uri.Query);
+                    
+                    if (cacheConfig.VaryByQuery.Count == 0)
+                    {
+                        // Explicit empty list = don't vary by query
+                    }
+                    else
+                    {
+                        foreach (var key in cacheConfig.VaryByQuery)
+                        {
+                            var value = query[key];
+                            if (value != null)
+                            {
+                                keyParts.Add($"q:{key}={value}");
+                                varyByParams.Add($"Query.{key}");
+                            }
+                        }
+                    }
+                }
+
+                if (cacheConfig.VaryByHeaders?.Count > 0)
+                {
+                    foreach (var header in cacheConfig.VaryByHeaders)
+                    {
+                        if (headers.ContainsKey(header))
+                        {
+                            keyParts.Add($"hdr:{header}={headers[header]}");
+                            varyByParams.Add($"Header.{header}");
+                        }
+                    }
+                }
+
+                if (cacheConfig.VaryByRouteValues?.Count > 0)
+                {
+                    foreach (var route in cacheConfig.VaryByRouteValues)
+                    {
+                        // Simulated route extraction (simplified)
+                        keyParts.Add($"route:{route}=<extracted>");
+                        varyByParams.Add($"Route.{route}");
+                    }
+                }
+
+                var cacheKey = string.Join("|", keyParts);
+                
+                // Simulate cache miss (always miss in simulation)
+                var result = new
+                {
+                    cacheHit = false,
+                    cacheKey,
+                    ttlSeconds = cacheConfig.TtlSeconds, // Use actual TTL from config
+                    varyByParameters = varyByParams,
+                    message = "Simulation always returns MISS. In production, subsequent requests with identical cache key would HIT."
+                };
+
+                logger.LogInformation(
+                    "Cache policy simulation: PolicyId={PolicyId}, CacheKey={CacheKey}, TTL={TtlSeconds}",
+                    policyId,
+                    cacheKey,
+                    cacheConfig.TtlSeconds
+                );
+
+                return Results.Json(result);
+            }
+            catch (Exception ex)
+            {
+                logger.LogError(ex, "Cache policy simulation failed");
+                return Results.Problem(
+                    title: "Simulation error",
+                    detail: ex.Message,
+                    statusCode: StatusCodes.Status500InternalServerError
+                );
+            }
+        }
+    )
+    .WithDisplayName("Admin: Simulate cache policy");
+
+// Helper function to extract client IP from headers or connection
+static string GetClientIp(HttpContext http, Dictionary<string, string> headers)
+{
+    // Check X-Forwarded-For header first (for tests and proxied requests)
+    if (headers.TryGetValue("X-Forwarded-For", out var forwardedFor) && !string.IsNullOrWhiteSpace(forwardedFor))
+    {
+        // X-Forwarded-For can contain multiple IPs, take the first one
+        var firstIp = forwardedFor.Split(',')[0].Trim();
+        return $"ip:{firstIp}";
+    }
+
+    // Fallback to connection RemoteIpAddress
+    var remoteIp = http.Connection.RemoteIpAddress?.ToString() ?? "unknown";
+    return $"ip:{remoteIp}";
+} // End of GetClientIp helper
+
+adminGroup
+    .MapPost(
+        "/policies/simulate/rate-limit",
+        async (
+            HttpContext http,
+            HttpRequest request,
+            JsonElement body,
+            ILoggerFactory loggerFactory
+        ) =>
+        {
+            var logger = loggerFactory.CreateLogger("Gateway.PolicySimulator");
+            try
+            {
+                // Parse request
+                var policyId = body.GetProperty("policyId").GetString();
+                var config = body.GetProperty("config");
+                var req = body.GetProperty("request");
+                var url = req.GetProperty("url").GetString();
+                var method = req.GetProperty("method").GetString() ?? "GET";
+                var headers = req.TryGetProperty("headers", out var hdrProp)
+                    ? JsonSerializer.Deserialize<Dictionary<string, string>>(hdrProp.GetRawText())
+                    : new Dictionary<string, string>();
+                var userId = req.TryGetProperty("userId", out var userProp)
+                    ? userProp.GetString()
+                    : null;
+
+                if (headers is null)
+                {
+                    headers = new Dictionary<string, string>();
+                }
+
+                if (string.IsNullOrWhiteSpace(url))
+                {
+                    return Results.Problem(
+                        title: "Invalid request",
+                        detail: "URL is required.",
+                        statusCode: StatusCodes.Status400BadRequest
+                    );
+                }
+
+                // Parse rate limit config
+                var jsonOptions = new JsonSerializerOptions
+                {
+                    PropertyNameCaseInsensitive = true
+                };
+                var rateLimitConfig = JsonSerializer.Deserialize<RateLimitConfig>(config.GetRawText(), jsonOptions);
+                if (rateLimitConfig is null)
+                {
+                    return Results.Problem(
+                        title: "Invalid config",
+                        detail: "Rate limit configuration is required.",
+                        statusCode: StatusCodes.Status400BadRequest
+                    );
+                }
+
+                // Determine partition key based on strategy
+                string partitionKey = rateLimitConfig.PartitionStrategy switch
+                {
+                    "Global" => "global",
+                    "PerIp" => GetClientIp(http, headers),
+                    "PerUser" => string.IsNullOrWhiteSpace(userId)
+                        ? "user:anonymous"
+                        : $"user:{userId}",
+                    "PerHost" => headers.ContainsKey("Host")
+                        ? $"host:{headers["Host"]}"
+                        : "host:unknown",
+                    _ => "global"
+                };
+
+                // Simulate rate limit evaluation (always allow in simulation)
+                var result = new
+                {
+                    allowed = true,
+                    partitionKey,
+                    permitLimit = rateLimitConfig.PermitLimit,
+                    permitsRemaining = rateLimitConfig.PermitLimit - 1, // Simulate 1 request consumed
+                    windowSeconds = rateLimitConfig.WindowSeconds,
+                    retryAfterSeconds = rateLimitConfig.RetryAfterSeconds ?? rateLimitConfig.WindowSeconds,
+                    message = $"Simulation uses partition strategy '{rateLimitConfig.PartitionStrategy}'. In production, requests would be counted per partition key."
+                };
+
+                logger.LogInformation(
+                    "Rate limit policy simulation: PolicyId={PolicyId}, PartitionKey={PartitionKey}, Strategy={Strategy}",
+                    policyId,
+                    partitionKey,
+                    rateLimitConfig.PartitionStrategy
+                );
+
+                return Results.Json(result);
+            }
+            catch (Exception ex)
+            {
+                logger.LogError(ex, "Rate limit policy simulation failed");
+                return Results.Problem(
+                    title: "Simulation error",
+                    detail: ex.Message,
+                    statusCode: StatusCodes.Status500InternalServerError
+                );
+            }
+        }
+    )
+    .WithDisplayName("Admin: Simulate rate limit policy");
 
 // Domains/TLS admin endpoints (scaffold)
 adminGroup
@@ -2711,6 +3219,141 @@ adminGroup
         }
     )
     .WithDisplayName("Admin: YARP clusters health");
+
+// OutputCache admin endpoints - get/update TTL configuration
+adminGroup
+    .MapGet("/output-cache", (IOutputCacheRuntime runtime) => Results.Json(runtime.GetCurrent()))
+    .WithDisplayName("Admin: Get output cache config");
+
+adminGroup
+    .MapPost(
+        "/output-cache",
+        (
+            HttpContext http,
+            IOutputCacheRuntime runtime,
+            IAuditLogger audit,
+            [FromBody] OutputCacheConfig body
+        ) =>
+        {
+            if (body is null)
+            {
+                return Results.Problem(
+                    title: "Invalid body",
+                    detail: "Request body is required.",
+                    statusCode: StatusCodes.Status400BadRequest
+                );
+            }
+            var errors = new List<string>();
+            if (body.DefaultTtlSeconds < 0)
+                errors.Add("DefaultTtlSeconds must be >= 0.");
+            if (body.StaticTtlSeconds < 0)
+                errors.Add("StaticTtlSeconds must be >= 0.");
+            if (errors.Count > 0)
+            {
+                try
+                {
+                    var ev = new TansuCloud.Observability.Auditing.AuditEvent
+                    {
+                        Category = "Admin",
+                        Action = "OutputCacheUpdate",
+                        Outcome = "Failure",
+                        ReasonCode = "ValidationError",
+                        Subject = http.User?.Identity?.Name ?? "anonymous",
+                        CorrelationId = http.TraceIdentifier
+                    };
+                    audit.TryEnqueueRedacted(ev, new { Errors = errors }, new[] { "Errors" });
+                }
+                catch { }
+                return Results.ValidationProblem(
+                    new Dictionary<string, string[]> { ["output-cache"] = errors.ToArray() },
+                    statusCode: 400,
+                    title: "Validation failed"
+                );
+            }
+
+            try
+            {
+                var before = runtime.GetCurrent();
+                runtime.Update(body);
+                var after = runtime.GetCurrent();
+
+                // Audit success event
+                try
+                {
+                    var ev = new TansuCloud.Observability.Auditing.AuditEvent
+                    {
+                        Category = "Admin",
+                        Action = "OutputCacheUpdate",
+                        Outcome = "Success",
+                        Subject = http.User?.Identity?.Name ?? "anonymous",
+                        CorrelationId = http.TraceIdentifier
+                    };
+                    audit.TryEnqueueRedacted(
+                        ev,
+                        new
+                        {
+                            BeforeDefault = before.DefaultTtlSeconds,
+                            AfterDefault = after.DefaultTtlSeconds,
+                            BeforeStatic = before.StaticTtlSeconds,
+                            AfterStatic = after.StaticTtlSeconds
+                        },
+                        new[] { "BeforeDefault", "AfterDefault", "BeforeStatic", "AfterStatic" }
+                    );
+                }
+                catch { }
+
+                return Results.Json(after);
+            }
+            catch (Exception ex)
+            {
+                return Results.Problem(title: "Update failed", detail: ex.Message, statusCode: 500);
+            }
+        }
+    )
+    .WithDisplayName("Admin: Update output cache config");
+
+// Observability governance admin endpoint - return static dev defaults
+// Note: In production, this would read from SigNoz API or mounted config file
+adminGroup
+    .MapGet(
+        "/observability/governance",
+        () =>
+        {
+            // Return static governance config (dev defaults)
+            // This matches SigNoz/governance.dev.json structure
+            var config = new
+            {
+                retentionDays = new { traces = 7, logs = 7, metrics = 14 },
+                sampling = new { traceRatio = 1.0 },
+                alertSLOs = new[]
+                {
+                    new
+                    {
+                        id = "gateway_error_rate",
+                        description = "Gateway 5xx rate over 5m should stay < 1%",
+                        service = "tansu.gateway",
+                        kind = "error_rate",
+                        windowMinutes = 5,
+                        threshold = 0.01,
+                        comparison = "<"
+                    },
+                    new
+                    {
+                        id = "identity_latency",
+                        description = "Identity p95 latency over 5m should be < 300ms",
+                        service = "tansu.identity",
+                        kind = "latency_p95",
+                        windowMinutes = 5,
+                        threshold = 300.0,
+                        comparison = "<"
+                    }
+                }
+            };
+
+            return Results.Json(config);
+        }
+    )
+    .WithDisplayName("Admin: Get observability governance config");
 
 // Phase 0: dynamic log level override shim (Development only)
 if (app.Environment.IsDevelopment())

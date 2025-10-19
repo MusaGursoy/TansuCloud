@@ -19,13 +19,21 @@ public sealed class TestInfrastructureFixture : IAsyncLifetime
     public async Task InitializeAsync()
     {
         Console.WriteLine("[Fixture] Initializing infrastructure readiness checks...");
+        
+        // Clean up any orphaned test policies from previous runs BEFORE any tests start
+        await TestPolicyCleanupHelper.CleanupTestPoliciesAsync();
+        
         await WaitForPostgres();
         Console.WriteLine("[Fixture] Postgres ready.");
         await WaitForIdentityJwks();
         Console.WriteLine("[Fixture] Identity JWKS ready.");
     } // End of Method InitializeAsync
 
-    public Task DisposeAsync() => Task.CompletedTask; // End of Method DisposeAsync
+    public async Task DisposeAsync()
+    {
+        // Clean up after all tests complete
+        await TestPolicyCleanupHelper.CleanupTestPoliciesAsync();
+    } // End of Method DisposeAsync
 
     private static async Task WaitForPostgres()
     {

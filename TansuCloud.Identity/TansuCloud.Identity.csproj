@@ -9,12 +9,12 @@
 
   <ItemGroup>
     <PackageReference Include="Microsoft.VisualStudio.Azure.Containers.Tools.Targets" Version="1.22.1" />
-  <PackageReference Include="Microsoft.AspNetCore.Authentication.OpenIdConnect" Version="9.0.9" />
-  <PackageReference Include="Microsoft.AspNetCore.Identity.EntityFrameworkCore" Version="9.0.9" />
-  <PackageReference Include="Microsoft.AspNetCore.Identity.UI" Version="9.0.9" />
-  <PackageReference Include="Microsoft.EntityFrameworkCore" Version="9.0.9" />
-  <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" Version="9.0.9" />
-  <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="9.0.9">
+  <PackageReference Include="Microsoft.AspNetCore.Authentication.OpenIdConnect" Version="9.0.10" />
+  <PackageReference Include="Microsoft.AspNetCore.Identity.EntityFrameworkCore" Version="9.0.10" />
+  <PackageReference Include="Microsoft.AspNetCore.Identity.UI" Version="9.0.10" />
+  <PackageReference Include="Microsoft.EntityFrameworkCore" Version="9.0.10" />
+  <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" Version="9.0.10" />
+  <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="9.0.10">
       <PrivateAssets>all</PrivateAssets>
       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
     </PackageReference>
@@ -30,8 +30,8 @@
   <PackageReference Include="OpenTelemetry.Instrumentation.Runtime" Version="1.12.0" />
   <PackageReference Include="OpenTelemetry.Instrumentation.EntityFrameworkCore" Version="1.10.0-beta.1" />
   <PackageReference Include="OpenTelemetry.Instrumentation.StackExchangeRedis" Version="1.0.0-rc9.11" />
-  <PackageReference Include="Microsoft.Extensions.Caching.StackExchangeRedis" Version="9.0.9" />
-  <PackageReference Include="Microsoft.Extensions.Caching.Hybrid" Version="9.9.0" />
+  <PackageReference Include="Microsoft.Extensions.Caching.StackExchangeRedis" Version="9.0.10" />
+  <PackageReference Include="Microsoft.Extensions.Caching.Hybrid" Version="9.10.0" />
   </ItemGroup>
 
   <ItemGroup>

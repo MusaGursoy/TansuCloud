@@ -171,10 +171,6 @@ builder.Services.AddHostedService<DatabaseMigrationHostedService>();
 builder.Services.AddScoped<TansuCloud.Database.Services.SchemaVersionService>();
 builder.Services.AddHostedService<DatabaseSchemaHostedService>();
 
-// PgCat pool reconciliation (Task 43 - Phase 2)
-// Discovers tenant databases and ensures PgCat has corresponding pools configured
-builder.Services.AddHostedService<PgCatPoolHostedService>();
-
 // Phase 0: health transition publisher for Info logs on state changes
 builder.Services.AddSingleton<IHealthCheckPublisher, HealthTransitionPublisher>();
 builder.Services.Configure<HealthCheckPublisherOptions>(o =>
@@ -226,10 +222,65 @@ builder
 
 // Add services to the container.
 
-builder.Services.AddControllers();
+builder.Services.AddControllers()
+    .AddJsonOptions(options =>
+    {
+        // Configure JSON Patch support
+        options.JsonSerializerOptions.PropertyNamingPolicy = null; // Preserve property names for JSON Patch
+    });
 
 // Learn more about configuring OpenAPI at https://aka.ms/aspnet/openapi
 builder.Services.AddOpenApi();
+
+// Swagger/OpenAPI configuration
+builder.Services.AddEndpointsApiExplorer();
+builder.Services.AddSwaggerGen(options =>
+{
+    options.SwaggerDoc("v1", new Microsoft.OpenApi.Models.OpenApiInfo
+    {
+        Title = "TansuCloud Database API",
+        Version = "v1",
+        Description = "REST API for document storage with vector search capabilities",
+        Contact = new Microsoft.OpenApi.Models.OpenApiContact
+        {
+            Name = "TansuCloud",
+            Url = new Uri("https://github.com/MusaGursoy/TansuCloud")
+        }
+    });
+
+    // Include XML comments for better documentation
+    var xmlFile = $"{System.Reflection.Assembly.GetExecutingAssembly().GetName().Name}.xml";
+    var xmlPath = Path.Combine(AppContext.BaseDirectory, xmlFile);
+    if (File.Exists(xmlPath))
+    {
+        options.IncludeXmlComments(xmlPath);
+    }
+
+    // Configure JWT Bearer authentication in Swagger
+    options.AddSecurityDefinition("Bearer", new Microsoft.OpenApi.Models.OpenApiSecurityScheme
+    {
+        Description = "JWT Authorization header using the Bearer scheme. Enter 'Bearer' [space] and then your token.",
+        Name = "Authorization",
+        In = Microsoft.OpenApi.Models.ParameterLocation.Header,
+        Type = Microsoft.OpenApi.Models.SecuritySchemeType.ApiKey,
+        Scheme = "Bearer"
+    });
+
+    options.AddSecurityRequirement(new Microsoft.OpenApi.Models.OpenApiSecurityRequirement
+    {
+        {
+            new Microsoft.OpenApi.Models.OpenApiSecurityScheme
+            {
+                Reference = new Microsoft.OpenApi.Models.OpenApiReference
+                {
+                    Type = Microsoft.OpenApi.Models.ReferenceType.SecurityScheme,
+                    Id = "Bearer"
+                }
+            },
+            Array.Empty<string>()
+        }
+    });
+});
 
 // Options binding for provisioning and DI registrations
 builder
@@ -1047,6 +1098,13 @@ app.UseMiddleware<RequestEnrichmentMiddleware>();
 if (app.Environment.IsDevelopment())
 {
     app.MapOpenApi();
+    app.UseSwagger();
+    app.UseSwaggerUI(options =>
+    {
+        options.SwaggerEndpoint("/swagger/v1/swagger.json", "TansuCloud Database API v1");
+        options.RoutePrefix = "swagger"; // Access at /swagger
+        options.DocumentTitle = "TansuCloud Database API";
+    });
 }
 
 // Global exception handler to surface ProblemDetails on unhandled errors (helps E2E diagnose 500s)

@@ -1,29 +1,33 @@
 ﻿<CascadingAuthenticationState>
     <Router AppAssembly="@typeof(Program).Assembly">
         <Found Context="routeData">
-            <AuthorizeRouteView RouteData="routeData" DefaultLayout="typeof(Layout.MainLayout)">
+            <AuthorizeRouteView RouteData="routeData" DefaultLayout="typeof(Layout.AdminLayout)">
                 <NotAuthorized>
-                    <LayoutView Layout="typeof(Layout.MainLayout)">
-                        <div style="margin:2rem; font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif; color:#444;">
-                            Authorizing…
-                        </div>
+                    <LayoutView Layout="typeof(Layout.AdminLayout)">
+                        <MudContainer Class="mt-8">
+                            <MudProgressCircular Color="Color.Primary" Indeterminate="true" />
+                            <MudText Typo="Typo.h6" Class="ml-4">Authorizing…</MudText>
+                        </MudContainer>
                     </LayoutView>
                 </NotAuthorized>
                 <Authorizing>
-                    <LayoutView Layout="typeof(Layout.MainLayout)">
-                        <div style="margin:2rem; font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif; color:#444;">
-                            Loading…
-                        </div>
+                    <LayoutView Layout="typeof(Layout.AdminLayout)">
+                        <MudContainer Class="mt-8">
+                            <MudProgressCircular Color="Color.Primary" Indeterminate="true" />
+                            <MudText Typo="Typo.h6" Class="ml-4">Loading…</MudText>
+                        </MudContainer>
                     </LayoutView>
                 </Authorizing>
             </AuthorizeRouteView>
             <FocusOnNavigate RouteData="routeData" Selector="h1" />
         </Found>
         <NotFound>
-            <LayoutView Layout="typeof(Layout.MainLayout)">
-                <div style="margin:2rem; font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif; color:#444;">
-                    Loading Dashboard…
-                </div>
+            <LayoutView Layout="typeof(Layout.AdminLayout)">
+                <MudContainer Class="mt-8">
+                    <MudAlert Severity="Severity.Warning">
+                        Page not found. <MudLink Href="/">Return to Dashboard</MudLink>
+                    </MudAlert>
+                </MudContainer>
             </LayoutView>
         </NotFound>
     </Router>

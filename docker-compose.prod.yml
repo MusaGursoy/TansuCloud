@@ -357,6 +357,8 @@ services:
         limits:
           cpus: "1.0"
           memory: 2G
+    volumes:
+      - tansu-gateway-keys:/keys
     environment:
       # For local HTTP testing, use Development (allows HTTP OIDC). For true production with HTTPS, use Production.
       ASPNETCORE_ENVIRONMENT: Production
@@ -372,8 +374,11 @@ services:
       # OTLP exporter endpoint - defaults to internal collector when observability profile is active
       OpenTelemetry__Otlp__Endpoint: ${OTLP_ENDPOINT:-http://signoz-otel-collector:4317}
       Cache__Redis: redis:6379
+      Gateway__TrustForwardedHeaders: "true"
       # Route audit writes via PgCat
       Audit__ConnectionString: "Host=pgcat;Port=6432;Database=postgres;Username=${POSTGRES_USER};Password=${POSTGRES_PASSWORD}"
+      # Policy Center persistence (shares Identity database)
+      ConnectionStrings__GatewayDb: "Host=pgcat;Port=6432;Database=tansu_identity;Username=${POSTGRES_USER};Password=${POSTGRES_PASSWORD}"
     ports:
       - "80:8080"
       # For E2E test compatibility, also expose on 8080 (matches dev behavior). For true production, comment out this mapping.
@@ -614,6 +619,8 @@ volumes:
   tansu-garnetdata:
     driver: local
   tansu-storagedata:
+    driver: local
+  tansu-gateway-keys:
     driver: local
   tansu-dashboard-keys:
     driver: local

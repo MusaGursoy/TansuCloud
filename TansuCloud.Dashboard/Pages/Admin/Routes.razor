@@ -54,8 +54,76 @@
 <div class="row g-3 mt-2">
 	<div class="col-12">
 		<div class="card p-3">
-			<h5 class="mb-2">Cluster health (GET /admin/api/routes/health)</h5>
-			<textarea class="form-control" rows="10" readonly value="@_healthJson"></textarea>
+			<div class="d-flex align-items-center justify-content-between mb-3">
+				<h5 class="mb-0">Cluster Health</h5>
+				@if (_healthData is not null)
+				{
+					<span class="badge bg-secondary">Probed: @_healthData.Path</span>
+				}
+			</div>
+			@if (_healthData is null)
+			{
+				<p class="text-muted">Click "Check health" to probe cluster destinations</p>
+			}
+			else
+			{
+				@foreach (var cluster in _healthData.Clusters)
+				{
+					<div class="mb-3">
+						<h6 class="mb-2">
+							<span class="badge bg-info">@cluster.ClusterId</span>
+							<small class="text-muted ms-2">(@cluster.Destinations.Count destination(s))</small>
+						</h6>
+						<div class="table-responsive">
+							<table class="table table-sm table-bordered" data-testid="health-table-@cluster.ClusterId">
+								<thead class="table-light">
+									<tr>
+										<th>Destination</th>
+										<th>Address</th>
+										<th>Status</th>
+										<th>Elapsed (ms)</th>
+										<th>Error</th>
+									</tr>
+								</thead>
+								<tbody>
+									@foreach (var dest in cluster.Destinations)
+									{
+										<tr class="@(dest.Ok ? "table-success" : "table-danger")">
+											<td data-testid="dest-name">@dest.Name</td>
+											<td data-testid="dest-address"><small class="font-monospace">@dest.Address</small></td>
+											<td data-testid="dest-status">
+												@if (dest.Ok)
+												{
+													<span class="badge bg-success">@dest.Status OK</span>
+												}
+												else
+												{
+													<span class="badge bg-danger">@(dest.Status > 0 ? dest.Status.ToString() : "N/A")</span>
+												}
+											</td>
+											<td data-testid="dest-elapsed">@dest.ElapsedMs</td>
+											<td data-testid="dest-error">
+												@if (!string.IsNullOrEmpty(dest.Error))
+												{
+													<small class="text-danger">@dest.Error</small>
+												}
+												else
+												{
+													<span class="text-muted">—</span>
+												}
+											</td>
+										</tr>
+									}
+								</tbody>
+							</table>
+						</div>
+					</div>
+				}
+			}
+			<details class="mt-2">
+				<summary class="text-muted" style="cursor: pointer;">Raw JSON</summary>
+				<textarea class="form-control mt-2" rows="8" readonly value="@_healthJson"></textarea>
+			</details>
 		</div>
 	</div>
 </div>
@@ -69,6 +137,7 @@
 	private string? _ok;
 	private string? _msg;
 	private string? _healthJson;
+	private HealthResponse? _healthData;
 
 	private bool _canApply => IsValidJsonArray(_routesJson) && IsValidJsonArray(_clustersJson);
 	private string _summaryText => BuildSummaryText();
@@ -106,14 +175,59 @@
 	private async Task CheckHealthAsync()
 	{
 		_err = _warn = _ok = _msg = null;
+		_healthData = null;
 		try
 		{
 			var res = await Http.GetAsync("/admin/api/routes/health");
 			if (res.IsSuccessStatusCode)
 			{
 				var json = await res.Content.ReadAsStringAsync();
+				_healthJson = json;
+				
+				// Parse the response into our model for display
 				using var doc = JsonDocument.Parse(json);
-				_healthJson = ToIndentedJson(doc.RootElement);
+				var root = doc.RootElement;
+				var path = root.GetProperty("path").GetString() ?? "/health/ready";
+				var clusters = new List<ClusterHealth>();
+				
+				if (root.TryGetProperty("clusters", out var clustersEl))
+				{
+					foreach (var clusterEl in clustersEl.EnumerateArray())
+					{
+						var clusterId = clusterEl.GetProperty("clusterId").GetString() ?? "unknown";
+						var destinations = new List<DestinationHealth>();
+						
+						if (clusterEl.TryGetProperty("destinations", out var destsEl))
+						{
+							foreach (var destEl in destsEl.EnumerateArray())
+							{
+								destinations.Add(new DestinationHealth
+								{
+									Name = destEl.GetProperty("name").GetString() ?? "unknown",
+									Address = destEl.GetProperty("address").GetString() ?? string.Empty,
+									Status = destEl.GetProperty("status").GetInt32(),
+									Ok = destEl.GetProperty("ok").GetBoolean(),
+									ElapsedMs = destEl.GetProperty("elapsedMs").GetInt64(),
+									Error = destEl.TryGetProperty("error", out var errEl) && errEl.ValueKind != JsonValueKind.Null 
+										? errEl.GetString() 
+										: null
+								});
+							}
+						}
+						
+						clusters.Add(new ClusterHealth
+						{
+							ClusterId = clusterId,
+							Destinations = destinations
+						});
+					}
+				}
+				
+				_healthData = new HealthResponse
+				{
+					Path = path,
+					Clusters = clusters
+				};
 				_ok = "Health checked";
 			}
 			else
@@ -242,5 +356,28 @@
 		{
 			return string.Empty;
 		}
+	}
+
+	// Health check response models
+	private record HealthResponse
+	{
+		public string Path { get; init; } = string.Empty;
+		public List<ClusterHealth> Clusters { get; init; } = new();
+	}
+
+	private record ClusterHealth
+	{
+		public string ClusterId { get; init; } = string.Empty;
+		public List<DestinationHealth> Destinations { get; init; } = new();
+	}
+
+	private record DestinationHealth
+	{
+		public string Name { get; init; } = string.Empty;
+		public string Address { get; init; } = string.Empty;
+		public int Status { get; init; }
+		public bool Ok { get; init; }
+		public long ElapsedMs { get; init; }
+		public string? Error { get; init; }
 	}
 }

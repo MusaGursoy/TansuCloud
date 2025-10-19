@@ -1,0 +1,192 @@
+@page "/admin/output-cache"
+@layout TansuCloud.Dashboard.Pages.Admin.AdminLayout
+@attribute [Microsoft.AspNetCore.Authorization.Authorize(Policy = "AdminOnly")]
+@inject IHttpClientFactory ClientFactory
+@using System.Net.Http.Json
+
+<h3>Gateway Output Cache (Dev)</h3>
+<p class="text-muted">Edit live gateway output-cache TTL settings. In dev, this calls the gateway dev admin API.</p>
+
+@if (error is not null)
+{
+    <div class="alert alert-danger">@error</div>
+}
+@if (!string.IsNullOrWhiteSpace(success))
+{
+    <div class="alert alert-success">@success</div>
+}
+
+<div class="mb-3 d-flex align-items-center gap-2">
+    <button class="btn btn-secondary" data-testid="btn-load" @onclick="LoadAsync">Load current</button>
+    <button class="btn btn-primary" data-testid="btn-save" @onclick="SaveClicked" disabled="@(!CanSave)">Save</button>
+</div>
+
+<div class="alert alert-info d-flex align-items-center" role="note">
+    <span class="me-2" aria-hidden="true">ℹ️</span>
+    OutputCache policies control response caching TTL. Changes take effect immediately for new requests.
+</div>
+
+@if (dto is null)
+{
+    <em>Click Load to fetch current settings…</em>
+}
+else
+{
+    <div class="card" style="max-width: 920px">
+        <div class="card-body">
+            @if (validationErrors.Count > 0)
+            {
+                <div class="alert alert-warning">
+                    <strong>Fix the following before saving:</strong>
+                    <ul>
+                        @foreach (var e in validationErrors)
+                        {
+                            <li>@e</li>
+                        }
+                    </ul>
+                </div>
+            }
+            <div class="row g-3">
+                <div class="col-md-6">
+                    <label class="form-label">Default TTL (seconds)</label>
+                    <input data-testid="input-default-ttl" type="number" class="form-control @(IsInvalid("default") ? "is-invalid" : null)" @bind-value="dto.DefaultTtlSeconds" @bind-value:event="oninput" @bind-value:after="Validate" />
+                    <div class="form-text">TTL for general API responses (base policy)</div>
+                </div>
+                <div class="col-md-6">
+                    <label class="form-label">Static Assets TTL (seconds)</label>
+                    <input data-testid="input-static-ttl" type="number" class="form-control @(IsInvalid("static") ? "is-invalid" : null)" @bind-value="dto.StaticTtlSeconds" @bind-value:event="oninput" @bind-value:after="Validate" />
+                    <div class="form-text">TTL for public static assets (PublicStaticLong policy)</div>
+                </div>
+            </div>
+        </div>
+    </div>
+}
+
+@if (showConfirmModal)
+{
+    <div class="modal show d-block" tabindex="-1" style="background-color: rgba(0,0,0,0.5)">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">Confirm Save</h5>
+                </div>
+                <div class="modal-body">
+                    <p>Changes:</p>
+                    <ul>
+                        <li>Default TTL: @beforeSave?.DefaultTtlSeconds → @dto?.DefaultTtlSeconds</li>
+                        <li>Static TTL: @beforeSave?.StaticTtlSeconds → @dto?.StaticTtlSeconds</li>
+                    </ul>
+                    <p class="text-warning">These changes take effect immediately for new requests.</p>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-testid="btn-cancel-save" @onclick="CancelSave">Cancel</button>
+                    <button type="button" class="btn btn-primary" data-testid="btn-confirm-save" @onclick="ConfirmSaveAsync">Confirm</button>
+                </div>
+            </div>
+        </div>
+    </div>
+}
+
+@code {
+    private OutputCacheConfigDto? dto;
+    private OutputCacheConfigDto? beforeSave;
+    private string? error;
+    private string? success;
+    private List<string> validationErrors = new();
+    private bool showConfirmModal;
+
+    private bool CanSave => dto is not null && validationErrors.Count == 0;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadAsync();
+    } // End of Method OnInitializedAsync
+
+    private async Task LoadAsync()
+    {
+        error = null;
+        success = null;
+        try
+        {
+            var client = ClientFactory.CreateClient("Gateway");
+            var resp = await client.GetAsync("/admin/api/output-cache");
+            if (!resp.IsSuccessStatusCode)
+            {
+                error = $"Gateway returned {resp.StatusCode}";
+                return;
+            }
+            dto = await resp.Content.ReadFromJsonAsync<OutputCacheConfigDto>();
+            Validate();
+            success = "Loaded current config";
+        }
+        catch (Exception ex)
+        {
+            error = $"Load failed: {ex.Message}";
+        }
+    } // End of Method LoadAsync
+
+    private void SaveClicked()
+    {
+        if (dto is null || validationErrors.Count > 0)
+            return;
+        beforeSave = new OutputCacheConfigDto
+        {
+            DefaultTtlSeconds = dto.DefaultTtlSeconds,
+            StaticTtlSeconds = dto.StaticTtlSeconds
+        };
+        showConfirmModal = true;
+    } // End of Method SaveClicked
+
+    private void CancelSave()
+    {
+        showConfirmModal = false;
+        beforeSave = null;
+    } // End of Method CancelSave
+
+    private async Task ConfirmSaveAsync()
+    {
+        showConfirmModal = false;
+        error = null;
+        success = null;
+        try
+        {
+            var client = ClientFactory.CreateClient("Gateway");
+            var resp = await client.PostAsJsonAsync("/admin/api/output-cache", dto);
+            if (!resp.IsSuccessStatusCode)
+            {
+                var body = await resp.Content.ReadAsStringAsync();
+                error = $"Save failed ({resp.StatusCode}): {body}";
+                return;
+            }
+            var updated = await resp.Content.ReadFromJsonAsync<OutputCacheConfigDto>();
+            dto = updated;
+            success = "Changes saved successfully!";
+        }
+        catch (Exception ex)
+        {
+            error = $"Save failed: {ex.Message}";
+        }
+    } // End of Method ConfirmSaveAsync
+
+    private void Validate()
+    {
+        validationErrors.Clear();
+        if (dto is null)
+            return;
+        if (dto.DefaultTtlSeconds < 0)
+            validationErrors.Add("Default TTL must be >= 0");
+        if (dto.StaticTtlSeconds < 0)
+            validationErrors.Add("Static TTL must be >= 0");
+    } // End of Method Validate
+
+    private bool IsInvalid(string field)
+    {
+        return validationErrors.Any(e => e.Contains(field, StringComparison.OrdinalIgnoreCase));
+    } // End of Method IsInvalid
+
+    private record OutputCacheConfigDto
+    {
+        public int DefaultTtlSeconds { get; set; }
+        public int StaticTtlSeconds { get; set; }
+    } // End of Class OutputCacheConfigDto
+} // End of Code

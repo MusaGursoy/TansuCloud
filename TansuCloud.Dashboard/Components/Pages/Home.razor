@@ -1,17 +1,112 @@
-﻿@page "/"
+@page "/"
+@attribute [StreamRendering]
 
-<PageTitle>Home</PageTitle>
+<PageTitle>TansuCloud Dashboard</PageTitle>
 
-<h1>Hello, world!</h1>
+<!-- Welcome Section -->
+<MudContainer MaxWidth="MaxWidth.Large" Class="mt-8">
+    <!-- Welcome Hero Section -->
+    <MudPaper Elevation="0" Class="pa-8 mb-6" Style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; border-radius: 16px;">
+        <MudText Typo="Typo.h3" Class="mb-2" Style="font-weight: 600;">Welcome to TansuCloud</MudText>
+        <MudText Typo="Typo.h6" Style="opacity: 0.95;">Modern Backend-as-a-Service Platform</MudText>
+        <MudText Typo="Typo.body1" Class="mt-4" Style="opacity: 0.9;">
+            Manage your identity, gateway, storage, and observability services from one elegant dashboard.
+        </MudText>
+    </MudPaper>
 
-Welcome to your new app.
+    <!-- Quick Stats Cards -->
+    <MudGrid Class="mb-6">
+        <MudItem xs="12" sm="6" md="3">
+            <MudCard Elevation="2" Class="pa-4">
+                <MudCardContent>
+                    <div class="d-flex align-center mb-2">
+                        <MudIcon Icon="@Icons.Material.Filled.People" Color="Color.Primary" Size="Size.Large" />
+                        <MudText Typo="Typo.h4" Class="ml-3">42</MudText>
+                    </div>
+                    <MudText Typo="Typo.body2" Color="Color.Secondary">Active Tenants</MudText>
+                </MudCardContent>
+            </MudCard>
+        </MudItem>
+        <MudItem xs="12" sm="6" md="3">
+            <MudCard Elevation="2" Class="pa-4">
+                <MudCardContent>
+                    <div class="d-flex align-center mb-2">
+                        <MudIcon Icon="@Icons.Material.Filled.Route" Color="Color.Success" Size="Size.Large" />
+                        <MudText Typo="Typo.h4" Class="ml-3">128</MudText>
+                    </div>
+                    <MudText Typo="Typo.body2" Color="Color.Secondary">Routes Configured</MudText>
+                </MudCardContent>
+            </MudCard>
+        </MudItem>
+        <MudItem xs="12" sm="6" md="3">
+            <MudCard Elevation="2" Class="pa-4">
+                <MudCardContent>
+                    <div class="d-flex align-center mb-2">
+                        <MudIcon Icon="@Icons.Material.Filled.Storage" Color="Color.Info" Size="Size.Large" />
+                        <MudText Typo="Typo.h4" Class="ml-3">2.4TB</MudText>
+                    </div>
+                    <MudText Typo="Typo.body2" Color="Color.Secondary">Storage Used</MudText>
+                </MudCardContent>
+            </MudCard>
+        </MudItem>
+        <MudItem xs="12" sm="6" md="3">
+            <MudCard Elevation="2" Class="pa-4">
+                <MudCardContent>
+                    <div class="d-flex align-center mb-2">
+                        <MudIcon Icon="@Icons.Material.Filled.Security" Color="Color.Warning" Size="Size.Large" />
+                        <MudText Typo="Typo.h4" Class="ml-3">15</MudText>
+                    </div>
+                    <MudText Typo="Typo.body2" Color="Color.Secondary">Active Policies</MudText>
+                </MudCardContent>
+            </MudCard>
+        </MudItem>
+    </MudGrid>
 
-<h3>Admin</h3>
-<ul>
-	<li><a href="admin/providers">External Providers</a></li>
-	<li><a href="admin/security">Security Events</a></li>
-	<li><a href="admin/ml">ML Management (preview)</a></li>
-	<li><a href="admin/storage">Storage Management</a></li>
-	<li><a href="admin/metrics">Observability → Metrics (SigNoz)</a></li>
-    
-</ul>
+    <!-- Quick Actions -->
+    <MudPaper Elevation="2" Class="pa-6 mb-6">
+        <MudText Typo="Typo.h5" Class="mb-4">Quick Actions</MudText>
+        <MudGrid>
+            <MudItem xs="12" sm="6" md="4">
+                <MudButton Variant="Variant.Outlined" Color="Color.Primary" FullWidth="true" StartIcon="@Icons.Material.Filled.AddBusiness" Href="admin/provisioning">
+                    Provision New Tenant
+                </MudButton>
+            </MudItem>
+            <MudItem xs="12" sm="6" md="4">
+                <MudButton Variant="Variant.Outlined" Color="Color.Secondary" FullWidth="true" StartIcon="@Icons.Material.Filled.ShowChart" Href="admin/metrics">
+                    View Metrics
+                </MudButton>
+            </MudItem>
+            <MudItem xs="12" sm="6" md="4">
+                <MudButton Variant="Variant.Outlined" Color="Color.Tertiary" FullWidth="true" StartIcon="@Icons.Material.Filled.Policy" Href="admin/policies">
+                    Manage Policies
+                </MudButton>
+            </MudItem>
+        </MudGrid>
+    </MudPaper>
+
+    <!-- Recent Activity -->
+    <MudPaper Elevation="2" Class="pa-6">
+        <MudText Typo="Typo.h5" Class="mb-4">Recent Activity</MudText>
+        <MudList T="string">
+            <MudListItem T="string" Icon="@Icons.Material.Filled.CheckCircle" IconColor="Color.Success">
+                <MudText Typo="Typo.body1">Tenant <strong>acme-prod</strong> provisioned successfully</MudText>
+                <MudText Typo="Typo.body2" Color="Color.Secondary">2 minutes ago</MudText>
+            </MudListItem>
+            <MudDivider />
+            <MudListItem T="string" Icon="@Icons.Material.Filled.Update" IconColor="Color.Info">
+                <MudText Typo="Typo.body1">Rate limit policy updated</MudText>
+                <MudText Typo="Typo.body2" Color="Color.Secondary">15 minutes ago</MudText>
+            </MudListItem>
+            <MudDivider />
+            <MudListItem T="string" Icon="@Icons.Material.Filled.Warning" IconColor="Color.Warning">
+                <MudText Typo="Typo.body1">Certificate expiring in 30 days for <strong>api.example.com</strong></MudText>
+                <MudText Typo="Typo.body2" Color="Color.Secondary">1 hour ago</MudText>
+            </MudListItem>
+            <MudDivider />
+            <MudListItem T="string" Icon="@Icons.Material.Filled.Security" IconColor="Color.Primary">
+                <MudText Typo="Typo.body1">New CORS policy created</MudText>
+                <MudText Typo="Typo.body2" Color="Color.Secondary">3 hours ago</MudText>
+            </MudListItem>
+        </MudList>
+    </MudPaper>
+</MudContainer>

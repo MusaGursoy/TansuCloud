@@ -1,0 +1,705 @@
+@page "/admin/cache-rate-policies"
+@using System.Net.Http.Json
+@using System.Text.Json
+@attribute [Authorize(Policy = "AdminOnly")]
+@layout AdminLayout
+@inject IHttpClientFactory HttpClientFactory
+@inject ILogger<CacheRatePolicies> Logger
+
+<PageTitle>Cache & Rate Limit Policies | TansuCloud Admin</PageTitle>
+
+<div class="container-fluid py-4">
+    <div class="row mb-4">
+        <div class="col">
+            <h2 class="mb-0">Cache & Rate Limit Policies</h2>
+            <p class="text-muted">Manage output caching and rate limiting with simulator testing.</p>
+        </div>
+        <div class="col-auto">
+            <button class="btn btn-primary" @onclick="ShowCreateDialog">
+                <i class="bi bi-plus-circle"></i> Create Policy
+            </button>
+        </div>
+    </div>
+
+    @if (!string.IsNullOrWhiteSpace(_errorMessage))
+    {
+        <div class="alert alert-danger alert-dismissible fade show" role="alert">
+            <strong>Error:</strong> @_errorMessage
+            <button type="button" class="btn-close" @onclick="() => _errorMessage = null"></button>
+        </div>
+    }
+
+    @if (!string.IsNullOrWhiteSpace(_successMessage))
+    {
+        <div class="alert alert-success alert-dismissible fade show" role="alert">
+            <strong>Success:</strong> @_successMessage
+            <button type="button" class="btn-close" @onclick="() => _successMessage = null"></button>
+        </div>
+    }
+
+    <!-- Tabs -->
+    <ul class="nav nav-tabs mb-3" role="tablist">
+        <li class="nav-item" role="presentation">
+            <button class="nav-link @(_activeTab == "cache" ? "active" : "")" 
+                    @onclick="@(() => _activeTab = "cache")" 
+                    type="button">
+                <i class="bi bi-lightning-charge"></i> Cache Policies
+            </button>
+        </li>
+        <li class="nav-item" role="presentation">
+            <button class="nav-link @(_activeTab == "ratelimit" ? "active" : "")" 
+                    @onclick="@(() => _activeTab = "ratelimit")" 
+                    type="button">
+                <i class="bi bi-speedometer2"></i> Rate Limit Policies
+            </button>
+        </li>
+    </ul>
+
+    <!-- Filters -->
+    <div class="row mb-3">
+        <div class="col-md-4">
+            <label class="form-label">Filter by Mode:</label>
+            <select class="form-select" @bind="_filterMode">
+                <option value="">All Modes</option>
+                <option value="Shadow">Shadow</option>
+                <option value="AuditOnly">Audit Only</option>
+                <option value="Enforce">Enforce</option>
+            </select>
+        </div>
+        <div class="col-md-4 d-flex align-items-end">
+            <button class="btn btn-outline-secondary" @onclick="ApplyFilters">
+                <i class="bi bi-funnel"></i> Apply Filters
+            </button>
+            <button class="btn btn-outline-secondary ms-2" @onclick="ClearFilters">
+                <i class="bi bi-x-circle"></i> Clear
+            </button>
+        </div>
+    </div>
+
+    @if (_loading)
+    {
+        <div class="d-flex justify-content-center py-5">
+            <div class="spinner-border text-primary" role="status">
+                <span class="visually-hidden">Loading...</span>
+            </div>
+        </div>
+    }
+    else if (_policies != null && _filteredPolicies.Any())
+    {
+        <!-- Policy List -->
+        <div class="table-responsive">
+            <table class="table table-hover">
+                <thead>
+                    <tr>
+                        <th>ID</th>
+                        <th>Mode</th>
+                        <th>Description</th>
+                        <th>Configuration</th>
+                        <th>Updated</th>
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var policy in _filteredPolicies)
+                    {
+                        <tr>
+                            <td><code>@policy.Id</code></td>
+                            <td>
+                                <span class="badge @GetModeBadgeClass(policy.Mode)">
+                                    @policy.Mode
+                                </span>
+                            </td>
+                            <td>@policy.Description</td>
+                            <td>
+                                @if (_activeTab == "cache" && policy.Type == 3)
+                                {
+                                    var config = DeserializeCacheConfig(policy.Config);
+                                    <small>
+                                        TTL: @config?.TtlSeconds s<br/>
+                                        VaryBy: @(config?.VaryByHost == true ? "Host, " : "")@(config?.VaryByQuery?.Count > 0 ? $"Query({string.Join(", ", config.VaryByQuery)}), " : "")@(config?.VaryByHeaders?.Count > 0 ? $"Headers({string.Join(", ", config.VaryByHeaders)})" : "")
+                                    </small>
+                                }
+                                else if (_activeTab == "ratelimit" && policy.Type == 4)
+                                {
+                                    var config = DeserializeRateLimitConfig(policy.Config);
+                                    <small>
+                                        Limit: @config?.PermitLimit / @config?.WindowSeconds s<br/>
+                                        Strategy: @config?.PartitionStrategy
+                                    </small>
+                                }
+                            </td>
+                            <td><small>@policy.UpdatedAt.ToString("yyyy-MM-dd HH:mm")</small></td>
+                            <td>
+                                <button class="btn btn-sm btn-outline-primary" 
+                                        @onclick="() => ShowEditDialog(policy)">
+                                    <i class="bi bi-pencil"></i>
+                                </button>
+                                <button class="btn btn-sm btn-outline-success ms-1" 
+                                        @onclick="() => ShowSimulatorDialog(policy)">
+                                    <i class="bi bi-play-circle"></i> Test
+                                </button>
+                                <button class="btn btn-sm btn-outline-danger ms-1" 
+                                        @onclick="() => DeletePolicy(policy.Id)">
+                                    <i class="bi bi-trash"></i>
+                                </button>
+                            </td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+    }
+    else
+    {
+        <div class="alert alert-info">
+            <i class="bi bi-info-circle"></i> 
+            No @(_activeTab == "cache" ? "cache" : "rate limit") policies found. Create one to get started.
+        </div>
+    }
+
+    <!-- Enforcement Mode Legend -->
+    <div class="mt-4 p-3 bg-light rounded">
+        <h6>Enforcement Modes:</h6>
+        <ul class="mb-0">
+            <li><strong>Shadow:</strong> Policy evaluated but not enforced; results logged for analysis.</li>
+            <li><strong>Audit Only:</strong> Policy evaluated, violations logged and alerted, but not blocked.</li>
+            <li><strong>Enforce:</strong> Policy actively enforced; violations blocked.</li>
+        </ul>
+    </div>
+</div>
+
+<!-- Create/Edit Modal -->
+@if (_showModal)
+{
+    <div class="modal fade show d-block" tabindex="-1" style="background-color: rgba(0,0,0,0.5);">
+        <div class="modal-dialog modal-lg">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">@(_editingPolicy == null ? "Create" : "Edit") Policy</h5>
+                    <button type="button" class="btn-close" @onclick="HideModal"></button>
+                </div>
+                <div class="modal-body">
+                    @if (!string.IsNullOrWhiteSpace(_modalError))
+                    {
+                        <div class="alert alert-danger">@_modalError</div>
+                    }
+
+                    <div class="mb-3">
+                        <label class="form-label">Policy ID <span class="text-danger">*</span></label>
+                        <input type="text" class="form-control" @bind="_formId" 
+                               disabled="@(_editingPolicy != null)" 
+                               placeholder="e.g., cache-api-responses" />
+                        <small class="form-text text-muted">Unique identifier (lowercase, hyphens only)</small>
+                    </div>
+
+                    <div class="mb-3">
+                        <label class="form-label">Policy Type <span class="text-danger">*</span></label>
+                        <select class="form-select" @bind="_formType" disabled="@(_editingPolicy != null)">
+                            <option value="3">Cache Policy</option>
+                            <option value="4">Rate Limit Policy</option>
+                        </select>
+                    </div>
+
+                    <div class="mb-3">
+                        <label class="form-label">Enforcement Mode <span class="text-danger">*</span></label>
+                        <select class="form-select" @bind="_formMode">
+                            <option value="0">Shadow (test only, no enforcement)</option>
+                            <option value="1">Audit Only (log violations, don't block)</option>
+                            <option value="2">Enforce (actively block violations)</option>
+                        </select>
+                    </div>
+
+                    <div class="mb-3">
+                        <label class="form-label">Description</label>
+                        <input type="text" class="form-control" @bind="_formDescription" 
+                               placeholder="Brief description of this policy" />
+                    </div>
+
+                    @if (_formType == "3")
+                    {
+                        <!-- Cache Config -->
+                        <h6 class="mt-4">Cache Configuration</h6>
+                        <div class="mb-3">
+                            <label class="form-label">TTL (seconds) <span class="text-danger">*</span></label>
+                            <input type="number" class="form-control" @bind="_cacheTtlSeconds" min="1" />
+                        </div>
+
+                        <div class="form-check mb-2">
+                            <input class="form-check-input" type="checkbox" @bind="_cacheVaryByHost" id="varyByHost" />
+                            <label class="form-check-label" for="varyByHost">
+                                Vary by Host (multi-tenant)
+                            </label>
+                        </div>
+
+                        <div class="mb-3">
+                            <label class="form-label">Vary by Query Parameters</label>
+                            <input type="text" class="form-control" @bind="_cacheVaryByQuery" 
+                                   placeholder="Comma-separated query keys (e.g., q,page) or leave empty for none" />
+                            <small class="form-text text-muted">Leave empty to not vary by query. Use "*" to vary by all query params.</small>
+                        </div>
+
+                        <div class="mb-3">
+                            <label class="form-label">Vary by Headers</label>
+                            <input type="text" class="form-control" @bind="_cacheVaryByHeaders" 
+                                   placeholder="Comma-separated header names (e.g., Authorization,Accept-Language)" />
+                        </div>
+
+                        <div class="mb-3">
+                            <label class="form-label">Vary by Route Values</label>
+                            <input type="text" class="form-control" @bind="_cacheVaryByRouteValues" 
+                                   placeholder="Comma-separated route keys (e.g., id,slug)" />
+                        </div>
+
+                        <div class="form-check mb-2">
+                            <input class="form-check-input" type="checkbox" @bind="_cacheUseDefaultVaryByRules" id="useDefaults" />
+                            <label class="form-check-label" for="useDefaults">
+                                Use default VaryBy rules from YARP config
+                            </label>
+                        </div>
+                    }
+                    else if (_formType == "4")
+                    {
+                        <!-- Rate Limit Config -->
+                        <h6 class="mt-4">Rate Limit Configuration</h6>
+                        <div class="mb-3">
+                            <label class="form-label">Time Window (seconds) <span class="text-danger">*</span></label>
+                            <input type="number" class="form-control" @bind="_rateLimitWindowSeconds" min="1" />
+                        </div>
+
+                        <div class="mb-3">
+                            <label class="form-label">Permit Limit <span class="text-danger">*</span></label>
+                            <input type="number" class="form-control" @bind="_rateLimitPermitLimit" min="1" />
+                            <small class="form-text text-muted">Maximum number of requests allowed per window</small>
+                        </div>
+
+                        <div class="mb-3">
+                            <label class="form-label">Queue Limit</label>
+                            <input type="number" class="form-control" @bind="_rateLimitQueueLimit" min="0" />
+                            <small class="form-text text-muted">Number of requests to queue (0 = no queuing, fail fast)</small>
+                        </div>
+
+                        <div class="mb-3">
+                            <label class="form-label">Partition Strategy <span class="text-danger">*</span></label>
+                            <select class="form-select" @bind="_rateLimitPartitionStrategy">
+                                <option value="Global">Global (all requests share limit)</option>
+                                <option value="PerIp">Per IP (limit per client IP address)</option>
+                                <option value="PerUser">Per User (limit per authenticated user)</option>
+                                <option value="PerHost">Per Host (limit per Host header/tenant)</option>
+                            </select>
+                        </div>
+
+                        <div class="mb-3">
+                            <label class="form-label">Status Code</label>
+                            <input type="number" class="form-control" @bind="_rateLimitStatusCode" min="400" max="599" />
+                            <small class="form-text text-muted">HTTP status code for violations (default 429)</small>
+                        </div>
+
+                        <div class="mb-3">
+                            <label class="form-label">Retry-After (seconds)</label>
+                            <input type="number" class="form-control" @bind="_rateLimitRetryAfterSeconds" min="0" />
+                            <small class="form-text text-muted">Optional Retry-After header value (leave empty to use window duration)</small>
+                        </div>
+                    }
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" @onclick="HideModal">Cancel</button>
+                    <button type="button" class="btn btn-primary" @onclick="SavePolicy" disabled="@_submitting">
+                        @if (_submitting)
+                        {
+                            <span class="spinner-border spinner-border-sm me-2" role="status"></span>
+                        }
+                        Save Policy
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+}
+
+<!-- Simulator Modal -->
+@if (_showSimulator && _simulatingPolicy != null)
+{
+    <div class="modal fade show d-block" tabindex="-1" style="background-color: rgba(0,0,0,0.5);">
+        <div class="modal-dialog modal-xl">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">
+                        <i class="bi bi-play-circle"></i> Policy Simulator: @_simulatingPolicy.Id
+                    </h5>
+                    <button type="button" class="btn-close" @onclick="HideSimulator"></button>
+                </div>
+                <div class="modal-body">
+                    <PolicySimulator 
+                        PolicyId="@_simulatingPolicy.Id" 
+                        PolicyType="@_simulatingPolicy.Type" 
+                        PolicyConfig="@_simulatingPolicy.Config" />
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" @onclick="HideSimulator">Close</button>
+                </div>
+            </div>
+        </div>
+    </div>
+}
+
+@code {
+    // Models
+    private class PolicyEntry
+    {
+        public string Id { get; set; } = string.Empty;
+        public int Type { get; set; }
+        public int Mode { get; set; }
+        public string Description { get; set; } = string.Empty;
+        public JsonElement Config { get; set; }
+        public DateTime CreatedAt { get; set; }
+        public DateTime UpdatedAt { get; set; }
+        public bool Enabled { get; set; } = true;
+    } // End of Class PolicyEntry
+
+    private class CacheConfig
+    {
+        public int TtlSeconds { get; set; } = 60;
+        public List<string>? VaryByQuery { get; set; }
+        public List<string> VaryByHeaders { get; set; } = new();
+        public List<string> VaryByRouteValues { get; set; } = new();
+        public bool VaryByHost { get; set; }
+        public bool UseDefaultVaryByRules { get; set; } = true;
+    } // End of Class CacheConfig
+
+    private class RateLimitConfig
+    {
+        public int WindowSeconds { get; set; } = 60;
+        public int PermitLimit { get; set; } = 100;
+        public int QueueLimit { get; set; }
+        public string PartitionStrategy { get; set; } = "Global";
+        public int StatusCode { get; set; } = 429;
+        public int? RetryAfterSeconds { get; set; }
+    } // End of Class RateLimitConfig
+
+    // State
+    private List<PolicyEntry>? _policies;
+    private List<PolicyEntry> _filteredPolicies = new();
+    private bool _loading = true;
+    private string? _errorMessage;
+    private string? _successMessage;
+    private string _activeTab = "cache";
+    private string _filterMode = "";
+
+    // Modal state
+    private bool _showModal;
+    private bool _submitting;
+    private string? _modalError;
+    private PolicyEntry? _editingPolicy;
+    private string _formId = string.Empty;
+    private string _formType = "3"; // Default to Cache
+    private string _formMode = "0"; // Default to Shadow
+    private string _formDescription = string.Empty;
+
+    // Cache config form fields
+    private int _cacheTtlSeconds = 60;
+    private bool _cacheVaryByHost;
+    private string _cacheVaryByQuery = string.Empty;
+    private string _cacheVaryByHeaders = string.Empty;
+    private string _cacheVaryByRouteValues = string.Empty;
+    private bool _cacheUseDefaultVaryByRules = true;
+
+    // Rate limit config form fields
+    private int _rateLimitWindowSeconds = 60;
+    private int _rateLimitPermitLimit = 100;
+    private int _rateLimitQueueLimit = 0;
+    private string _rateLimitPartitionStrategy = "Global";
+    private int _rateLimitStatusCode = 429;
+    private int? _rateLimitRetryAfterSeconds;
+
+    // Simulator state
+    private bool _showSimulator;
+    private PolicyEntry? _simulatingPolicy;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadPolicies();
+    } // End of Method OnInitializedAsync
+
+    private async Task LoadPolicies()
+    {
+        try
+        {
+            _loading = true;
+            var client = HttpClientFactory.CreateClient("Gateway");
+            _policies = await client.GetFromJsonAsync<List<PolicyEntry>>("/admin/api/policies");
+            ApplyFilters();
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Failed to load policies");
+            _errorMessage = $"Failed to load policies: {ex.Message}";
+        }
+        finally
+        {
+            _loading = false;
+        }
+    } // End of Method LoadPolicies
+
+    private void ApplyFilters()
+    {
+        if (_policies == null) return;
+
+        var policyType = _activeTab == "cache" ? 3 : 4;
+        _filteredPolicies = _policies
+            .Where(p => p.Type == policyType)
+            .Where(p => string.IsNullOrEmpty(_filterMode) || p.Mode.ToString() == _filterMode)
+            .OrderByDescending(p => p.UpdatedAt)
+            .ToList();
+    } // End of Method ApplyFilters
+
+    private void ClearFilters()
+    {
+        _filterMode = "";
+        ApplyFilters();
+    } // End of Method ClearFilters
+
+    private void ShowCreateDialog()
+    {
+        _editingPolicy = null;
+        _formId = string.Empty;
+        _formType = _activeTab == "cache" ? "3" : "4";
+        _formMode = "0";
+        _formDescription = string.Empty;
+        ResetFormFields();
+        _modalError = null;
+        _showModal = true;
+    } // End of Method ShowCreateDialog
+
+    private void ShowEditDialog(PolicyEntry policy)
+    {
+        _editingPolicy = policy;
+        _formId = policy.Id;
+        _formType = policy.Type.ToString();
+        _formMode = policy.Mode.ToString();
+        _formDescription = policy.Description;
+        
+        if (policy.Type == 3)
+        {
+            var config = DeserializeCacheConfig(policy.Config);
+            if (config != null)
+            {
+                _cacheTtlSeconds = config.TtlSeconds;
+                _cacheVaryByHost = config.VaryByHost;
+                _cacheVaryByQuery = config.VaryByQuery != null ? string.Join(",", config.VaryByQuery) : "";
+                _cacheVaryByHeaders = config.VaryByHeaders.Count > 0 ? string.Join(",", config.VaryByHeaders) : "";
+                _cacheVaryByRouteValues = config.VaryByRouteValues.Count > 0 ? string.Join(",", config.VaryByRouteValues) : "";
+                _cacheUseDefaultVaryByRules = config.UseDefaultVaryByRules;
+            }
+        }
+        else if (policy.Type == 4)
+        {
+            var config = DeserializeRateLimitConfig(policy.Config);
+            if (config != null)
+            {
+                _rateLimitWindowSeconds = config.WindowSeconds;
+                _rateLimitPermitLimit = config.PermitLimit;
+                _rateLimitQueueLimit = config.QueueLimit;
+                _rateLimitPartitionStrategy = config.PartitionStrategy;
+                _rateLimitStatusCode = config.StatusCode;
+                _rateLimitRetryAfterSeconds = config.RetryAfterSeconds;
+            }
+        }
+
+        _modalError = null;
+        _showModal = true;
+    } // End of Method ShowEditDialog
+
+    private void HideModal()
+    {
+        _showModal = false;
+        _editingPolicy = null;
+        ResetFormFields();
+    } // End of Method HideModal
+
+    private void ResetFormFields()
+    {
+        _cacheTtlSeconds = 60;
+        _cacheVaryByHost = false;
+        _cacheVaryByQuery = string.Empty;
+        _cacheVaryByHeaders = string.Empty;
+        _cacheVaryByRouteValues = string.Empty;
+        _cacheUseDefaultVaryByRules = true;
+
+        _rateLimitWindowSeconds = 60;
+        _rateLimitPermitLimit = 100;
+        _rateLimitQueueLimit = 0;
+        _rateLimitPartitionStrategy = "Global";
+        _rateLimitStatusCode = 429;
+        _rateLimitRetryAfterSeconds = null;
+    } // End of Method ResetFormFields
+
+    private async Task SavePolicy()
+    {
+        try
+        {
+            _submitting = true;
+            _modalError = null;
+
+            if (string.IsNullOrWhiteSpace(_formId))
+            {
+                _modalError = "Policy ID is required.";
+                return;
+            }
+
+            var policy = new
+            {
+                id = _formId.Trim().ToLowerInvariant(),
+                type = int.Parse(_formType),
+                mode = int.Parse(_formMode),
+                description = _formDescription,
+                enabled = true,
+                config = BuildConfigObject()
+            };
+
+            var client = HttpClientFactory.CreateClient("Gateway");
+            var response = await client.PostAsJsonAsync("/admin/api/policies", policy);
+            
+            if (!response.IsSuccessStatusCode)
+            {
+                var error = await response.Content.ReadAsStringAsync();
+                _modalError = $"Failed to save policy: {error}";
+                return;
+            }
+
+            _successMessage = $"Policy '{_formId}' saved successfully.";
+            HideModal();
+            await LoadPolicies();
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Failed to save policy");
+            _modalError = $"Error: {ex.Message}";
+        }
+        finally
+        {
+            _submitting = false;
+        }
+    } // End of Method SavePolicy
+
+    private object BuildConfigObject()
+    {
+        if (_formType == "3")
+        {
+            // Cache config
+            List<string>? varyByQuery = null;
+            if (!string.IsNullOrWhiteSpace(_cacheVaryByQuery))
+            {
+                varyByQuery = _cacheVaryByQuery.Split(',', StringSplitOptions.RemoveEmptyEntries)
+                    .Select(x => x.Trim())
+                    .ToList();
+            }
+
+            return new
+            {
+                ttlSeconds = _cacheTtlSeconds,
+                varyByQuery,
+                varyByHeaders = _cacheVaryByHeaders.Split(',', StringSplitOptions.RemoveEmptyEntries)
+                    .Select(x => x.Trim())
+                    .ToList(),
+                varyByRouteValues = _cacheVaryByRouteValues.Split(',', StringSplitOptions.RemoveEmptyEntries)
+                    .Select(x => x.Trim())
+                    .ToList(),
+                varyByHost = _cacheVaryByHost,
+                useDefaultVaryByRules = _cacheUseDefaultVaryByRules
+            };
+        }
+        else
+        {
+            // Rate limit config
+            return new
+            {
+                windowSeconds = _rateLimitWindowSeconds,
+                permitLimit = _rateLimitPermitLimit,
+                queueLimit = _rateLimitQueueLimit,
+                partitionStrategy = _rateLimitPartitionStrategy,
+                statusCode = _rateLimitStatusCode,
+                retryAfterSeconds = _rateLimitRetryAfterSeconds
+            };
+        }
+    } // End of Method BuildConfigObject
+
+    private async Task DeletePolicy(string policyId)
+    {
+        if (!await JSConfirm($"Delete policy '{policyId}'? This action cannot be undone."))
+            return;
+
+        try
+        {
+            var client = HttpClientFactory.CreateClient("Gateway");
+            var response = await client.DeleteAsync($"/admin/api/policies/{Uri.EscapeDataString(policyId)}");
+            
+            if (!response.IsSuccessStatusCode)
+            {
+                var error = await response.Content.ReadAsStringAsync();
+                _errorMessage = $"Failed to delete policy: {error}";
+                return;
+            }
+
+            _successMessage = $"Policy '{policyId}' deleted successfully.";
+            await LoadPolicies();
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Failed to delete policy {PolicyId}", policyId);
+            _errorMessage = $"Error deleting policy: {ex.Message}";
+        }
+    } // End of Method DeletePolicy
+
+    private void ShowSimulatorDialog(PolicyEntry policy)
+    {
+        _simulatingPolicy = policy;
+        _showSimulator = true;
+    } // End of Method ShowSimulatorDialog
+
+    private void HideSimulator()
+    {
+        _showSimulator = false;
+        _simulatingPolicy = null;
+    } // End of Method HideSimulator
+
+    private string GetModeBadgeClass(int mode)
+    {
+        return mode switch
+        {
+            0 => "bg-secondary",
+            1 => "bg-warning",
+            2 => "bg-success",
+            _ => "bg-secondary"
+        };
+    } // End of Method GetModeBadgeClass
+
+    private CacheConfig? DeserializeCacheConfig(JsonElement config)
+    {
+        try
+        {
+            return JsonSerializer.Deserialize<CacheConfig>(config.GetRawText());
+        }
+        catch
+        {
+            return null;
+        }
+    } // End of Method DeserializeCacheConfig
+
+    private RateLimitConfig? DeserializeRateLimitConfig(JsonElement config)
+    {
+        try
+        {
+            return JsonSerializer.Deserialize<RateLimitConfig>(config.GetRawText());
+        }
+        catch
+        {
+            return null;
+        }
+    } // End of Method DeserializeRateLimitConfig
+
+    private async Task<bool> JSConfirm(string message)
+    {
+        // Simplified confirm for now (will use JSRuntime if needed)
+        return await Task.FromResult(true);
+    } // End of Method JSConfirm
+} // End of Code

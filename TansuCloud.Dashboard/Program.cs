@@ -24,6 +24,8 @@ using Microsoft.Extensions.Diagnostics.HealthChecks;
 using Microsoft.IdentityModel.Protocols; // For ConfigurationManager
 using Microsoft.IdentityModel.Protocols.OpenIdConnect; // For OpenIdConnectConfigurationRetriever
 using Microsoft.IdentityModel.Tokens;
+using MudBlazor;
+using MudBlazor.Services;
 using OpenTelemetry.Instrumentation.StackExchangeRedis;
 using OpenTelemetry.Logs;
 using OpenTelemetry.Metrics;
@@ -131,6 +133,10 @@ builder.Services.Configure<SigNozOptions>(
     builder.Configuration.GetSection(SigNozOptions.SectionName)
 );
 builder.Services.AddSingleton<SigNozMetricsCatalog>();
+
+// MudBlazor services (MIT License - no keys required!)
+builder.Services.AddMudServices();
+
 builder.Logging.AddOpenTelemetry(o =>
 {
     o.IncludeFormattedMessage = true;
@@ -2676,6 +2682,93 @@ void MapMetricsApi(string prefix)
 
 MapMetricsApi("/dashboard/api/metrics");
 MapMetricsApi("/api/metrics");
+
+// Admin API: Observability Governance Configuration
+app.MapGet(
+        "/api/admin/observability/governance",
+        async (IWebHostEnvironment env, IAuditLogger audit, HttpContext http) =>
+        {
+            try
+            {
+                // Read governance.defaults.json from SigNoz folder
+                var governanceFilePath = Path.Combine(
+                    env.ContentRootPath,
+                    "..",
+                    "SigNoz",
+                    "governance.defaults.json"
+                );
+
+                if (!File.Exists(governanceFilePath))
+                {
+                    return Results.Problem(
+                        title: "Configuration file not found",
+                        detail: "The governance.defaults.json file was not found. Ensure the file exists at SigNoz/governance.defaults.json.",
+                        statusCode: StatusCodes.Status404NotFound
+                    );
+                }
+
+                var jsonContent = await File.ReadAllTextAsync(governanceFilePath);
+                var config =
+                    System.Text.Json.JsonSerializer.Deserialize<TansuCloud.Dashboard.Models.ObservabilityGovernanceConfig>(
+                        jsonContent,
+                        new System.Text.Json.JsonSerializerOptions
+                        {
+                            PropertyNameCaseInsensitive = true
+                        }
+                    );
+
+                if (config == null)
+                {
+                    return Results.Problem(
+                        title: "Invalid configuration",
+                        detail: "Failed to parse governance.defaults.json",
+                        statusCode: StatusCodes.Status500InternalServerError
+                    );
+                }
+
+                // Audit read
+                try
+                {
+                    var ev = new TansuCloud.Observability.Auditing.AuditEvent
+                    {
+                        Category = "Admin",
+                        Action = "ObservabilityGovernanceRead",
+                        Outcome = "Success",
+                        Subject = http.User?.Identity?.Name ?? "anonymous",
+                        CorrelationId = http.TraceIdentifier
+                    };
+                    audit.TryEnqueue(ev);
+                }
+                catch { }
+
+                return Results.Json(config);
+            }
+            catch (Exception ex)
+            {
+                return Results.Problem(
+                    title: "Error reading configuration",
+                    detail: ex.Message,
+                    statusCode: StatusCodes.Status500InternalServerError
+                );
+            }
+        }
+    )
+    .RequireAuthorization("AdminOnly")
+    .WithDisplayName("Admin: Get observability governance config");
+
+app.MapPost(
+        "/api/admin/observability/governance",
+        (HttpContext http) =>
+        {
+            return Results.Problem(
+                title: "Not implemented",
+                detail: "Observability governance updates must be applied via the governance.defaults.json file and the 'SigNoz: governance (apply)' VS Code task. See Guide-For-Admins-and-Tenants.md section 6.5 for details.",
+                statusCode: StatusCodes.Status501NotImplemented
+            );
+        }
+    )
+    .RequireAuthorization("AdminOnly")
+    .WithDisplayName("Admin: Update observability governance (not implemented)");
 
 // Admin-only log reporting status/toggle API
 app.MapGet(

@@ -15,7 +15,7 @@
 		<PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
 		<PackageReference Include="Microsoft.AspNetCore.Mvc.Testing" Version="9.0.9" />
 		<PackageReference Include="Microsoft.AspNetCore.TestHost" Version="9.0.9" />
-		<PackageReference Include="Microsoft.EntityFrameworkCore.InMemory" Version="9.0.1" />
+		<PackageReference Include="Microsoft.EntityFrameworkCore.InMemory" Version="9.0.9" />
 	</ItemGroup>
 	<ItemGroup>
 		<Using Include="Xunit" />

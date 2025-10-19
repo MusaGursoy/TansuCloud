@@ -47,8 +47,8 @@ public sealed class AspNetCoreSpanAttributesE2E
             @$"SELECT count() FROM signoz_traces.signoz_index_v3
 WHERE mapContains(attributes_string, 'http.route')
     AND attributes_string['http.route'] = '/health/ready'
-    AND mapContains(attributes_string, 'http.status_code')
-    AND toInt32OrNull(attributes_string['http.status_code']) = 200
+    AND mapContains(attributes_number, 'http.status_code')
+    AND attributes_number['http.status_code'] = 200.0
     AND mapContains(attributes_string, 'tansu.tenant')
     AND attributes_string['tansu.tenant'] = '{tenantLower}'
     AND mapContains(attributes_string, 'tansu.route_base')

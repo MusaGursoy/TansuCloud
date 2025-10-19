@@ -1,0 +1,398 @@
+@page "/admin/identity-policies"
+@using System.Net.Http.Json
+@using System.Text.Json
+@attribute [Authorize(Policy = "AdminOnly")]
+@layout AdminLayout
+@inject IHttpClientFactory HttpClientFactory
+@inject ILogger<IdentityPolicies> Logger
+
+<PageTitle>Identity Policies | TansuCloud Admin</PageTitle>
+
+<div class="container-fluid py-4">
+    <div class="row mb-4">
+        <div class="col">
+            <h2 class="mb-0">Identity Policies</h2>
+            <p class="text-muted">Configure password requirements, lockout settings, and token lifetimes.</p>
+        </div>
+    </div>
+
+    @if (!string.IsNullOrWhiteSpace(_errorMessage))
+    {
+        <div class="alert alert-danger alert-dismissible fade show" role="alert">
+            <strong>Error:</strong> @_errorMessage
+            <button type="button" class="btn-close" @onclick="() => _errorMessage = null"></button>
+        </div>
+    }
+
+    @if (_loading)
+    {
+        <div class="d-flex justify-content-center py-5">
+            <div class="spinner-border text-primary" role="status">
+                <span class="visually-hidden">Loading...</span>
+            </div>
+        </div>
+    }
+    else if (_config != null)
+    {
+        <div class="row">
+            <!-- Password Policy -->
+            <div class="col-lg-6 mb-4">
+                <div class="card">
+                    <div class="card-header bg-primary text-white">
+                        <h5 class="mb-0">Password Policy</h5>
+                    </div>
+                    <div class="card-body">
+                        <div class="mb-3">
+                            <label for="passwordLength" class="form-label">Minimum Length</label>
+                            <input type="number" class="form-control" id="passwordLength" 
+                                   @bind="_editConfig.Password.RequiredLength" min="1" max="128" disabled="@(!_editMode)" />
+                            <small class="form-text text-muted">Minimum number of characters required (1-128)</small>
+                        </div>
+
+                        <div class="form-check mb-2">
+                            <input class="form-check-input" type="checkbox" id="requireDigit" 
+                                   @bind="_editConfig.Password.RequireDigit" disabled="@(!_editMode)" />
+                            <label class="form-check-label" for="requireDigit">
+                                Require digit (0-9)
+                            </label>
+                        </div>
+
+                        <div class="form-check mb-2">
+                            <input class="form-check-input" type="checkbox" id="requireUppercase" 
+                                   @bind="_editConfig.Password.RequireUppercase" disabled="@(!_editMode)" />
+                            <label class="form-check-label" for="requireUppercase">
+                                Require uppercase letter (A-Z)
+                            </label>
+                        </div>
+
+                        <div class="form-check mb-2">
+                            <input class="form-check-input" type="checkbox" id="requireLowercase" 
+                                   @bind="_editConfig.Password.RequireLowercase" disabled="@(!_editMode)" />
+                            <label class="form-check-label" for="requireLowercase">
+                                Require lowercase letter (a-z)
+                            </label>
+                        </div>
+
+                        <div class="form-check">
+                            <input class="form-check-input" type="checkbox" id="requireNonAlphanumeric" 
+                                   @bind="_editConfig.Password.RequireNonAlphanumeric" disabled="@(!_editMode)" />
+                            <label class="form-check-label" for="requireNonAlphanumeric">
+                                Require special character (!@@##$$%%^^&&*...)
+                            </label>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Lockout Policy -->
+            <div class="col-lg-6 mb-4">
+                <div class="card">
+                    <div class="card-header bg-warning">
+                        <h5 class="mb-0">Account Lockout</h5>
+                    </div>
+                    <div class="card-body">
+                        <div class="form-check mb-3">
+                            <input class="form-check-input" type="checkbox" id="lockoutEnabled" 
+                                   @bind="_editConfig.Lockout.Enabled" disabled="@(!_editMode)" />
+                            <label class="form-check-label" for="lockoutEnabled">
+                                Enable account lockout after failed attempts
+                            </label>
+                        </div>
+
+                        <div class="mb-3">
+                            <label for="maxAttempts" class="form-label">Max Failed Attempts</label>
+                            <input type="number" class="form-control" id="maxAttempts" 
+                                   @bind="_editConfig.Lockout.MaxFailedAttempts" min="1" max="100" 
+                                   disabled="@(!_editMode || !_editConfig.Lockout.Enabled)" />
+                            <small class="form-text text-muted">Number of failed sign-in attempts before lockout</small>
+                        </div>
+
+                        <div class="mb-3">
+                            <label for="lockoutMinutes" class="form-label">Lockout Duration (minutes)</label>
+                            <input type="number" class="form-control" id="lockoutMinutes" 
+                                   @bind="_editConfig.Lockout.DurationMinutes" min="1" max="43200" 
+                                   disabled="@(!_editMode || !_editConfig.Lockout.Enabled)" />
+                            <small class="form-text text-muted">How long users are locked out (1-43200 minutes = 1 month)</small>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Token Lifetimes -->
+            <div class="col-lg-12 mb-4">
+                <div class="card">
+                    <div class="card-header bg-info text-white">
+                        <h5 class="mb-0">Token Lifetimes</h5>
+                    </div>
+                    <div class="card-body">
+                        <div class="row">
+                            <div class="col-md-6 mb-3">
+                                <label for="accessTokenLifetime" class="form-label">Access Token Lifetime (seconds)</label>
+                                <input type="number" class="form-control" id="accessTokenLifetime" 
+                                       @bind="_editConfig.Tokens.AccessTokenLifetimeSeconds" min="60" max="86400" disabled="@(!_editMode)" />
+                                <small class="form-text text-muted">How long access tokens are valid (60s - 24h)</small>
+                            </div>
+
+                            <div class="col-md-6 mb-3">
+                                <label for="refreshTokenLifetime" class="form-label">Refresh Token Lifetime (seconds)</label>
+                                <input type="number" class="form-control" id="refreshTokenLifetime" 
+                                       @bind="_editConfig.Tokens.RefreshTokenLifetimeSeconds" min="3600" max="7776000" disabled="@(!_editMode)" />
+                                <small class="form-text text-muted">How long refresh tokens are valid (1h - 90d)</small>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Action Buttons -->
+        <div class="row">
+            <div class="col">
+                <div class="alert alert-info">
+                    <strong>Note:</strong> Changes to identity policies require an Identity service restart to take effect. 
+                    After modifying these settings in the configuration, restart the service to apply changes.
+                </div>
+
+                @if (!_editMode)
+                {
+                    <button class="btn btn-primary" @onclick="EnableEditMode" disabled="@_saving">
+                        <i class="bi bi-pencil"></i> Edit Policies (View Only)
+                    </button>
+                }
+                else
+                {
+                    <button class="btn btn-success me-2" @onclick="SaveChanges" disabled="@_saving">
+                        @if (_saving)
+                        {
+                            <span class="spinner-border spinner-border-sm me-1" role="status" aria-hidden="true"></span>
+                        }
+                        <i class="bi bi-check-circle"></i> Save Changes (Requires Restart)
+                    </button>
+                    <button class="btn btn-secondary" @onclick="CancelEdit" disabled="@_saving">
+                        <i class="bi bi-x-circle"></i> Cancel
+                    </button>
+                }
+
+                <button class="btn btn-outline-secondary ms-2" @onclick="RefreshConfig" disabled="@_saving || _editMode">
+                    <i class="bi bi-arrow-clockwise"></i> Refresh
+                </button>
+            </div>
+        </div>
+    }
+</div>
+
+@code {
+    private bool _loading = true;
+    private bool _editMode = false;
+    private bool _saving = false;
+    private string? _errorMessage;
+    private IdentityPoliciesViewModel? _config;
+    private IdentityPoliciesViewModel _editConfig = new();
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadConfig();
+    } // End of Method OnInitializedAsync
+
+    private async Task LoadConfig()
+    {
+        _loading = true;
+        _errorMessage = null;
+
+        try
+        {
+            var client = HttpClientFactory.CreateClient("Gateway");
+            var response = await client.GetAsync("/identity/admin/api/identity/policies");
+
+            if (response.IsSuccessStatusCode)
+            {
+                var json = await response.Content.ReadFromJsonAsync<JsonElement>();
+                _config = new IdentityPoliciesViewModel
+                {
+                    Password = new PasswordPolicyViewModel
+                    {
+                        RequiredLength = json.GetProperty("password").GetProperty("requiredLength").GetInt32(),
+                        RequireDigit = json.GetProperty("password").GetProperty("requireDigit").GetBoolean(),
+                        RequireUppercase = json.GetProperty("password").GetProperty("requireUppercase").GetBoolean(),
+                        RequireLowercase = json.GetProperty("password").GetProperty("requireLowercase").GetBoolean(),
+                        RequireNonAlphanumeric = json.GetProperty("password").GetProperty("requireNonAlphanumeric").GetBoolean()
+                    },
+                    Lockout = new LockoutPolicyViewModel
+                    {
+                        Enabled = json.GetProperty("lockout").GetProperty("enabled").GetBoolean(),
+                        MaxFailedAttempts = json.GetProperty("lockout").GetProperty("maxFailedAttempts").GetInt32(),
+                        DurationMinutes = json.GetProperty("lockout").GetProperty("durationMinutes").GetInt32()
+                    },
+                    Tokens = new TokenLifetimesViewModel
+                    {
+                        AccessTokenLifetimeSeconds = json.GetProperty("tokens").GetProperty("accessTokenLifetimeSeconds").GetInt32(),
+                        RefreshTokenLifetimeSeconds = json.GetProperty("tokens").GetProperty("refreshTokenLifetimeSeconds").GetInt32()
+                    }
+                };
+
+                // Initialize edit config with current values
+                _editConfig = _config.Clone();
+            }
+            else
+            {
+                _errorMessage = $"Failed to load identity policies: {response.StatusCode}";
+                Logger.LogWarning("Failed to load identity policies: {StatusCode}", response.StatusCode);
+            }
+        }
+        catch (Exception ex)
+        {
+            _errorMessage = $"Error loading identity policies: {ex.Message}";
+            Logger.LogError(ex, "Error loading identity policies");
+        }
+        finally
+        {
+            _loading = false;
+        }
+    } // End of Method LoadConfig
+
+    private void EnableEditMode()
+    {
+        _editMode = true;
+        _editConfig = _config!.Clone();
+    } // End of Method EnableEditMode
+
+    private void CancelEdit()
+    {
+        _editMode = false;
+        _editConfig = _config!.Clone();
+        _errorMessage = null;
+    } // End of Method CancelEdit
+
+    private async Task SaveChanges()
+    {
+        _saving = true;
+        _errorMessage = null;
+
+        try
+        {
+            // Validate inputs
+            if (_editConfig.Password.RequiredLength < 1 || _editConfig.Password.RequiredLength > 128)
+            {
+                _errorMessage = "Password length must be between 1 and 128 characters.";
+                return;
+            }
+
+            if (_editConfig.Lockout.Enabled)
+            {
+                if (_editConfig.Lockout.MaxFailedAttempts < 1 || _editConfig.Lockout.MaxFailedAttempts > 100)
+                {
+                    _errorMessage = "Max failed attempts must be between 1 and 100.";
+                    return;
+                }
+
+                if (_editConfig.Lockout.DurationMinutes < 1 || _editConfig.Lockout.DurationMinutes > 43200)
+                {
+                    _errorMessage = "Lockout duration must be between 1 and 43200 minutes (30 days).";
+                    return;
+                }
+            }
+
+            if (_editConfig.Tokens.AccessTokenLifetimeSeconds < 60 || _editConfig.Tokens.AccessTokenLifetimeSeconds > 86400)
+            {
+                _errorMessage = "Access token lifetime must be between 60 seconds (1 min) and 86400 seconds (24 hours).";
+                return;
+            }
+
+            if (_editConfig.Tokens.RefreshTokenLifetimeSeconds < 3600 || _editConfig.Tokens.RefreshTokenLifetimeSeconds > 7776000)
+            {
+                _errorMessage = "Refresh token lifetime must be between 3600 seconds (1 hour) and 7776000 seconds (90 days).";
+                return;
+            }
+
+            var client = HttpClientFactory.CreateClient("Gateway");
+            var response = await client.PostAsJsonAsync("/identity/admin/api/identity/policies", _editConfig);
+
+            if (response.StatusCode == System.Net.HttpStatusCode.NotImplemented)
+            {
+                _errorMessage = "Identity policy updates require service restart. Please update configuration and restart the Identity service.";
+                Logger.LogWarning("Attempted to update identity policies via API (not implemented)");
+            }
+            else if (!response.IsSuccessStatusCode)
+            {
+                _errorMessage = $"Failed to save identity policies: {response.StatusCode}";
+                Logger.LogWarning("Failed to save identity policies: {StatusCode}", response.StatusCode);
+            }
+            else
+            {
+                _config = _editConfig.Clone();
+                _editMode = false;
+                Logger.LogInformation("Identity policies updated successfully (restart required)");
+            }
+        }
+        catch (Exception ex)
+        {
+            _errorMessage = $"Error saving identity policies: {ex.Message}";
+            Logger.LogError(ex, "Error saving identity policies");
+        }
+        finally
+        {
+            _saving = false;
+        }
+    } // End of Method SaveChanges
+
+    private async Task RefreshConfig()
+    {
+        await LoadConfig();
+    } // End of Method RefreshConfig
+
+    // View Models
+    private class IdentityPoliciesViewModel
+    {
+        public PasswordPolicyViewModel Password { get; set; } = new();
+        public LockoutPolicyViewModel Lockout { get; set; } = new();
+        public TokenLifetimesViewModel Tokens { get; set; } = new();
+
+        public IdentityPoliciesViewModel Clone()
+        {
+            return new IdentityPoliciesViewModel
+            {
+                Password = new PasswordPolicyViewModel
+                {
+                    RequiredLength = Password.RequiredLength,
+                    RequireDigit = Password.RequireDigit,
+                    RequireUppercase = Password.RequireUppercase,
+                    RequireLowercase = Password.RequireLowercase,
+                    RequireNonAlphanumeric = Password.RequireNonAlphanumeric
+                },
+                Lockout = new LockoutPolicyViewModel
+                {
+                    Enabled = Lockout.Enabled,
+                    MaxFailedAttempts = Lockout.MaxFailedAttempts,
+                    DurationMinutes = Lockout.DurationMinutes
+                },
+                Tokens = new TokenLifetimesViewModel
+                {
+                    AccessTokenLifetimeSeconds = Tokens.AccessTokenLifetimeSeconds,
+                    RefreshTokenLifetimeSeconds = Tokens.RefreshTokenLifetimeSeconds
+                }
+            };
+        } // End of Method Clone
+    } // End of Class IdentityPoliciesViewModel
+
+    private class PasswordPolicyViewModel
+    {
+        public int RequiredLength { get; set; }
+        public bool RequireDigit { get; set; }
+        public bool RequireUppercase { get; set; }
+        public bool RequireLowercase { get; set; }
+        public bool RequireNonAlphanumeric { get; set; }
+    } // End of Class PasswordPolicyViewModel
+
+    private class LockoutPolicyViewModel
+    {
+        public bool Enabled { get; set; }
+        public int MaxFailedAttempts { get; set; }
+        public int DurationMinutes { get; set; }
+    } // End of Class LockoutPolicyViewModel
+
+    private class TokenLifetimesViewModel
+    {
+        public int AccessTokenLifetimeSeconds { get; set; }
+        public int RefreshTokenLifetimeSeconds { get; set; }
+    } // End of Class TokenLifetimesViewModel
+} // End of Class IdentityPolicies
