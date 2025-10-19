@@ -191,8 +191,52 @@ public sealed class CollectionsController(
         return Ok(new { total, page, pageSize, items });
     } // End of Method List
 
+    /// <summary>
+    /// Streams all collections using IAsyncEnumerable for improved memory efficiency.
+    /// </summary>
+    /// <param name="ct">Cancellation token.</param>
+    /// <returns>Stream of collections as newline-delimited JSON.</returns>
+    /// <response code="200">Returns the stream of collections.</response>
+    /// <response code="401">Unauthorized - missing or invalid JWT token.</response>
+    /// <remarks>
+    /// This endpoint streams collections one-by-one as newline-delimited JSON (NDJSON).
+    /// Use this for large result sets to reduce memory usage on the server.
+    /// Response format: each line is a separate JSON object.
+    /// </remarks>
+    [HttpGet("stream")]
+    [Authorize(Policy = "db.read")]
+    [ProducesResponseType(typeof(IAsyncEnumerable<CollectionDto>), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status401Unauthorized)]
+    [Produces("application/x-ndjson")]
+    public async IAsyncEnumerable<CollectionDto> ListStream(
+        [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct = default
+    )
+    {
+        await using var db = await _factory.CreateAsync(HttpContext, ct);
+        var q = db.Collections.AsNoTracking().OrderByDescending(c => c.CreatedAt);
+
+        await foreach (var e in q.AsAsyncEnumerable().WithCancellation(ct))
+        {
+            yield return new CollectionDto(e.Id, e.Name, e.CreatedAt);
+        }
+    } // End of Method ListStream
+
+    /// <summary>
+    /// Creates a new collection.
+    /// </summary>
+    /// <param name="input">Collection data including name (required).</param>
+    /// <param name="ct">Cancellation token.</param>
+    /// <returns>The created collection with its generated ID.</returns>
+    /// <response code="201">Collection created successfully.</response>
+    /// <response code="400">Invalid input (e.g., missing or empty name).</response>
+    /// <response code="401">Unauthorized - missing or invalid JWT token.</response>
+    /// <response code="403">Forbidden - insufficient permissions (requires db.write scope).</response>
     [HttpPost]
     [Authorize(Policy = "db.write")]
+    [ProducesResponseType(typeof(CollectionDto), StatusCodes.Status201Created)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status401Unauthorized)]
+    [ProducesResponseType(StatusCodes.Status403Forbidden)]
     public async Task<ActionResult<CollectionDto>> Create(
         [FromBody] CreateCollectionDto input,
         CancellationToken ct
@@ -259,8 +303,22 @@ public sealed class CollectionsController(
         return CreatedAtAction(nameof(Get), new { id = entity.Id }, dto);
     } // End of Method Create
 
+    /// <summary>
+    /// Retrieves a single collection by its unique identifier.
+    /// </summary>
+    /// <param name="id">The unique identifier of the collection.</param>
+    /// <param name="ct">Cancellation token.</param>
+    /// <returns>The requested collection if found.</returns>
+    /// <response code="200">Returns the collection.</response>
+    /// <response code="304">Not Modified - ETag matches (If-None-Match).</response>
+    /// <response code="404">Collection not found.</response>
+    /// <response code="401">Unauthorized - missing or invalid JWT token.</response>
     [HttpGet("{id:guid}")]
     [Authorize(Policy = "db.read")]
+    [ProducesResponseType(typeof(CollectionDto), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status304NotModified)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    [ProducesResponseType(StatusCodes.Status401Unauthorized)]
     public async Task<ActionResult<CollectionDto>> Get([FromRoute] Guid id, CancellationToken ct)
     {
         await using var db = await _factory.CreateAsync(HttpContext, ct);
@@ -312,10 +370,33 @@ public sealed class CollectionsController(
         return Ok(new CollectionDto(e.Id, e.Name, e.CreatedAt));
     } // End of Method Get
 
+    /// <summary>
+    /// Request DTO for updating a collection.
+    /// </summary>
+    /// <param name="name">New name for the collection (required).</param>
     public sealed record UpdateCollectionDto(string name);
 
+    /// <summary>
+    /// Updates an existing collection (full replacement).
+    /// </summary>
+    /// <param name="id">ID of the collection to update.</param>
+    /// <param name="input">New collection data (name).</param>
+    /// <param name="ct">Cancellation token.</param>
+    /// <returns>The updated collection.</returns>
+    /// <response code="200">Collection updated successfully.</response>
+    /// <response code="400">Invalid input (e.g., missing or empty name).</response>
+    /// <response code="404">Collection not found.</response>
+    /// <response code="412">Precondition Failed - If-Match header does not match current ETag.</response>
+    /// <response code="401">Unauthorized - missing or invalid JWT token.</response>
+    /// <response code="403">Forbidden - insufficient permissions (requires db.write scope).</response>
     [HttpPut("{id:guid}")]
     [Authorize(Policy = "db.write")]
+    [ProducesResponseType(typeof(CollectionDto), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    [ProducesResponseType(StatusCodes.Status412PreconditionFailed)]
+    [ProducesResponseType(StatusCodes.Status401Unauthorized)]
+    [ProducesResponseType(StatusCodes.Status403Forbidden)]
     public async Task<ActionResult<CollectionDto>> Update(
         [FromRoute] Guid id,
         [FromBody] UpdateCollectionDto input,
@@ -402,8 +483,24 @@ public sealed class CollectionsController(
         return Ok(new CollectionDto(e.Id, e.Name, e.CreatedAt));
     } // End of Method Update
 
+    /// <summary>
+    /// Deletes a collection by ID.
+    /// </summary>
+    /// <param name="id">ID of the collection to delete.</param>
+    /// <param name="ct">Cancellation token.</param>
+    /// <returns>No content on successful deletion.</returns>
+    /// <response code="204">Collection deleted successfully.</response>
+    /// <response code="404">Collection not found.</response>
+    /// <response code="412">Precondition Failed - If-Match header does not match current ETag.</response>
+    /// <response code="401">Unauthorized - missing or invalid JWT token.</response>
+    /// <response code="403">Forbidden - insufficient permissions (requires db.write scope).</response>
     [HttpDelete("{id:guid}")]
     [Authorize(Policy = "db.write")]
+    [ProducesResponseType(StatusCodes.Status204NoContent)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    [ProducesResponseType(StatusCodes.Status412PreconditionFailed)]
+    [ProducesResponseType(StatusCodes.Status401Unauthorized)]
+    [ProducesResponseType(StatusCodes.Status403Forbidden)]
     public async Task<ActionResult> Delete([FromRoute] Guid id, CancellationToken ct)
     {
         await using var db = await _factory.CreateAsync(HttpContext, ct);

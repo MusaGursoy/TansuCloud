@@ -2526,6 +2526,9 @@ Base path via gateway: `/db/api` (tenant required via `X-Tansu-Tenant` header). 
 
 - Collections
   - `GET /collections` — list with pagination; supports weak ETag on the collection set.
+  - `GET /collections/stream` — stream all collections as newline-delimited JSON (NDJSON) for improved memory efficiency.
+    - Content-Type: `application/x-ndjson`.
+    - Each line is a separate JSON object representing one collection.
   - `GET /collections/{id}` — get by id; weak ETag; `If-None-Match` → 304.
   - `POST /collections` — create.
   - `PUT /collections/{id}` — update; `If-Match` required for conditional update; 412 on mismatch.
@@ -2535,9 +2538,22 @@ Base path via gateway: `/db/api` (tenant required via `X-Tansu-Tenant` header). 
   - `GET /documents` — list with filters/sort and pagination.
     - Query: `collectionId` (Guid?), `createdAfter`|`createdBefore` (RFC3339), `sortBy` in `id|collectionId|createdAt`, `sortDir` in `asc|desc`, `page` (>=1), `pageSize` (1..500).
     - Weak ETag on the result; `If-None-Match` → 304.
+  - `GET /documents/stream` — stream documents as newline-delimited JSON (NDJSON) for improved memory efficiency with large result sets.
+    - Query: same filters as GET /documents (except pagination).
+    - Content-Type: `application/x-ndjson`.
+    - Each line is a separate JSON object representing one document.
   - `GET /documents/{id}` — get by id; weak ETag; `If-None-Match` → 304.
+    - Supports HTTP Range requests (RFC 9110): use `Range: bytes=start-end` header to request partial content.
+    - Returns `206 Partial Content` with `Content-Range` header for valid ranges.
+    - Returns `416 Range Not Satisfiable` for invalid ranges.
+    - Response includes `Accept-Ranges: bytes` header.
   - `POST /documents` — create; body includes `collectionId`, optional `embedding` (float[1536]) and `content` (JSON object). JSON payloads are stored as `jsonb`.
   - `PUT /documents/{id}` — update; supports `If-Match`; 412 on mismatch.
+  - `PATCH /documents/{id}` — partial update using JSON Patch (RFC 6902).
+    - Content-Type: `application/json-patch+json`.
+    - Supports operations: `add`, `remove`, `replace`, `move`, `copy`, `test`.
+    - Example: `[{"op": "replace", "path": "/content/title", "value": "New Title"}]`.
+    - Returns updated document on success; 400 if patch document is invalid.
   - `DELETE /documents/{id}` — delete; supports `If-Match`; 412 on mismatch.
 
 - Vector search (pgvector)
@@ -2553,6 +2569,160 @@ ETags and conditional requests
 Development diagnostics
 
 - During development and E2E, the Database service adds `X-Tansu-Db` to responses to surface the normalized tenant database name (e.g., `tansu_tenant_e2e_server_ank`). This header is not intended for production.
+
+### 13.6 Advanced Database API Examples
+
+#### JSON Patch (RFC 6902)
+
+Efficiently update specific fields without replacing the entire document:
+
+```bash
+# Replace a field value
+curl -X PATCH "http://localhost:8080/db/api/documents/{docId}" \
+  -H "Authorization: Bearer {token}" \
+  -H "X-Tansu-Tenant: my-tenant" \
+  -H "Content-Type: application/json-patch+json" \
+  -d '[
+    {"op": "replace", "path": "/content/title", "value": "Updated Title"}
+  ]'
+
+# Add a new array element
+curl -X PATCH "http://localhost:8080/db/api/documents/{docId}" \
+  -H "Authorization: Bearer {token}" \
+  -H "X-Tansu-Tenant: my-tenant" \
+  -H "Content-Type: application/json-patch+json" \
+  -d '[
+    {"op": "add", "path": "/content/tags/-", "value": "new-tag"}
+  ]'
+
+# Remove a field
+curl -X PATCH "http://localhost:8080/db/api/documents/{docId}" \
+  -H "Authorization: Bearer {token}" \
+  -H "X-Tansu-Tenant: my-tenant" \
+  -H "Content-Type: application/json-patch+json" \
+  -d '[
+    {"op": "remove", "path": "/content/draft"}
+  ]'
+
+# Multiple operations in one request
+curl -X PATCH "http://localhost:8080/db/api/documents/{docId}" \
+  -H "Authorization: Bearer {token}" \
+  -H "X-Tansu-Tenant: my-tenant" \
+  -H "Content-Type: application/json-patch+json" \
+  -d '[
+    {"op": "replace", "path": "/content/status", "value": "published"},
+    {"op": "add", "path": "/content/publishedAt", "value": "2025-10-19T10:00:00Z"},
+    {"op": "remove", "path": "/content/draft"}
+  ]'
+```
+
+Supported operations: `add`, `remove`, `replace`, `move`, `copy`, `test`.
+
+#### HTTP Range Requests
+
+Request partial content to reduce bandwidth and improve performance:
+
+```bash
+# Request first 1KB of a document
+curl -X GET "http://localhost:8080/db/api/documents/{docId}" \
+  -H "Authorization: Bearer {token}" \
+  -H "X-Tansu-Tenant: my-tenant" \
+  -H "Range: bytes=0-1023"
+
+# Server responds with:
+# HTTP/1.1 206 Partial Content
+# Content-Range: bytes 0-1023/5000
+# Accept-Ranges: bytes
+# Content-Length: 1024
+
+# Request middle section
+curl -X GET "http://localhost:8080/db/api/documents/{docId}" \
+  -H "Authorization: Bearer {token}" \
+  -H "X-Tansu-Tenant: my-tenant" \
+  -H "Range: bytes=1024-2047"
+
+# Request from byte 1000 to end
+curl -X GET "http://localhost:8080/db/api/documents/{docId}" \
+  -H "Authorization: Bearer {token}" \
+  -H "X-Tansu-Tenant: my-tenant" \
+  -H "Range: bytes=1000-"
+```
+
+Invalid ranges return `416 Range Not Satisfiable` with a `Content-Range: bytes */totalLength` header.
+
+#### Streaming Results (NDJSON)
+
+Stream large result sets with minimal memory usage:
+
+```bash
+# Stream all documents in a collection
+curl -X GET "http://localhost:8080/db/api/documents/stream?collectionId={collectionId}" \
+  -H "Authorization: Bearer {token}" \
+  -H "X-Tansu-Tenant: my-tenant"
+
+# Response (Content-Type: application/x-ndjson):
+# {"id":"...","collectionId":"...","content":{...},"createdAt":"..."}
+# {"id":"...","collectionId":"...","content":{...},"createdAt":"..."}
+# {"id":"...","collectionId":"...","content":{...},"createdAt":"..."}
+
+# Stream with filters
+curl -X GET "http://localhost:8080/db/api/documents/stream?collectionId={collectionId}&sortBy=createdAt&sortDir=desc" \
+  -H "Authorization: Bearer {token}" \
+  -H "X-Tansu-Tenant: my-tenant"
+
+# Stream all collections
+curl -X GET "http://localhost:8080/db/api/collections/stream" \
+  -H "Authorization: Bearer {token}" \
+  -H "X-Tansu-Tenant: my-tenant"
+
+# Parse NDJSON in JavaScript:
+const response = await fetch('/db/api/documents/stream', {
+  headers: {
+    'Authorization': 'Bearer ' + token,
+    'X-Tansu-Tenant': 'my-tenant'
+  }
+});
+
+const reader = response.body.getReader();
+const decoder = new TextDecoder();
+
+while (true) {
+  const { done, value } = await reader.read();
+  if (done) break;
+  
+  const lines = decoder.decode(value).split('\n');
+  for (const line of lines) {
+    if (line.trim()) {
+      const doc = JSON.parse(line);
+      console.log('Document:', doc.id);
+    }
+  }
+}
+
+# Parse NDJSON in Python:
+import requests
+import json
+
+response = requests.get(
+    'http://localhost:8080/db/api/documents/stream',
+    headers={
+        'Authorization': f'Bearer {token}',
+        'X-Tansu-Tenant': 'my-tenant'
+    },
+    stream=True
+)
+
+for line in response.iter_lines():
+    if line:
+        doc = json.loads(line)
+        print(f"Document: {doc['id']}")
+```
+
+Use streaming endpoints when:
+- Result sets are very large (>1000 items)
+- Memory constraints are critical
+- Processing can be done incrementally (e.g., ETL, bulk operations)
+- Real-time progress updates are needed
 
 ### 13.3 CI pipeline (GitHub Actions)
 

@@ -1544,7 +1544,7 @@ app.Use(
             || path.StartsWithSegments("/storage", StringComparison.OrdinalIgnoreCase)
         )
         {
-            // Allow anonymous health endpoints for downstream services
+            // Allow anonymous health endpoints and Swagger UI for downstream services (Development only for Swagger)
             if (
                 !(
                     path.StartsWithSegments("/db/health", StringComparison.OrdinalIgnoreCase)
@@ -1552,6 +1552,8 @@ app.Use(
                         "/storage/health",
                         StringComparison.OrdinalIgnoreCase
                     )
+                    || (app.Environment.IsDevelopment() && path.StartsWithSegments("/db/swagger", StringComparison.OrdinalIgnoreCase))
+                    || (app.Environment.IsDevelopment() && path.StartsWithSegments("/storage/swagger", StringComparison.OrdinalIgnoreCase))
                 )
             )
             {

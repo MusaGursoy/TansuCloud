@@ -1098,11 +1098,32 @@ app.UseMiddleware<RequestEnrichmentMiddleware>();
 if (app.Environment.IsDevelopment())
 {
     app.MapOpenApi();
-    app.UseSwagger();
+    
+    // Configure Swagger to respect X-Forwarded-Prefix from Gateway
+    app.UseSwagger(c =>
+    {
+        c.PreSerializeFilters.Add((swagger, httpReq) =>
+        {
+            // Adjust server URLs when behind a reverse proxy with path prefix
+            var forwardedPrefix = httpReq.Headers["X-Forwarded-Prefix"].ToString();
+            if (!string.IsNullOrWhiteSpace(forwardedPrefix))
+            {
+                swagger.Servers = new List<Microsoft.OpenApi.Models.OpenApiServer>
+                {
+                    new() { Url = $"{forwardedPrefix}" }
+                };
+            }
+        });
+    });
+    
     app.UseSwaggerUI(options =>
     {
-        options.SwaggerEndpoint("/swagger/v1/swagger.json", "TansuCloud Database API v1");
-        options.RoutePrefix = "swagger"; // Access at /swagger
+        // Use relative path for SwaggerEndpoint to work correctly behind reverse proxy
+        // The path is relative to the Swagger UI route, so "v1/swagger.json" resolves to:
+        // - /swagger/v1/swagger.json when accessed directly
+        // - /db/swagger/v1/swagger.json when accessed via Gateway (/db prefix preserved by client-side navigation)
+        options.SwaggerEndpoint("v1/swagger.json", "TansuCloud Database API v1");
+        options.RoutePrefix = "swagger"; // Access at /swagger (or /db/swagger via Gateway)
         options.DocumentTitle = "TansuCloud Database API";
     });
 }
