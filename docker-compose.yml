@@ -377,6 +377,8 @@ services:
     depends_on:
       pgcat:
         condition: service_healthy
+      db:
+        condition: service_healthy
 
   dashboard:
     build:
@@ -458,10 +460,12 @@ services:
       Cache__Redis: redis:6379
       ConnectionStrings__DefaultConnection: "Host=postgres;Port=5432;Database=postgres;Username=${POSTGRES_USER};Password=${POSTGRES_PASSWORD}"
       Provisioning__AdminConnectionString: "Host=postgres;Port=5432;Database=postgres;Username=${POSTGRES_USER};Password=${POSTGRES_PASSWORD}"
-      Provisioning__RuntimeConnectionString: "Host=pgcat;Port=6432;Database=postgres;Username=${POSTGRES_USER};Password=${POSTGRES_PASSWORD}"
+      # Temporarily use direct PostgreSQL instead of PgCat until dynamic pool management is implemented (Task 46)
+      # PgCat HTTP Admin API does not exist - see docs/PgCat-Admin-API-Investigation.md
+      Provisioning__RuntimeConnectionString: "Host=postgres;Port=5432;Database=postgres;Username=${POSTGRES_USER};Password=${POSTGRES_PASSWORD}"
       Dev__ProvisionBypassKey: letmein
-      Audit__ConnectionString: "Host=pgcat;Port=6432;Database=postgres;Username=${POSTGRES_USER};Password=${POSTGRES_PASSWORD}"
-      # PgCat Admin API for dynamic pool management (zero-downtime tenant provisioning)
+      Audit__ConnectionString: "Host=postgres;Port=5432;Database=postgres;Username=${POSTGRES_USER};Password=${POSTGRES_PASSWORD}"
+      # PgCat Admin API configuration (not currently used - HTTP API does not exist)
       PgCat__AdminBaseUrl: http://pgcat:9930
       PGCAT_ADMIN_USER: ${PGCAT_ADMIN_USER}
       PGCAT_ADMIN_PASSWORD: ${PGCAT_ADMIN_PASSWORD}
@@ -470,7 +474,7 @@ services:
       interval: 10s
       timeout: 5s
       retries: 15
-      start_period: 25s
+      start_period: 60s
     networks:
       - tansucloud-network
     depends_on:

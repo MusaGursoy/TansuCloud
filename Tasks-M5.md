@@ -8,6 +8,7 @@
 
 - [ ] [44) BaaS Authentication - Per-Tenant Identity (Complete Isolation)](#task-44-baas-authentication-per-tenant-identity)
 - [ ] [45) Serverless Functions Service](#task-45-serverless-functions-service)
+- [ ] [46) Database Access Patterns - Direct PostgreSQL + Quota Management](#task-46-database-access-patterns-direct-postgresql-quota-management)
 
 ---
 
@@ -574,6 +575,32 @@ public async Task Platform_Admin_Login_Still_Works_Without_Tenant_Header()
 
 **Purpose**: Enable tenants to run custom backend logic for integrations (payment processing, email notifications, SMS, push notifications, calendar integrations, webhooks, scheduled jobs) without managing infrastructure. Provide a serverless execution environment with built-in connectors for common third-party services, full tenant isolation, and comprehensive observability.
 
+**Performance Optimization Decision (2025-10-20)**:
+
+⚡ **Use EF Core Compiled Model for Functions Service**
+
+Unlike long-running services (Database, Gateway, Dashboard, Storage, Identity) that start once and run for days/weeks, the Functions service will experience frequent cold starts due to its serverless nature. EF Core compiled model optimization is critical here:
+
+- **Standard services**: 500ms EF startup cost paid ONCE → negligible (kept runtime model for flexibility)
+- **Functions service**: 500ms EF startup cost paid PER COLD START → significant
+- **Performance gain**: ~100ms (20%) per cold start
+- **Impact at scale**: 
+  - 1,000 invocations/day: ~8 min/day → ~7 min/day (saves 1 min/day)
+  - 100,000 invocations/day: ~14 hours/day → ~11 hours/day (saves 3 hours/day)
+
+**Implementation checklist**:
+- ✅ Compiled model infrastructure already exists in `TansuDbContextFactory.cs` (disabled but ready)
+- ⏳ Generate compiled model before Task 45 implementation: `dotnet ef dbcontext optimize --output-dir EF --namespace TansuCloud.Database.EF`
+- ⏳ Enable compiled model ONLY in `TansuCloud.Functions` service by uncommenting `TryUseCompiledModel()`
+- ⏳ Add model regeneration to CI/CD pipeline (before Docker build)
+- ⏳ Document usage in Functions service README
+
+**Rationale**: For serverless workloads with frequent cold starts, the 20% reduction in EF startup time directly improves user-facing latency and reduces compute costs. For long-running services, the flexibility of runtime model outweighs the one-time 100ms savings at startup.
+
+**Reference**: See `TansuCloud.Database/Services/TenantDbContextFactory.cs` for implementation details and uncommenting instructions.
+
+---
+
 **Current state gaps**:
 
 - ❌ No way for tenants to run custom backend code
@@ -1070,5 +1097,507 @@ public async Task Platform_Admin_Login_Still_Works_Without_Tenant_Header()
 ---
 
 **Status**: Task 45 created and awaiting approval ✅
+
+---
+
+### Task 46: Database Access Patterns - Direct PostgreSQL + Quota Management {#task-46-database-access-patterns-direct-postgresql-quota-management}
+
+**Status**: IN PROGRESS — Documentation ✅ COMPLETED, Implementation PENDING  
+**Decision Date**: 2025-01-19  
+**Owner**: TBD  
+**Priority**: HIGH  
+**Dependencies**: Task 10 (EF Core model), Task 11 (Database REST API), Task 15 (HybridCache)
+
+**Purpose**: Formalize and implement the **dual database access patterns** to give tenants flexibility in how they interact with their data: cached REST API for hot reads (mobile/web apps) and direct PostgreSQL access for complex analytics/BI tools. Enable admins to manage per-tenant connection quotas and provide tenants with self-service visibility into their usage. This brings TansuCloud closer to the **Supabase model** where tenants can use any language/ORM (Python/psycopg2, Node.js/pg, Go/pgx) for full SQL power while maintaining the performance benefits of the REST API for common use cases.
+
+**Current state gaps**:
+
+- ❌ Documentation mentions PgCat but doesn't formalize two access patterns
+- ❌ No connection limit enforcement at PostgreSQL or PgCat level
+- ❌ No Dashboard UI for admins to manage per-tenant connection quotas
+- ❌ No Dashboard UI for tenants to view their own connection limits and usage
+- ❌ REST API caching benefits (HybridCache/Garnet) not clearly documented vs direct access trade-offs
+- ❌ No guidance on when to use REST API vs direct PostgreSQL access
+- ❌ No client-side caching strategies documented for direct access users
+- ❌ Connection string format and security best practices not documented
+
+**Target state (Dual Access Patterns)**:
+
+- ✅ **REST API Access** (port 8080 via Gateway):
+  - Cached by HybridCache with Garnet backing (30s TTL)
+  - Automatic cache invalidation on writes via outbox events
+  - Best for hot reads, mobile/web apps, user-facing queries
+  - JSON responses with pagination, filtering, ETags
+- ✅ **Direct PostgreSQL Access** (port 6432 via PgCat):
+  - Full SQL access with any language/ORM (Python, Node.js, Go, Rust, etc.)
+  - No automatic caching (PgCat is connection pooler only)
+  - Best for complex analytics, JOINs, CTEs, BI tools, ETL pipelines
+  - Per-tenant connection limits enforced at PostgreSQL role + PgCat pool
+- ✅ **Admin Dashboard** (`/dashboard/admin/database/quotas`):
+  - View all tenant connection limits and current usage
+  - Edit connection quotas with validation and audit logging
+  - Connection usage charts (current vs limit over time)
+- ✅ **Tenant Self-Service** (`/dashboard/tenant/database`):
+  - View own connection limits and current usage
+  - Connection usage charts with trends
+  - Direct SQL credentials management (view connection string, rotate password)
+- ✅ **Comprehensive Documentation**:
+  - Guide section 4.1 with 2000+ words covering both patterns
+  - Performance comparison table (latency, throughput, flexibility)
+  - Code examples: Python (psycopg2), Node.js (pg), curl
+  - Client-side caching strategies for direct access users
+  - Security and access control details
+  - Migration path for existing tenants
+
+**Reference documentation**:
+
+- **Architecture.md**: Updated with dual access patterns in Database component section
+- **Requirements.md**: Split into "Database API (REST Access)" and "Database Direct Access (PostgreSQL via PgCat)" sections
+- **Guide-For-Admins-and-Tenants.md**: New section 4.1 (2000+ words) with comprehensive guidance
+
+---
+
+#### Phase 1: Connection Limit Enforcement (1 week)
+
+**Goal**: PostgreSQL and PgCat enforce per-tenant connection limits with clear error messages.
+
+**Subtasks**:
+
+1. **Implement PostgreSQL role connection limits** (2 days)
+   - Update `TenantProvisioner` to set `CONNECTION LIMIT` on tenant roles:
+
+     ```sql
+     ALTER ROLE tansu_tenant_acme_user CONNECTION LIMIT 50;
+     ```
+
+   - Default limit: 50 connections per tenant (configurable via `Database:DefaultConnectionLimit`)
+   - Store limit in `TenantMetadata` table for future updates
+   - Add migration to apply limits to existing tenants
+
+2. **Integrate PgCat Admin API for dynamic pools** (3 days)
+   - Use PgCat Admin API (`POST /pools`) to create per-tenant pool configurations
+   - Pool config includes:
+     - `pool_name`: `tansu_tenant_{id}`
+     - `max_connections`: Same as PostgreSQL role limit
+     - `default_role`: Tenant-specific PostgreSQL role
+   - Update pool configuration when admin changes quota via Dashboard
+   - Add retry logic with exponential backoff for PgCat API calls
+   - Add health check to verify PgCat Admin API availability
+
+3. **Add error handling for connection limit exceeded** (1 day)
+   - Catch PostgreSQL error code 53300 (`too_many_connections`)
+   - Return clear error message: `"Connection limit exceeded. Your tenant has {current}/{max} active connections. Please close idle connections or contact support to increase your limit."`
+   - Log connection limit violations with tenant ID, timestamp, current usage
+   - Add metric counter: `tansu_database_connection_limit_exceeded_total` (tagged by tenant)
+
+4. **Add connection usage tracking** (1 day)
+   - Query `pg_stat_activity` to get current active connections per tenant:
+
+     ```sql
+     SELECT datname, usename, count(*) as active_connections
+     FROM pg_stat_activity
+     WHERE datname LIKE 'tansu_tenant_%'
+     GROUP BY datname, usename;
+     ```
+
+   - Cache results in memory (TTL: 30 seconds) to avoid repeated queries
+   - Expose via internal API: `GET /db/internal/connections` (admin only)
+
+**Acceptance criteria**:
+
+- ✅ Tenant provisioning sets `CONNECTION LIMIT 50` on PostgreSQL role
+- ✅ PgCat pool created with matching `max_connections: 50`
+- ✅ Direct connection attempt when limit reached returns PostgreSQL error 53300
+- ✅ Error message includes current/max usage and actionable guidance
+- ✅ Connection usage queryable via `pg_stat_activity`
+- ✅ Metric counter tracks connection limit violations per tenant
+
+**Definition of done (Phase 1)**:
+
+- [ ] PostgreSQL role connection limits applied to all tenants
+- [ ] PgCat Admin API integration functional with retry logic
+- [ ] Error handling returns clear messages on limit exceeded
+- [ ] Connection usage tracking implemented
+- [ ] Integration tests: provision tenant → verify limit → exceed limit → verify error
+- [ ] E2E test: connect via psycopg2 → verify limit enforcement
+- [ ] Metrics exported to OpenTelemetry (connection limit violations)
+- [ ] Documentation: `Guide-For-Admins-and-Tenants.md` updated with limit enforcement details
+
+---
+
+#### Phase 2: Quotas REST API (1 week)
+
+**Goal**: REST API endpoints allow admins to manage quotas and tenants to view their own usage.
+
+**Subtasks**:
+
+1. **Create quota model and persistence** (1 day)
+   - Add `TenantConnectionQuota` table:
+     - `TenantId` (PK, string)
+     - `MaxConnections` (int, default 50)
+     - `UpdatedAt` (timestamp)
+     - `UpdatedBy` (admin user ID)
+   - EF Core migration and entity mapping
+   - Seed existing tenants with default quota (50 connections)
+
+2. **Build admin quota endpoints** (2 days)
+   - `GET /db/api/admin/quotas` - List all tenant quotas with current usage
+     - Response: `{ tenantId, maxConnections, currentConnections, usagePercent }`
+     - Sort by `usagePercent` descending (tenants closest to limit first)
+     - Pagination (50 tenants per page)
+   - `GET /db/api/admin/quotas/{tenantId}` - Get specific tenant quota
+     - Response includes quota history (last 10 changes with timestamps and admin IDs)
+   - `PUT /db/api/admin/quotas/{tenantId}` - Update tenant connection limit
+     - Request body: `{ maxConnections: 100 }`
+     - Validation: min 10, max 500 connections
+     - Updates PostgreSQL role: `ALTER ROLE ... CONNECTION LIMIT {maxConnections}`
+     - Updates PgCat pool via Admin API
+     - Audit log entry: admin ID, old limit, new limit, reason (optional)
+   - Authorization: Require `admin.full` scope
+
+3. **Build tenant quota endpoints** (1 day)
+   - `GET /db/api/quotas` - Get own tenant quota
+     - Response: `{ maxConnections, currentConnections, usagePercent, peakConnections24h }`
+     - Peak connections: max usage in last 24 hours (stored in metrics)
+   - `GET /db/api/connections` - Get active connections for own tenant
+     - Response: List of active connections with query text (redacted), duration, state
+     - Query `pg_stat_activity` filtered by tenant database name
+     - Redact query text to first 100 characters (prevent sensitive data exposure)
+   - Authorization: Require `db.read` scope and matching tenant context
+
+4. **Add OpenTelemetry metrics** (1 day)
+   - Gauge: `tansu_database_connection_current` (current active connections per tenant)
+   - Gauge: `tansu_database_connection_limit` (max connections per tenant)
+   - Histogram: `tansu_database_connection_usage_percent` (current/max * 100)
+   - Counter: `tansu_database_quota_updates_total` (admin quota changes)
+   - Update metrics every 30 seconds via background worker
+
+**Acceptance criteria**:
+
+- ✅ Admin can list all tenant quotas via `GET /db/api/admin/quotas`
+- ✅ Admin can update tenant quota via `PUT /db/api/admin/quotas/{tenantId}`
+- ✅ Quota update triggers PostgreSQL `ALTER ROLE` and PgCat pool update
+- ✅ Tenant can view own quota via `GET /db/api/quotas`
+- ✅ Tenant can see active connections via `GET /db/api/connections`
+- ✅ Audit log captures quota changes with admin identity
+- ✅ Metrics exported to OpenTelemetry and visible in SigNoz
+
+**Definition of done (Phase 2)**:
+
+- [ ] `TenantConnectionQuota` table and migration created
+- [ ] Admin quota endpoints implemented and tested
+- [ ] Tenant quota endpoints implemented and tested
+- [ ] PostgreSQL role update logic working
+- [ ] PgCat Admin API update logic working
+- [ ] Audit logging functional
+- [ ] OpenTelemetry metrics exported
+- [ ] Integration tests: CRUD operations on quotas
+- [ ] E2E tests: admin updates quota → tenant sees new limit → connection enforcement updated
+- [ ] Documentation: API reference for quota endpoints
+
+---
+
+#### Phase 3: Admin Dashboard UI (1 week)
+
+**Goal**: Admin Dashboard page for managing per-tenant connection quotas.
+
+**Subtasks**:
+
+1. **Create admin quotas page** (2 days)
+   - Route: `/dashboard/admin/database/quotas`
+   - **MudDataGrid** component with columns:
+     - Tenant ID (link to tenant detail page)
+     - Current Connections (gauge with color: green < 70%, yellow 70-90%, red > 90%)
+     - Max Connections (editable inline or via dialog)
+     - Usage % (with trend arrow: ↑ increasing, ↓ decreasing, → stable)
+     - Peak 24h (highest usage in last 24 hours)
+     - Last Updated (timestamp and admin name)
+     - Actions: Edit quota, View history
+   - Toolbar: Search by tenant ID, filter by usage % (>50%, >80%, >90%)
+   - Pagination: 50 tenants per page
+
+2. **Create quota edit dialog** (2 days)
+   - **MudDialog** component with form:
+     - Tenant ID (read-only)
+     - Current usage (gauge)
+     - Max Connections (numeric input with validation: 10-500)
+     - Reason for change (optional text area, stored in audit log)
+     - Preview impact: "This will update PostgreSQL role and PgCat pool configuration"
+   - Save button: calls `PUT /db/api/admin/quotas/{tenantId}`
+   - Show success/error **MudSnackbar**
+   - Close dialog on success
+
+3. **Add quota history dialog** (1 day)
+   - **MudDialog** showing timeline of quota changes:
+     - Timestamp, Admin name, Old limit, New limit, Reason
+     - MudTimeline component with color-coded items
+   - Last 10 changes shown, with "Load more" button
+
+4. **Add connection usage chart** (1 day)
+   - **MudChart** (line chart) showing connection usage over last 24 hours
+   - X-axis: time (hourly buckets)
+   - Y-axis: connection count
+   - Two lines: Current connections (blue), Max limit (red dashed)
+   - Hover tooltip: exact timestamp, connection count
+   - Chart loaded on quota row expand
+
+**Acceptance criteria**:
+
+- ✅ Admin Dashboard shows `/dashboard/admin/database/quotas` page
+- ✅ MudDataGrid displays all tenants with current usage and limits
+- ✅ Admin can edit quota via inline dialog
+- ✅ Quota change updates PostgreSQL and PgCat immediately
+- ✅ History dialog shows past changes with admin names
+- ✅ Connection usage chart visualizes trends
+- ✅ Search and filter work correctly
+
+**Definition of done (Phase 3)**:
+
+- [ ] Admin quotas page implemented with MudDataGrid
+- [ ] Quota edit dialog functional
+- [ ] Quota history dialog functional
+- [ ] Connection usage chart rendering correctly
+- [ ] Search and filter working
+- [ ] E2E tests: admin navigates to quotas page → edits quota → verifies change
+- [ ] Documentation: Admin guide updated with quota management screenshots
+
+---
+
+#### Phase 4: Tenant Self-Service UI (1 week)
+
+**Goal**: Tenant Dashboard page for viewing connection limits and usage.
+
+**Subtasks**:
+
+1. **Create tenant database page** (2 days)
+   - Route: `/dashboard/tenant/database`
+   - **MudCard** components for sections:
+     - **Connection Quota Card**:
+       - Gauge showing current/max connections (with color coding)
+       - Text: "Your tenant has {current}/{max} active connections"
+       - Peak usage in last 24 hours
+       - Link: "Need more connections? Contact support" (opens mailto or support ticket form)
+     - **Connection Details Card**:
+       - MudDataGrid showing active connections:
+         - Query text (first 100 chars, redacted)
+         - Duration (formatted: "5 min 32 sec")
+         - State (active, idle, idle in transaction)
+         - Backend PID (for support troubleshooting)
+       - Refresh button (polls `GET /db/api/connections`)
+
+2. **Add connection usage chart** (1 day)
+   - **MudChart** (line chart) showing connection usage over last 7 days
+   - X-axis: date (daily buckets)
+   - Y-axis: connection count
+   - Two lines: Average connections (blue), Max limit (red dashed)
+   - Hover tooltip: date, avg connections, peak connections
+   - Chart updates on page load
+
+3. **Add credentials management section** (2 days)
+   - **MudCard** for "Direct PostgreSQL Access":
+     - **Connection String** (masked): `postgres://***:***@pgcat:6432/tansu_tenant_acme`
+       - Show button (reveals full connection string for 30 seconds)
+       - Copy button (copies to clipboard)
+     - **Rotate Password** button:
+       - Opens MudDialog with confirmation
+       - Generates new password and updates PostgreSQL role
+       - Shows new connection string once (cannot be retrieved again)
+       - Sends notification email to tenant admin
+     - **Generate Read-Only Token** button (future enhancement):
+       - Creates separate PostgreSQL role with SELECT-only grants
+       - Returns read-only connection string for BI tools
+       - Token expires after configurable period (default: 90 days)
+
+**Acceptance criteria**:
+
+- ✅ Tenant Dashboard shows `/dashboard/tenant/database` page
+- ✅ Quota card displays current/max connections with gauge
+- ✅ Connection details grid shows active connections
+- ✅ Connection usage chart visualizes 7-day trend
+- ✅ Connection string masked by default, reveal on click
+- ✅ Password rotation functional with confirmation
+- ✅ Tenant receives email notification after password rotation
+
+**Definition of done (Phase 4)**:
+
+- [ ] Tenant database page implemented with MudCards and MudDataGrid
+- [ ] Connection quota card functional
+- [ ] Connection details grid showing live data
+- [ ] Connection usage chart rendering correctly
+- [ ] Credentials management section functional
+- [ ] Password rotation working with email notification
+- [ ] E2E tests: tenant views quotas → rotates password → verifies new connection string works
+- [ ] Documentation: Tenant guide updated with database access screenshots
+
+---
+
+#### Phase 5: Direct PostgreSQL Access Testing (3 days)
+
+**Goal**: Verify direct PostgreSQL access works from standard drivers in multiple languages.
+
+**Subtasks**:
+
+1. **Python (psycopg2) E2E test** (1 day)
+   - Install psycopg2 in test environment
+   - Connect to PgCat: `psycopg2.connect("host=127.0.0.1 port=6432 dbname=tansu_tenant_acme user=acme_user password=***")`
+   - Execute SELECT query: `SELECT id, content FROM documents LIMIT 10`
+   - Verify results returned correctly
+   - Test connection limit enforcement: open N+1 connections → verify error
+
+2. **Node.js (pg) E2E test** (1 day)
+   - Install pg library in test environment
+   - Connect to PgCat: `new Client({ host: '127.0.0.1', port: 6432, database: 'tansu_tenant_acme', user: 'acme_user', password: '***' })`
+   - Execute INSERT query: `INSERT INTO documents (content) VALUES ($1)` with parameterized query
+   - Verify row inserted and returned
+   - Test connection pooling: create pool with max 5 connections → verify pool behavior
+
+3. **Connection limit enforcement test** (1 day)
+   - Provision tenant with limit of 5 connections
+   - Open 5 concurrent connections from Python client
+   - Attempt 6th connection → verify PostgreSQL error 53300
+   - Verify error message includes current/max usage
+   - Close 1 connection → verify 6th connection now succeeds
+
+**Acceptance criteria**:
+
+- ✅ Python psycopg2 can connect to PgCat and execute queries
+- ✅ Node.js pg can connect to PgCat and execute queries
+- ✅ Connection limit enforcement works across different clients
+- ✅ Error messages are clear and actionable
+- ✅ PgCat connection pooling works correctly
+
+**Definition of done (Phase 5)**:
+
+- [ ] Python E2E tests passing
+- [ ] Node.js E2E tests passing
+- [ ] Connection limit enforcement tests passing
+- [ ] Documentation: Direct access guide with code examples in Python/Node.js
+- [ ] Sample applications: Python script and Node.js script demonstrating direct access
+
+---
+
+#### Overall Task 46 Acceptance Criteria
+
+- ✅ **Documentation Complete** (Architecture.md, Requirements.md, Guide section 4.1)
+- ✅ Connection limits enforced at PostgreSQL role and PgCat pool level
+- ✅ Admin Dashboard UI for managing per-tenant connection quotas
+- ✅ Tenant Dashboard UI for viewing connection limits and usage
+- ✅ REST API endpoints for quota CRUD operations (admin + tenant)
+- ✅ Direct PostgreSQL access working from Python (psycopg2) and Node.js (pg)
+- ✅ Connection usage metrics exported to OpenTelemetry
+- ✅ Audit logging for all quota changes
+- ✅ Clear error messages when connection limit exceeded
+- ✅ Password rotation functional with email notifications
+- ✅ Connection usage charts showing trends (24h for admin, 7d for tenant)
+- ✅ Comprehensive documentation with code examples and performance comparison table
+- ✅ All integration and E2E tests passing (15+ tests)
+
+---
+
+#### Dependencies and Prerequisites
+
+**Required before starting**:
+
+- Task 10 (EF Core model) must be complete
+- Task 11 (Database REST API) must be complete
+- Task 15 (HybridCache) must be complete (for REST API caching context)
+- PgCat running and accessible via Admin API
+
+**Blocks**:
+
+- No current blockers; all prerequisites met
+
+**Enables future work**:
+
+- Enhanced multi-language SDK support (Python, Node.js, Go SDKs with direct access examples)
+- BI tool integrations (Metabase, Grafana) documentation and setup guides
+- Advanced analytics dashboard (tenant query performance insights)
+
+---
+
+#### Risks and Mitigations
+
+| Risk | Impact | Mitigation |
+|------|--------|------------|
+| PgCat Admin API unavailable during quota update | MEDIUM | Retry with exponential backoff; fallback to PostgreSQL role limit only; alert admin |
+| Connection limit changes require PgCat restart | HIGH | Use PgCat Admin API for dynamic updates (no restart needed); test thoroughly |
+| Tenant credentials leaked in logs/UI | HIGH | Mask passwords in UI; redact from logs; audit all credential access |
+| Direct access bypasses REST API rate limits | MEDIUM | Document trade-off clearly; recommend hybrid approach; consider PostgreSQL-level rate limits (future) |
+| Connection tracking overhead on pg_stat_activity | LOW | Cache results with 30s TTL; optimize query with indexes |
+| Dashboard performance with 1000+ tenants | MEDIUM | Pagination (50/page); server-side filtering; lazy loading of charts |
+
+---
+
+#### Effort Estimate
+
+- **Phase 1** (Connection Limit Enforcement): 1 week (1 developer)
+- **Phase 2** (Quotas REST API): 1 week (1 developer)
+- **Phase 3** (Admin Dashboard UI): 1 week (1 developer)
+- **Phase 4** (Tenant Self-Service UI): 1 week (1 developer)
+- **Phase 5** (Direct PostgreSQL Access Testing): 3 days (1 developer)
+
+**Total**: 4-5 weeks for full implementation
+
+---
+
+#### Success Metrics
+
+**Technical**:
+
+- Zero cross-tenant connection leaks
+- Connection limit enforcement latency < 50ms (p95)
+- Quota update propagation time < 5 seconds (PostgreSQL + PgCat)
+- Dashboard page load time < 2 seconds (p95)
+- Connection usage tracking overhead < 1% CPU
+
+**Product**:
+
+- 30%+ of tenants use direct PostgreSQL access within 3 months of launch
+- 90%+ of connection limit violations include clear error messages
+- 80%+ of tenants view connection usage at least once per week
+- Positive feedback from BI tool users on direct access ease-of-use
+- Zero support tickets related to connection limit confusion
+
+---
+
+#### Documentation and Training
+
+**Docs to create/update**:
+
+- ✅ `Architecture.md`: Dual access patterns documented
+- ✅ `Requirements.md`: Direct access requirements added
+- ✅ `Guide-For-Admins-and-Tenants.md`: Section 4.1 comprehensive guide (2000+ words)
+- [ ] API reference: Quota endpoints (`/db/api/admin/quotas/*`, `/db/api/quotas`, `/db/api/connections`)
+- [ ] Admin guide: Screenshots of quota management UI
+- [ ] Tenant guide: Screenshots of database page with usage charts
+- [ ] Direct access guide: Code examples in Python, Node.js, Go, Rust
+- [ ] Security guide: Connection string management, password rotation, read-only tokens
+
+**Training materials**:
+
+- [ ] Video tutorial: "Managing tenant database quotas in TansuCloud"
+- [ ] Video tutorial: "Accessing your database directly with Python/Node.js"
+- [ ] Blog post: "REST API vs Direct SQL: Choosing the right access pattern"
+- [ ] Sample scripts: Python analytics script, Node.js ETL pipeline, BI tool connection guide
+- [ ] FAQ: "When should I use REST API vs direct PostgreSQL access?"
+
+---
+
+#### Next Steps After Task 46 Creation
+
+1. **Review and approve** documentation updates (Architecture.md, Requirements.md, Guide)
+2. **Prioritize Phase 1** subtasks and assign owner
+3. **Set up feature branch**: `feature/database-access-patterns`
+4. **Create GitHub Epic**: "Database Access Patterns - Direct PostgreSQL + Quota Management" with milestones for each phase
+5. **Begin Phase 1 implementation**:
+   - Start with PostgreSQL role connection limits (low-risk)
+   - Then PgCat Admin API integration (foundation for dynamic updates)
+   - Then connection usage tracking (enables monitoring)
+6. **Weekly demos** to show progress and gather feedback
+7. **Beta testing** with 3-5 pilot tenants after Phase 2 completes (REST API functional, UI pending)
+
+---
+
+**Status**: Task 46 created — Documentation ✅ COMPLETED, Implementation PENDING ✅
 
 ---

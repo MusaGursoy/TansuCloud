@@ -432,35 +432,37 @@ public static class AuditServiceCollectionExtensions
             .AddOptions<AuditOptions>()
             .Bind(config.GetSection(AuditOptions.SectionName))
             .ValidateDataAnnotations();
-        
+
         // Check if audit is configured; if not, register no-op logger and skip background writer
         var auditSection = config.GetSection(AuditOptions.SectionName);
         var connectionString = auditSection.GetValue<string>("ConnectionString");
-        
+
         if (string.IsNullOrWhiteSpace(connectionString))
         {
             // Audit disabled: register no-op logger
             services.AddSingleton<IAuditLogger, NoOpAuditLogger>();
             return services;
         }
-        
+
         // Audit enabled: register full implementation
         services.AddSingleton<IAuditLogger, HttpAuditLogger>();
         services.AddHostedService<AuditBackgroundWriter>();
-        
+
         // Register AuditDbContext for EF migrations (connection string from AuditOptions)
-        services.AddDbContext<TansuCloud.Audit.AuditDbContext>((sp, options) =>
-        {
-            var auditOpts = sp.GetRequiredService<IOptions<AuditOptions>>().Value;
-            options.UseNpgsql(
-                auditOpts.ConnectionString,
-                npgsql => npgsql.MigrationsAssembly("TansuCloud.Audit")
-            );
-        });
-        
+        services.AddDbContext<TansuCloud.Audit.AuditDbContext>(
+            (sp, options) =>
+            {
+                var auditOpts = sp.GetRequiredService<IOptions<AuditOptions>>().Value;
+                options.UseNpgsql(
+                    auditOpts.ConnectionString,
+                    npgsql => npgsql.MigrationsAssembly("TansuCloud.Audit")
+                );
+            }
+        );
+
         return services;
     } // End of Method AddTansuAudit
-    
+
     /// <summary>
     /// Applies audit database migrations if the database is configured. Safe to call on every startup (idempotent).
     /// Uses PostgreSQL advisory lock to prevent race conditions when multiple services start concurrently.
@@ -476,27 +478,30 @@ public static class AuditServiceCollectionExtensions
     )
     {
         const long AuditMigrationLockId = 7461626173756100; // Unique ID for audit migration lock
-        
+
         try
         {
+            // Create a service scope to resolve scoped services (AuditDbContext is registered as scoped)
+            using var scope = serviceProvider.CreateScope();
+
             // Check if audit is configured; if AuditDbContext is not registered, skip migrations
-            var auditDb = serviceProvider.GetService<TansuCloud.Audit.AuditDbContext>();
+            var auditDb = scope.ServiceProvider.GetService<TansuCloud.Audit.AuditDbContext>();
             if (auditDb == null)
             {
                 logger.LogInformation("Audit database not configured; skipping migrations");
                 return;
             }
-            
+
             // Use PostgreSQL advisory lock to serialize migrations across all services
             // Advisory locks are automatic, session-scoped, and released on connection close
             logger.LogInformation("Acquiring advisory lock for audit database migrations...");
             var conn = auditDb.Database.GetDbConnection();
             await conn.OpenAsync(cancellationToken);
-            
+
             await using var lockCmd = conn.CreateCommand();
             lockCmd.CommandText = $"SELECT pg_advisory_lock({AuditMigrationLockId})";
             await lockCmd.ExecuteNonQueryAsync(cancellationToken);
-            
+
             try
             {
                 logger.LogInformation("Applying audit database migrations...");
@@ -513,7 +518,10 @@ public static class AuditServiceCollectionExtensions
         }
         catch (Exception ex)
         {
-            logger.LogWarning(ex, "Failed to apply audit database migrations; audit table may need manual creation");
+            logger.LogWarning(
+                ex,
+                "Failed to apply audit database migrations; audit table may need manual creation"
+            );
             // Don't throw; allow service to start even if audit migrations fail (audit is non-critical for service operation)
         }
     } // End of Method ApplyAuditMigrationsAsync

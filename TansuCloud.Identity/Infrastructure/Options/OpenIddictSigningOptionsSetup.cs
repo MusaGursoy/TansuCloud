@@ -4,6 +4,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
 using Microsoft.IdentityModel.Tokens;
 using OpenIddict.Server;
+using TansuCloud.Identity.Data.Entities;
 using TansuCloud.Identity.Infrastructure.Keys;
 
 namespace TansuCloud.Identity.Infrastructure.Options;

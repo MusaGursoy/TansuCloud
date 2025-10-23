@@ -2,6 +2,7 @@
 using Microsoft.AspNetCore.Http;
 using Microsoft.EntityFrameworkCore;
 using TansuCloud.Identity.Data;
+using TansuCloud.Identity.Data.Entities;
 
 namespace TansuCloud.Identity.Infrastructure.Security;
 

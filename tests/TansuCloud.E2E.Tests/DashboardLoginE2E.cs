@@ -87,13 +87,13 @@ public class DashboardLoginE2E : IAsyncLifetime
         }
 
         // Gateway root: try HTTPS then HTTP; accept 2xx/3xx as ready
-            var baseUrl = TestUrls.GatewayBaseUrl;
+        var baseUrl = TestUrls.GatewayBaseUrl;
         await WaitUntilAsync(async () => await ReachableAsync($"{baseUrl}/", okOnly: false));
         // Identity discovery: require 200; try HTTPS then HTTP via gateway
         await WaitUntilAsync(async () =>
         {
             var disco = await ReachableAsync(
-                    $"{TestUrls.GatewayBaseUrl}/identity/.well-known/openid-configuration",
+                $"{TestUrls.GatewayBaseUrl}/identity/.well-known/openid-configuration",
                 okOnly: true
             );
             return disco;
@@ -308,7 +308,13 @@ public class DashboardLoginE2E : IAsyncLifetime
             await heading.WaitForAsync(new LocatorWaitForOptions { Timeout = 15000 });
         }
         var h1 = await heading.InnerTextAsync();
-        if (!h1.Contains("Hello, world!", StringComparison.OrdinalIgnoreCase))
+        // Accept either "Hello, world!" (old default Blazor template) or "Welcome to TansuCloud" (MudBlazor Dashboard)
+        var expectedHeadings = new[] { "Hello, world!", "Welcome to TansuCloud" };
+        var containsExpectedHeading = expectedHeadings.Any(expected =>
+            h1.Contains(expected, StringComparison.OrdinalIgnoreCase)
+        );
+
+        if (!containsExpectedHeading)
         {
             // Dump last 15 console messages and relevant network responses for diagnostics before failing
             Console.WriteLine("[Diagnostics] Unexpected H1 content: '" + h1 + "'");
@@ -336,7 +342,13 @@ public class DashboardLoginE2E : IAsyncLifetime
             { /* ignore */
             }
         }
-        h1.Should().Contain("Hello, world!");
+
+        // Assert that h1 contains one of the expected headings
+        containsExpectedHeading
+            .Should()
+            .BeTrue(
+                $"H1 should contain either 'Hello, world!' or 'Welcome to TansuCloud', but got: '{h1}'"
+            );
 
         // 3) Assert hashed CSS and framework script loaded successfully
         // Trigger a small interaction to ensure circuit creates WS and assets load
@@ -382,9 +394,9 @@ public class DashboardLoginE2E : IAsyncLifetime
         var api = await _playwright!.APIRequest.NewContextAsync(
             new APIRequestNewContextOptions { IgnoreHTTPSErrors = true }
         );
-            var db = await api.GetAsync($"{TestUrls.GatewayBaseUrl}/db/health");
+        var db = await api.GetAsync($"{TestUrls.GatewayBaseUrl}/db/health");
         db.Status.Should().Be(401);
-            var storage = await api.GetAsync($"{TestUrls.GatewayBaseUrl}/storage/health");
+        var storage = await api.GetAsync($"{TestUrls.GatewayBaseUrl}/storage/health");
         storage.Status.Should().Be(401);
     }
 }

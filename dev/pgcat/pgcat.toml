@@ -9,6 +9,9 @@ autoreload = 15000
 worker_threads = 4
 admin_username = "admin"
 admin_password = "admin"
+# Enable HTTP Admin API on port 9930 for zero-downtime pool management
+admin_host = "0.0.0.0"
+admin_port = 9930
 
 [pools.postgres]
 pool_mode = "transaction"

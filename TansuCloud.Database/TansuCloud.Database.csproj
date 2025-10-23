@@ -11,16 +11,16 @@
 
   <ItemGroup>
     <PackageReference Include="Microsoft.AspNetCore.OpenApi" Version="9.0.10" />
-    <PackageReference Include="Swashbuckle.AspNetCore" Version="9.0.6" />
+    <PackageReference Include="Scalar.AspNetCore" Version="2.9.0" />
     <PackageReference Include="Microsoft.AspNetCore.JsonPatch" Version="9.0.10" />
     <PackageReference Include="Microsoft.VisualStudio.Azure.Containers.Tools.Targets" Version="1.22.1" />
   <PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="9.0.10" />
   <PackageReference Include="OpenIddict.Abstractions" Version="7.1.0" />
   <PackageReference Include="OpenTelemetry.Extensions.Hosting" Version="1.13.1" />
   <PackageReference Include="OpenTelemetry.Exporter.OpenTelemetryProtocol" Version="1.13.1" />
-  <PackageReference Include="OpenTelemetry.Instrumentation.AspNetCore" Version="1.12.0" />
-  <PackageReference Include="OpenTelemetry.Instrumentation.Http" Version="1.12.0" />
-  <PackageReference Include="OpenTelemetry.Instrumentation.Runtime" Version="1.12.0" />
+  <PackageReference Include="OpenTelemetry.Instrumentation.AspNetCore" Version="1.13.0" />
+  <PackageReference Include="OpenTelemetry.Instrumentation.Http" Version="1.13.0" />
+  <PackageReference Include="OpenTelemetry.Instrumentation.Runtime" Version="1.13.0" />
   <PackageReference Include="OpenTelemetry.Instrumentation.EntityFrameworkCore" Version="1.10.0-beta.1" />
   <PackageReference Include="OpenTelemetry.Instrumentation.StackExchangeRedis" Version="1.0.0-rc9.11" />
   <PackageReference Include="Npgsql" Version="9.0.4" />
@@ -38,6 +38,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\TansuCloud.Observability.Shared\TansuCloud.Observability.Shared.csproj" />
+    <ProjectReference Include="..\TansuCloud.Identity.Data\TansuCloud.Identity.Data.csproj" />
   </ItemGroup>
 
 </Project>

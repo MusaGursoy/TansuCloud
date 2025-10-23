@@ -1,0 +1,318 @@
+<?xml version="1.0"?>
+<doc>
+    <assembly>
+        <name>TansuCloud.Observability.Shared</name>
+    </assembly>
+    <members>
+        <member name="T:TansuCloud.Observability.Auditing.AuditEvent">
+            <summary>
+            Immutable audit event shape for central trail (Task 31 Phase 1).
+            PII-safe: Details must be pre-redacted/allowlisted by the SDK before enqueueing.
+            </summary>
+        </member>
+        <member name="M:TansuCloud.Observability.Auditing.AuditHelpers.RedactToJson(System.Object,System.Collections.Generic.IEnumerable{System.String})">
+            <summary>
+            Build a redacted JsonDocument from a source object using an allowlist of property names.
+            Non-allowlisted keys are dropped. Values are serialized with System.Text.Json defaults.
+            </summary>
+        </member>
+        <member name="M:TansuCloud.Observability.Auditing.AuditHelpers.ComputeIdempotencyKey(System.String,System.DateTimeOffset,System.String,System.String,System.String,System.String)">
+            <summary>
+            Compute a stable idempotency key using the natural key: service, WhenUtc (second resolution), subject, action, correlationId, uniqueKey.
+            </summary>
+        </member>
+        <member name="T:TansuCloud.Observability.Auditing.AuditKey">
+            <summary>
+            Internal helper to compute stable idempotency keys for audit events.
+            </summary>
+        </member>
+        <member name="M:TansuCloud.Observability.Auditing.AuditKey.Compute(TansuCloud.Observability.Auditing.AuditEvent)">
+            <summary>
+            Compute SHA-256 hex of the natural key: Service | WhenUtc(second) | Subject | Action | CorrelationId | UniqueKey.
+            </summary>
+        </member>
+        <member name="T:TansuCloud.Observability.Auditing.HttpAuditLogger">
+            <summary>
+            Enriches and enqueues audit events; a hosted background writer persists to Postgres.
+            Never blocks the request path; on backpressure may drop (configurable) with metrics.
+            </summary>
+        </member>
+        <member name="M:TansuCloud.Observability.Auditing.HttpAuditLogger.#ctor(Microsoft.Extensions.Options.IOptions{TansuCloud.Observability.Auditing.AuditOptions},Microsoft.AspNetCore.Http.IHttpContextAccessor,Microsoft.Extensions.Logging.ILogger{TansuCloud.Observability.Auditing.HttpAuditLogger},Microsoft.Extensions.Hosting.IHostEnvironment)">
+            <summary>
+            Enriches and enqueues audit events; a hosted background writer persists to Postgres.
+            Never blocks the request path; on backpressure may drop (configurable) with metrics.
+            </summary>
+        </member>
+        <member name="T:TansuCloud.Observability.Auditing.NoOpAuditLogger">
+            <summary>
+            No-op audit logger used when audit database is not configured.
+            Allows services to start and run without audit persistence.
+            </summary>
+        </member>
+        <member name="T:TansuCloud.Observability.Auditing.AuditBackgroundWriter">
+            <summary>
+            Hosted background writer: creates table if needed; batches inserts to Postgres.
+            </summary>
+        </member>
+        <member name="M:TansuCloud.Observability.Auditing.AuditBackgroundWriter.#ctor(Microsoft.Extensions.Options.IOptions{TansuCloud.Observability.Auditing.AuditOptions},Microsoft.Extensions.Logging.ILogger{TansuCloud.Observability.Auditing.AuditBackgroundWriter},Microsoft.Extensions.Hosting.IHostApplicationLifetime)">
+            <summary>
+            Hosted background writer: creates table if needed; batches inserts to Postgres.
+            </summary>
+        </member>
+        <member name="T:TansuCloud.Observability.Auditing.AuditServiceCollectionExtensions">
+            <summary>
+            Service registration extensions for the Audit SDK (Task 31 Phase 1).
+            </summary>
+        </member>
+        <member name="M:TansuCloud.Observability.Auditing.AuditServiceCollectionExtensions.AddTansuAudit(Microsoft.Extensions.DependencyInjection.IServiceCollection,Microsoft.Extensions.Configuration.IConfiguration)">
+            <summary>
+            Registers the audit logger and background writer and binds Audit options from configuration.
+            If ConnectionString is not provided, registers a no-op logger instead (audit disabled).
+            </summary>
+            <param name="services">The service collection.</param>
+            <param name="config">Application configuration used to bind the Audit section.</param>
+            <returns>The same service collection for chaining.</returns>
+        </member>
+        <member name="M:TansuCloud.Observability.Auditing.AuditServiceCollectionExtensions.ApplyAuditMigrationsAsync(System.IServiceProvider,Microsoft.Extensions.Logging.ILogger,System.Threading.CancellationToken)">
+            <summary>
+            Applies audit database migrations if the database is configured. Safe to call on every startup (idempotent).
+            Uses PostgreSQL advisory lock to prevent race conditions when multiple services start concurrently.
+            If audit is disabled (no connection string), this method returns immediately without error.
+            </summary>
+            <param name="serviceProvider">Service provider scope with AuditDbContext registered.</param>
+            <param name="logger">Logger for diagnostic messages.</param>
+            <param name="cancellationToken">Cancellation token.</param>
+        </member>
+        <member name="T:TansuCloud.Observability.Auditing.AuditLoggerExtensions">
+            <summary>
+            Convenience extensions to enforce allowlist-based redaction before enqueueing audit events.
+            </summary>
+        </member>
+        <member name="M:TansuCloud.Observability.Auditing.AuditLoggerExtensions.TryEnqueueRedacted(TansuCloud.Observability.Auditing.IAuditLogger,TansuCloud.Observability.Auditing.AuditEvent,System.Object,System.Collections.Generic.IEnumerable{System.String})">
+            <summary>
+            Redacts the provided source object using the allowlist and enqueues a copy of the seed audit event with Details set to the redacted JSON.
+            </summary>
+            <param name="logger">Audit logger instance.</param>
+            <param name="seed">Base event with required fields (service/tenant/action etc.).</param>
+            <param name="source">Arbitrary object to be redacted.</param>
+            <param name="allowlist">Allowlisted property names to include in Details.</param>
+            <returns>true if enqueued; false if dropped under backpressure.</returns>
+        </member>
+        <member name="T:TansuCloud.Observability.Shared.Configuration.AppUrlsOptions">
+            <summary>
+            Centralized URL configuration for browser-visible and backchannel endpoints.
+            Follows the repository standard:
+            - One PublicBaseUrl for all browser-visible links and OIDC issuer (dev: http://127.0.0.1:8080/).
+            - Backchannel discovery/JWKS for in-cluster services should go via gateway host, not 127.0.0.1.
+            </summary>
+        </member>
+        <member name="F:TansuCloud.Observability.Shared.Configuration.AppUrlsOptions.SectionName">
+            <summary>
+            Configuration section name. We bind from root for simple env usage as well, e.g., PUBLIC_BASE_URL.
+            </summary>
+        </member>
+        <member name="P:TansuCloud.Observability.Shared.Configuration.AppUrlsOptions.PublicBaseUrl">
+            <summary>
+            Browser-visible base URL, e.g., http://127.0.0.1:8080
+            </summary>
+        </member>
+        <member name="P:TansuCloud.Observability.Shared.Configuration.AppUrlsOptions.GatewayBaseUrl">
+            <summary>
+            In-cluster gateway base URL, e.g., http://gateway:8080
+            Used for backchannel discovery/JWKS in containers.
+            </summary>
+        </member>
+        <member name="P:TansuCloud.Observability.Shared.Configuration.AppUrlsOptions.CanonicalizeLoopback">
+            <summary>
+            Opt-in loopback canonicalization (dev only) per repo guidance.
+            </summary>
+        </member>
+        <member name="M:TansuCloud.Observability.Shared.Configuration.AppUrlsOptions.FromConfiguration(Microsoft.Extensions.Configuration.IConfiguration)">
+            <summary>
+            Bind from IConfiguration considering both hierarchical and flattened env (PUBLIC_BASE_URL, GATEWAY_BASE_URL).
+            </summary>
+        </member>
+        <member name="M:TansuCloud.Observability.Shared.Configuration.AppUrlsOptions.GetIssuer(System.String)">
+            <summary>
+            Issuer (with trailing slash) under the identity base path.
+            Example (dev): http://127.0.0.1:8080/identity/
+            </summary>
+        </member>
+        <member name="M:TansuCloud.Observability.Shared.Configuration.AppUrlsOptions.GetAuthority(System.String)">
+            <summary>
+            Authority (without trailing slash) for browser/OIDC client flows.
+            Example (dev): http://127.0.0.1:8080/identity
+            </summary>
+        </member>
+        <member name="M:TansuCloud.Observability.Shared.Configuration.AppUrlsOptions.GetBackchannelMetadataAddress(System.Boolean,System.String)">
+            <summary>
+            Backchannel discovery URL for services validating JWTs.
+            Resolution order per repo contract:
+            1) If GatewayBaseUrl set → {gateway}/identity/.well-known/openid-configuration
+            2) Else if inContainer → http://gateway:8080/identity/.well-known/openid-configuration
+            3) Else derive from PublicBaseUrl/Issuer
+            </summary>
+        </member>
+        <member name="T:TansuCloud.Observability.Shared.Configuration.AppUrlsOptionsServiceCollectionExtensions">
+            <summary>
+            ServiceCollection extensions for binding <see cref="T:TansuCloud.Observability.Shared.Configuration.AppUrlsOptions"/> from configuration.
+            </summary>
+        </member>
+        <member name="M:TansuCloud.Observability.Shared.Configuration.AppUrlsOptionsServiceCollectionExtensions.AddAppUrlsOptions(Microsoft.Extensions.DependencyInjection.IServiceCollection,Microsoft.Extensions.Configuration.IConfiguration)">
+            <summary>
+            Adds <see cref="T:TansuCloud.Observability.Shared.Configuration.AppUrlsOptions"/> as a singleton resolved from the provided configuration.
+            Supports flattened env keys (PUBLIC_BASE_URL, GATEWAY_BASE_URL) and Urls section.
+            </summary>
+        </member>
+        <member name="T:TansuCloud.Observability.Caching.HybridCacheInstrumentationExtensions">
+            <summary>
+            Extension methods that wrap HybridCache operations with shared instrumentation.
+            </summary>
+        </member>
+        <member name="M:TansuCloud.Observability.Caching.HybridCacheInstrumentationExtensions.GetOrCreateWithMetricsAsync``1(Microsoft.Extensions.Caching.Hybrid.HybridCache,System.String,System.Func{System.Threading.CancellationToken,System.Threading.Tasks.ValueTask{``0}},System.String,System.String,Microsoft.Extensions.Caching.Hybrid.HybridCacheEntryOptions,System.Threading.CancellationToken)">
+            <summary>
+            Wraps the standard HybridCache get-or-create pattern with metrics for hits, misses, and latency.
+            </summary>
+            <typeparam name="T">The entry type stored in the cache.</typeparam>
+            <param name="cache">The HybridCache instance.</param>
+            <param name="key">Cache key to resolve.</param>
+            <param name="factory">Factory invoked on cache misses.</param>
+            <param name="service">Stable service identifier (e.g., "storage").</param>
+            <param name="operation">Stable operation identifier (e.g., "objects.list").</param>
+            <param name="options">Optional cache entry options.</param>
+            <param name="cancellationToken">Cancellation token for the operation.</param>
+            <returns>The cached or newly created value.</returns>
+        </member>
+        <member name="T:TansuCloud.Observability.Caching.HybridCacheMetrics">
+            <summary>
+            Shared metrics for HybridCache usage across services.
+            </summary>
+        </member>
+        <member name="M:TansuCloud.Observability.Caching.HybridCacheMetrics.RecordHit(System.String,System.String)">
+            <summary>
+            Records a cache hit for the specified service and operation.
+            </summary>
+            <param name="service">Stable service identifier.</param>
+            <param name="operation">Stable operation identifier.</param>
+        </member>
+        <member name="M:TansuCloud.Observability.Caching.HybridCacheMetrics.RecordMiss(System.String,System.String)">
+            <summary>
+            Records a cache miss for the specified service and operation.
+            </summary>
+            <param name="service">Stable service identifier.</param>
+            <param name="operation">Stable operation identifier.</param>
+        </member>
+        <member name="M:TansuCloud.Observability.Caching.HybridCacheMetrics.RecordSet(System.String,System.String)">
+            <summary>
+            Records a cache set operation following a miss.
+            </summary>
+            <param name="service">Stable service identifier.</param>
+            <param name="operation">Stable operation identifier.</param>
+        </member>
+        <member name="M:TansuCloud.Observability.Caching.HybridCacheMetrics.RecordEviction(System.String,System.String,System.String)">
+            <summary>
+            Records an eviction or invalidation for the specified service and operation.
+            </summary>
+            <param name="service">Stable service identifier.</param>
+            <param name="operation">Stable operation identifier.</param>
+            <param name="reason">Reason for the eviction (e.g., version increment).</param>
+        </member>
+        <member name="M:TansuCloud.Observability.Caching.HybridCacheMetrics.RecordLatency(System.String,System.String,System.String,System.Double)">
+            <summary>
+            Records the latency in milliseconds for a cache lookup.
+            </summary>
+            <param name="service">Stable service identifier.</param>
+            <param name="operation">Stable operation identifier.</param>
+            <param name="outcome">Outcome of the lookup (hit/miss/error).</param>
+            <param name="latencyMs">Latency in milliseconds.</param>
+        </member>
+        <member name="T:TansuCloud.Observability.LogEvents">
+            <summary>
+            Central EventId taxonomy (Task 38). Do not repurpose existing numeric values; allocate new IDs within a valid range.
+            Temporary diagnostics MUST use the 9000–9099 block.
+            </summary>
+        </member>
+        <member name="T:TansuCloud.Observability.HealthTransitionPublisher">
+            <summary>
+            Publishes Info logs when overall health transitions between Healthy/Degraded/Unhealthy.
+            Intended for ops visibility in Phase 0. Uses memory to track last status.
+            </summary>
+        </member>
+        <member name="T:TansuCloud.Observability.RequestEnrichmentMiddleware">
+            <summary>
+            Request enrichment middleware: attaches CorrelationId, Tenant, RouteBase, TraceId, SpanId to logging scope.
+            </summary>
+        </member>
+        <member name="T:TansuCloud.Observability.IDynamicLogLevelOverride">
+            <summary>
+            Allows temporary runtime log level overrides with TTL.
+            </summary>
+        </member>
+        <member name="T:TansuCloud.Observability.LoggingExtensions">
+            <summary>
+            Logger extensions providing consistent structured templates.
+            </summary>
+        </member>
+        <member name="T:TansuCloud.Observability.ObservabilityServiceCollectionExtensions">
+            <summary>
+            DI helpers for observability shared components.
+            </summary>
+        </member>
+        <member name="T:TansuCloud.Observability.OpenTelemetryExtensions">
+            <summary>
+            OpenTelemetry helper extensions for ASP.NET Core tracing configuration.
+            </summary>
+        </member>
+        <member name="M:TansuCloud.Observability.OpenTelemetryExtensions.AddTansuAspNetCoreInstrumentation(OpenTelemetry.Trace.TracerProviderBuilder)">
+            <summary>
+            Adds standardized ASP.NET Core instrumentation that enriches spans with route and tenant metadata.
+            </summary>
+        </member>
+        <member name="M:TansuCloud.Observability.OpenTelemetryExtensions.AddTansuDataInstrumentation(OpenTelemetry.Trace.TracerProviderBuilder,System.Boolean)">
+            <summary>
+            Adds standardized database and cache instrumentation (Entity Framework Core, Npgsql, Redis).
+            </summary>
+        </member>
+        <member name="M:TansuCloud.Observability.OpenTelemetryExtensions.AddTansuOtlpExporter(OpenTelemetry.Trace.TracerProviderBuilder,Microsoft.Extensions.Configuration.IConfiguration,Microsoft.Extensions.Hosting.IHostEnvironment)">
+            <summary>
+            Adds an OTLP exporter with standardized retry and batching configuration.
+            Respects OpenTelemetry:Otlp:Enabled flag - if false, exporter is not added.
+            </summary>
+        </member>
+        <member name="M:TansuCloud.Observability.OpenTelemetryExtensions.AddTansuOtlpExporter(OpenTelemetry.Metrics.MeterProviderBuilder,Microsoft.Extensions.Configuration.IConfiguration,Microsoft.Extensions.Hosting.IHostEnvironment)">
+            <summary>
+            Adds an OTLP exporter with standardized retry and batching configuration.
+            Respects OpenTelemetry:Otlp:Enabled flag - if false, exporter is not added.
+            </summary>
+        </member>
+        <member name="M:TansuCloud.Observability.OpenTelemetryExtensions.AddTansuOtlpExporter(OpenTelemetry.Logs.OpenTelemetryLoggerOptions,Microsoft.Extensions.Configuration.IConfiguration,Microsoft.Extensions.Hosting.IHostEnvironment)">
+            <summary>
+            Adds an OTLP exporter with standardized retry and batching configuration.
+            Respects OpenTelemetry:Otlp:Enabled flag - if false, exporter is not added.
+            </summary>
+        </member>
+        <member name="T:TansuCloud.Observability.OtlpConnectivityHealthCheck">
+            <summary>
+            Health check that verifies two readiness conditions:
+            1) Activity uses W3C id format.
+            2) The configured OTLP endpoint is reachable at TCP level (host:port).
+            
+            In Development, OTLP connectivity failure downgrades to Degraded (HTTP 200) to reduce flakiness
+            during local bring-up; in non-Development, it returns Unhealthy.
+            </summary>
+        </member>
+        <member name="T:TansuCloud.Observability.OtlpExporterDiagnostics">
+            <summary>
+            Emits lightweight diagnostics (EventSource + metrics) about the configured OTLP exporter.
+            This avoids ILogger dependencies at startup while still surfacing useful information for operators.
+            </summary>
+        </member>
+        <member name="T:TansuCloud.Observability.OtlpGrpcActivityDiagnostics">
+            <summary>
+            Dev-only lightweight Activity listener for gRPC client calls.
+            Filters to OTLP Export calls and emits a failure counter when non-OK status is observed.
+            Controlled via config: OpenTelemetry:Otlp:Diagnostics:EnableGrpcActivityListener=true
+            </summary>
+        </member>
+    </members>
+</doc>

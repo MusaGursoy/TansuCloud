@@ -131,7 +131,7 @@ public class ProvisioningE2E
         Assert.Equal(HttpStatusCode.OK, res2.StatusCode);
         var json2 = await res2.Content.ReadAsStringAsync(cts.Token);
         using var doc2 = JsonDocument.Parse(json2);
-        var created2 = doc2.RootElement.GetProperty("created").GetBoolean();
+        var created2 = doc2.RootElement.GetProperty("Created").GetBoolean(); // PascalCase - Database service preserves property names
         Assert.False(created2); // must not create twice
     }
 

@@ -53,15 +53,15 @@ internal sealed class TenantDbContextFactory(
         }
         catch { }
 
-        var dbOptsBuilder = new DbContextOptionsBuilder<TansuDbContext>()
-            .UseNpgsql(
-                b.ConnectionString,
-                npgsqlOptions => npgsqlOptions.EnableRetryOnFailure(
+        var dbOptsBuilder = new DbContextOptionsBuilder<TansuDbContext>().UseNpgsql(
+            b.ConnectionString,
+            npgsqlOptions =>
+                npgsqlOptions.EnableRetryOnFailure(
                     maxRetryCount: 5,
                     maxRetryDelay: TimeSpan.FromSeconds(10),
                     errorCodesToAdd: new[] { "58000" } // PgCat "No pool configured" error
                 )
-            );
+        );
         TryUseCompiledModel(dbOptsBuilder);
         var ctx = new TansuDbContext(dbOptsBuilder.Options);
         return Task.FromResult(ctx);
@@ -77,17 +77,17 @@ internal sealed class TenantDbContextFactory(
         var dbName = NormalizeDbName(tenantId, _opts.DatabaseNamePrefix);
         b.Database = dbName;
 
-    _logger.LogTenantNormalized(tenantId, NormalizeTenant(tenantId), dbName);
+        _logger.LogTenantNormalized(tenantId, NormalizeTenant(tenantId), dbName);
 
-        var dbOptsBuilder = new DbContextOptionsBuilder<TansuDbContext>()
-            .UseNpgsql(
-                b.ConnectionString,
-                npgsqlOptions => npgsqlOptions.EnableRetryOnFailure(
+        var dbOptsBuilder = new DbContextOptionsBuilder<TansuDbContext>().UseNpgsql(
+            b.ConnectionString,
+            npgsqlOptions =>
+                npgsqlOptions.EnableRetryOnFailure(
                     maxRetryCount: 5,
                     maxRetryDelay: TimeSpan.FromSeconds(10),
                     errorCodesToAdd: new[] { "58000" } // PgCat "No pool configured" error
                 )
-            );
+        );
         TryUseCompiledModel(dbOptsBuilder);
         var ctx = new TansuDbContext(dbOptsBuilder.Options);
         return Task.FromResult(ctx);
@@ -112,19 +112,37 @@ internal sealed class TenantDbContextFactory(
 
     private static void TryUseCompiledModel(DbContextOptionsBuilder<TansuDbContext> builder)
     {
+        // Compiled model disabled for standard services (Database, Gateway, Dashboard, etc.)
+        // where cold starts are rare and flexibility is more valuable.
+        //
+        // ENABLE THIS for services with frequent cold starts (e.g., Task 45 Serverless Functions)
+        // by uncommenting the code below and ensuring the compiled model is generated.
+        //
+        // To generate compiled model:
+        //   dotnet ef dbcontext optimize --output-dir EF --namespace TansuCloud.Database.EF
+        //
+        // Performance impact:
+        //   - Long-running services: ~100ms saved at startup (negligible)
+        //   - Serverless functions: ~100ms saved per cold start (significant)
+        //
+        // Note: Must regenerate compiled model after ANY changes to TansuDbContext.cs
+
+        // Uncomment to enable compiled model:
+        /*
         try
         {
             var t = Type.GetType("TansuCloud.Database.EF.TansuDbContextModel, TansuCloud.Database");
-            if (t is not null)
+            var inst = t?.GetProperty("Instance", BindingFlags.Public | BindingFlags.Static)?.GetValue(null);
+            if (inst is IModel model)
             {
-                var prop = t.GetProperty("Instance", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static);
-                if (prop?.GetValue(null) is Microsoft.EntityFrameworkCore.Metadata.IModel model)
-                {
-                    builder.UseModel(model);
-                }
+                builder.UseModel(model);
             }
         }
-        catch { }
+        catch
+        {
+            // Graceful fallback to runtime model if compiled model unavailable
+        }
+        */
     } // End of Method TryUseCompiledModel
 } // End of Class TenantDbContextFactory
 

@@ -10,6 +10,7 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using OpenIddict.Abstractions;
 using OpenIddict.Server;
+using TansuCloud.Identity.Data.Entities;
 using TansuCloud.Identity.Infrastructure.Security;
 using AspNetClaimTypes = System.Security.Claims.ClaimTypes;
 

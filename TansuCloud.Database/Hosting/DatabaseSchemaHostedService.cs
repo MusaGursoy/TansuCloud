@@ -107,7 +107,28 @@ public sealed class DatabaseSchemaHostedService : BackgroundService
             }
         }
 
-        _logger.LogInformation("Identity database validated successfully.");
+        // Validate schema version
+        using var scope = _serviceProvider.CreateScope();
+        var schemaService = scope.ServiceProvider.GetRequiredService<SchemaVersionService>();
+
+        var version = await schemaService.GetCurrentVersionAsync("tansu_identity", ct);
+        if (version == null)
+        {
+            _logger.LogWarning(
+                "Identity database has no schema version tracked. Initializing to v1.0.0..."
+            );
+            await schemaService.RecordSchemaVersionAsync(
+                "tansu_identity",
+                "1.0.0",
+                "Initial identity schema",
+                cancellationToken: ct
+            );
+        }
+
+        _logger.LogInformation(
+            "Identity database validated successfully (version: {Version}).",
+            version?.Version ?? "1.0.0"
+        );
     }
 
     private async Task ValidateAuditDatabaseAsync(CancellationToken ct)

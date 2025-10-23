@@ -46,6 +46,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TansuCloud.Telemetry.UnitTe
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TansuCloud.Audit", "TansuCloud.Audit\TansuCloud.Audit.csproj", "{8CB91532-03BF-4386-9D41-C81C2EC08342}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TansuCloud.Identity.Data", "TansuCloud.Identity.Data\TansuCloud.Identity.Data.csproj", "{7D0B6509-6CBE-4BBD-8D00-E19312AB1BDD}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -224,6 +226,18 @@ Global
 		{8CB91532-03BF-4386-9D41-C81C2EC08342}.Release|x64.Build.0 = Release|Any CPU
 		{8CB91532-03BF-4386-9D41-C81C2EC08342}.Release|x86.ActiveCfg = Release|Any CPU
 		{8CB91532-03BF-4386-9D41-C81C2EC08342}.Release|x86.Build.0 = Release|Any CPU
+		{7D0B6509-6CBE-4BBD-8D00-E19312AB1BDD}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{7D0B6509-6CBE-4BBD-8D00-E19312AB1BDD}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{7D0B6509-6CBE-4BBD-8D00-E19312AB1BDD}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{7D0B6509-6CBE-4BBD-8D00-E19312AB1BDD}.Debug|x64.Build.0 = Debug|Any CPU
+		{7D0B6509-6CBE-4BBD-8D00-E19312AB1BDD}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{7D0B6509-6CBE-4BBD-8D00-E19312AB1BDD}.Debug|x86.Build.0 = Debug|Any CPU
+		{7D0B6509-6CBE-4BBD-8D00-E19312AB1BDD}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{7D0B6509-6CBE-4BBD-8D00-E19312AB1BDD}.Release|Any CPU.Build.0 = Release|Any CPU
+		{7D0B6509-6CBE-4BBD-8D00-E19312AB1BDD}.Release|x64.ActiveCfg = Release|Any CPU
+		{7D0B6509-6CBE-4BBD-8D00-E19312AB1BDD}.Release|x64.Build.0 = Release|Any CPU
+		{7D0B6509-6CBE-4BBD-8D00-E19312AB1BDD}.Release|x86.ActiveCfg = Release|Any CPU
+		{7D0B6509-6CBE-4BBD-8D00-E19312AB1BDD}.Release|x86.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE

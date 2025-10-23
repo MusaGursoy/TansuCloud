@@ -21,6 +21,7 @@ using OpenTelemetry.Metrics;
 using OpenTelemetry.Resources;
 using OpenTelemetry.Trace;
 using TansuCloud.Identity.Data;
+using TansuCloud.Identity.Data.Entities;
 using TansuCloud.Identity.Infrastructure;
 using TansuCloud.Identity.Infrastructure.External;
 using TansuCloud.Identity.Infrastructure.Keys;
@@ -516,26 +517,16 @@ var app = builder.Build();
 // Task 38 enrichment middleware
 app.UseMiddleware<RequestEnrichmentMiddleware>();
 
-// Apply migrations & seed dev data
+// Seed dev data only - Database service handles all migrations now
+// This eliminates the chicken-and-egg problem where Identity service needed
+// to run before Database service validation could succeed.
 using (var scope = app.Services.CreateScope())
 {
-    var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
-    try
-    {
-        db.Database.Migrate();
-    }
-    catch
-    {
-        // For Sqlite in-memory or when migrations unavailable in CI, ensure created
-        db.Database.EnsureCreated();
-    }
+    // NOTE: Migrations are now applied by TansuCloud.Database service
+    // during startup, before this service starts. This ensures proper
+    // initialization order and validates schemas before accepting traffic.
 
-    // Apply audit database migrations (Task 31 Phase 1, EF-based)
-    await TansuCloud.Observability.Auditing.AuditServiceCollectionExtensions.ApplyAuditMigrationsAsync(
-        scope.ServiceProvider,
-        app.Logger
-    );
-
+    // Still run dev seeding (safe, idempotent, application-level data)
     await DevSeeder.SeedAsync(scope.ServiceProvider, app.Logger, app.Configuration);
 }
 

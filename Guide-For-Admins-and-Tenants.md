@@ -52,6 +52,264 @@ Notes
 - Internal service networking
 - OpenTelemetry collector
 
+## 4.1 Database Access Patterns: API vs Direct PostgreSQL
+
+TansuCloud offers **two complementary ways** for tenants to access their databases, each optimized for different use cases:
+
+### REST API Access (Recommended for Hot Reads)
+
+**Endpoint**: `https://apps.example.com/db/*` (via Gateway on port 8080 in dev, 443 in prod)
+
+**How it works**:
+- Requests flow through Gateway → Database API service
+- Responses cached by HybridCache/Garnet (default 30s TTL)
+- Automatic cache invalidation on writes via outbox events
+- Built-in authentication (JWT bearer tokens with `db.read`/`db.write` scopes)
+- Request validation, ETags, pagination, filtering
+
+**Best for**:
+- Frequent reads with high cache hit potential (user profiles, catalogs, configuration)
+- Mobile and web apps requiring JSON responses
+- Use cases benefiting from automatic invalidation and consistency
+- Scenarios where REST semantics (CRUD, pagination, ETags) are sufficient
+
+**Caching behavior**:
+- ✅ **Cached**: List/get operations return cached responses when available (30s TTL)
+- ✅ **Automatic invalidation**: Writes (POST/PUT/PATCH/DELETE) trigger tenant-wide cache version bump
+- ✅ **Metrics**: Cache hit/miss rates visible in Dashboard observability pages
+
+**Example** (curl):
+```bash
+curl -H "Authorization: Bearer $TOKEN" \
+     -H "X-Tansu-Tenant: acme-prod" \
+     https://apps.example.com/db/api/documents?collectionId=users
+```
+
+---
+
+### Direct PostgreSQL Access (Full SQL Power)
+
+**Endpoint**: `pgcat:6432` (internal) or `apps.example.com:6432` (if exposed with proper firewall rules)
+
+**How it works**:
+- Clients connect directly to PgCat connection pooler (port 6432)
+- PgCat routes to tenant-specific PostgreSQL database (`tansu_tenant_<tenant_id>`)
+- **No automatic caching**: Every query hits the database
+- Full SQL access: JOINs, CTEs, window functions, pgvector, pg_trgm
+- Any language/ORM supported (Python/psycopg2, Node.js/pg, Go/pgx, Rust/tokio-postgres, etc.)
+
+**Best for**:
+- Complex analytics and reporting queries
+- Bulk operations and ETL pipelines
+- BI tools (Metabase, Grafana, Tableau) requiring direct SQL access
+- Custom schemas and migrations managed by tenant applications
+- Scenarios where REST API abstractions are too limiting
+
+**Caching behavior**:
+- ❌ **NOT cached**: PgCat is a connection pooler, not a query cache
+- ❌ **No automatic invalidation**: Client applications must implement their own caching strategies if needed
+- ✅ **Connection pooling**: PgCat efficiently manages connections across tenants
+
+**Connection limits**:
+- Per-tenant quotas enforced via PostgreSQL `CONNECTION LIMIT` on tenant role
+- PgCat pool configuration provides additional per-tenant connection caps
+- Dashboard UI allows admins to view/edit limits and monitor active connections
+
+**Example** (psycopg2 in Python):
+```python
+import psycopg2
+
+# Connect to tenant database via PgCat
+conn = psycopg2.connect(
+    host="pgcat",  # or apps.example.com if exposed
+    port=6432,
+    database="tansu_tenant_acme_prod",
+    user="acme_prod_user",
+    password="<tenant-password>"
+)
+
+# Execute raw SQL
+cursor = conn.cursor()
+cursor.execute("""
+    SELECT d.id, d.content->>'name' as name, d.created_at
+    FROM documents d
+    WHERE d.collection_id = %s
+      AND d.created_at > NOW() - INTERVAL '7 days'
+    ORDER BY d.created_at DESC
+    LIMIT 100
+""", ('users',))
+
+for row in cursor.fetchall():
+    print(row)
+```
+
+**Example** (Node.js with pg):
+```javascript
+const { Client } = require('pg');
+
+const client = new Client({
+  host: 'pgcat',
+  port: 6432,
+  database: 'tansu_tenant_acme_prod',
+  user: 'acme_prod_user',
+  password: '<tenant-password>'
+});
+
+await client.connect();
+
+const res = await client.query(`
+  SELECT id, content->>'name' as name, created_at
+  FROM documents
+  WHERE collection_id = $1
+    AND created_at > NOW() - INTERVAL '7 days'
+  ORDER BY created_at DESC
+  LIMIT 100
+`, ['users']);
+
+console.log(res.rows);
+await client.end();
+```
+
+---
+
+### Recommended: Hybrid Approach
+
+For most applications, **combine both access patterns**:
+
+1. **Use REST API for hot reads**:
+   - User authentication lookups
+   - Configuration and settings
+   - Frequently accessed catalogs
+   - Mobile/web app data that benefits from caching
+
+2. **Use direct SQL for complex queries**:
+   - Analytics dashboards and reports
+   - Bulk data exports
+   - BI tool integrations
+   - Custom queries with JOINs, aggregations, and window functions
+
+**Example hybrid architecture**:
+```
+┌─────────────────┐
+│   Web/Mobile    │
+│      App        │
+└────────┬────────┘
+         │
+         ├─── Hot reads ──→ REST API (cached)
+         │                  /db/api/documents
+         │
+         └─── Analytics ──→ Direct SQL (uncached)
+                            pgcat:6432
+                            SELECT ... JOIN ... WHERE ...
+```
+
+---
+
+### Client-Side Caching Strategies for Direct Access
+
+Since direct PostgreSQL connections bypass HybridCache, applications using direct access should implement their own caching:
+
+**1. Application-level cache** (Redis, Memcached):
+```python
+import redis
+cache = redis.Redis(host='localhost', port=6379)
+
+def get_user(user_id):
+    # Check cache first
+    cached = cache.get(f"user:{user_id}")
+    if cached:
+        return json.loads(cached)
+    
+    # Cache miss: query database
+    cursor.execute("SELECT * FROM users WHERE id = %s", (user_id,))
+    user = cursor.fetchone()
+    
+    # Store in cache (5 minute TTL)
+    cache.setex(f"user:{user_id}", 300, json.dumps(user))
+    return user
+```
+
+**2. Materialized views** (PostgreSQL):
+```sql
+-- Create materialized view for expensive analytics
+CREATE MATERIALIZED VIEW daily_user_stats AS
+SELECT 
+    date_trunc('day', created_at) as day,
+    collection_id,
+    count(*) as doc_count
+FROM documents
+GROUP BY 1, 2;
+
+-- Refresh periodically (e.g., via cron or background job)
+REFRESH MATERIALIZED VIEW CONCURRENTLY daily_user_stats;
+```
+
+**3. HTTP caching proxies** (nginx, Varnish):
+- Cache GET responses from custom REST endpoints built on direct SQL access
+- Invalidate via explicit purge requests or TTL expiry
+
+---
+
+### Security and Access Control
+
+**REST API**:
+- JWT bearer tokens with `db.read`/`db.write` scopes
+- Tenant context via `X-Tansu-Tenant` header
+- Gateway enforces rate limits and request size limits
+- Automatic ProblemDetails responses for validation errors
+
+**Direct PostgreSQL**:
+- PostgreSQL role-based access control (RBAC)
+- Per-tenant database isolation (`tansu_tenant_<tenant_id>`)
+- Connection limits enforced at PostgreSQL and PgCat levels
+- Network-level firewall rules (production should restrict PgCat exposure)
+- Credentials managed via Secrets Manager (Azure Key Vault, AWS Secrets Manager, etc.)
+
+---
+
+### Dashboard Management
+
+**Admin Dashboard** (`/dashboard/admin/database`):
+- View per-tenant connection limits and active connections
+- Edit connection quotas with audit logging
+- Monitor query performance and slow queries
+- View cache hit/miss rates for REST API
+
+**Tenant Self-Service** (`/dashboard/tenant/database`):
+- View own connection limits and current usage
+- Connection usage charts (current vs limit over time)
+- Direct SQL credentials management (rotate passwords, generate read-only tokens)
+- Query history and performance insights (if enabled by admin)
+
+---
+
+### Migration Path for Existing Tenants
+
+If you're currently using only REST API and want to add direct SQL access:
+
+1. **Generate tenant credentials**: Admin creates PostgreSQL role with appropriate permissions
+2. **Configure PgCat pool**: Add tenant database to PgCat configuration
+3. **Distribute credentials**: Securely share connection details with tenant
+4. **Update firewall rules**: Allow tenant IPs to reach PgCat (production only)
+5. **Test connection**: Tenant validates using `psql` or their preferred client
+6. **Migrate queries**: Move complex analytics queries from REST API to direct SQL
+7. **Monitor usage**: Track connection counts and query performance via Dashboard
+
+---
+
+### Performance Comparison
+
+| Metric | REST API (Cached) | REST API (Cache Miss) | Direct SQL |
+|--------|-------------------|----------------------|------------|
+| **Latency (hot data)** | 5-20ms | 50-200ms | 50-200ms |
+| **Latency (complex query)** | N/A (not supported) | N/A | 100ms-5s+ |
+| **Throughput** | Very High (cache) | Medium | Medium-High |
+| **Database Load** | Low (cache absorbs) | High | High |
+| **Flexibility** | Limited (REST CRUD) | Limited | Full SQL |
+| **Best For** | User-facing apps | - | Analytics, BI, ETL |
+
+**Key Takeaway**: Use REST API for hot reads to minimize database load; use direct SQL for complex queries where full SQL power is required and caching is managed client-side.
+
 ### 4.2 Running production with a single compose file
 
 We ship exactly two compose files:

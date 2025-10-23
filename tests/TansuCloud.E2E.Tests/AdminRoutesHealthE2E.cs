@@ -66,12 +66,17 @@ public class AdminRoutesHealthE2E : IAsyncLifetime
         // Click the "Check health" button
         await checkHealthBtn.ClickAsync();
 
-        // Wait for success message
-        await _page.WaitForTimeoutAsync(3000); // Give time for health checks to complete
+        // Wait for success message to appear using Playwright's built-in waiting
+        var successAlert = _page.Locator(".text-success");
+        await successAlert.WaitForAsync(
+            new() { Timeout = 15000, State = WaitForSelectorState.Visible }
+        );
 
-        // Verify success message appears
-        var successAlert = await _page.QuerySelectorAsync(".text-success");
-        successAlert.Should().NotBeNull("Health check should show success message");
+        // Verify the success message text
+        var successText = await successAlert.TextContentAsync();
+        successText
+            .Should()
+            .Contain("Health checked", "Success message should confirm health check completed");
 
         // Verify health table appears for at least one cluster
         // We expect to see health tables for clusters like identity, dashboard, etc.
@@ -128,7 +133,8 @@ public class AdminRoutesHealthE2E : IAsyncLifetime
     private async Task EnsureLoggedInAsync()
     {
         // Check if already logged in by looking for admin nav
-        var isLoggedIn = await _page!.QuerySelectorAsync("[data-testid='nav-overview']") is not null;
+        var isLoggedIn =
+            await _page!.QuerySelectorAsync("[data-testid='nav-overview']") is not null;
         if (isLoggedIn)
             return;
 
@@ -150,10 +156,7 @@ public class AdminRoutesHealthE2E : IAsyncLifetime
         await _page.Locator("button[type='submit']").First.ClickAsync();
 
         // Wait for redirect
-        await _page.WaitForURLAsync(
-            url => url.Contains("/dashboard"),
-            new() { Timeout = 10000 }
-        );
+        await _page.WaitForURLAsync(url => url.Contains("/dashboard"), new() { Timeout = 10000 });
     } // End of Method EnsureLoggedInAsync
 
     private static async Task DumpPageAsync(IPage page, string label)

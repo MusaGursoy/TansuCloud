@@ -1,6 +1,7 @@
 // Tansu.Cloud Public Repository:    https://github.com/MusaGursoy/TansuCloud
 using System.Text.Json;
 using Microsoft.AspNetCore.Mvc;
+using TansuCloud.Identity.Data.Entities;
 using TansuCloud.Identity.Infrastructure.Keys;
 
 namespace TansuCloud.Identity.Controllers;

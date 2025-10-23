@@ -4,6 +4,7 @@ using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using TansuCloud.Identity.Data;
+using TansuCloud.Identity.Data.Entities;
 
 namespace TansuCloud.Identity.Infrastructure.Keys;
 

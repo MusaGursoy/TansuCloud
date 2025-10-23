@@ -57,7 +57,8 @@ public class OutboxAndIdempotencyUnitTests
             .OrderByDescending(e => e.OccurredAt)
             .FirstOrDefault();
         found.Should().NotBeNull();
-        using var doc = found!.Payload!;
+        // Don't dispose JsonDocument - it's managed by EF Core's change tracking
+        var doc = found!.Payload!;
         var root = doc.RootElement;
         root.TryGetProperty("documentId", out var idProp).Should().BeTrue();
         Guid.Parse(idProp.GetString()!).Should().Be(docId);

@@ -12,6 +12,7 @@ The Telemetry service is **completely independent** from the audit system and do
 ### ✅ No Audit Integration
 
 The Telemetry service:
+
 - **Does NOT reference** `TansuCloud.Audit` project
 - **Does NOT call** `AddTansuAudit()` in `Program.cs`
 - **Does NOT configure** `Audit:ConnectionString` in compose or appsettings
@@ -35,6 +36,7 @@ telemetry:
 ### Dependencies
 
 The Telemetry service references:
+
 - `TansuCloud.Observability.Shared` (for OpenTelemetry instrumentation only)
 - `TansuCloud.Telemetry.Contracts` (for DTOs)
 
@@ -133,11 +135,13 @@ All services configure `Audit__ConnectionString` pointing to the shared `tansu_a
 ### Scenario 2: Telemetry as Standalone Service
 
 Telemetry can be deployed **completely independently** without:
+
 - PostgreSQL/audit database
 - Any other TansuCloud services
 - Audit configuration
 
 It only needs:
+
 - SQLite storage for telemetry envelopes
 - API keys for ingestion and admin access
 - (Optionally) SigNoz/OTLP endpoint for its own observability
@@ -145,6 +149,7 @@ It only needs:
 ### Scenario 3: Future Flexibility
 
 With the improvements made today, any service **could** theoretically run without audit by:
+
 1. Not providing `Audit__ConnectionString` in configuration
 2. The service will register `NoOpAuditLogger` automatically
 3. No startup failure, no background writer, no database calls

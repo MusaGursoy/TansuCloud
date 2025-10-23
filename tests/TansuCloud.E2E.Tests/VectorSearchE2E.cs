@@ -5,11 +5,48 @@ using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
 using Xunit;
+using Xunit.Sdk;
 
 namespace TansuCloud.E2E.Tests;
 
 public class VectorSearchE2E
 {
+    private static string CreateUniqueTenant()
+    {
+        // Allocate a dedicated tenant per test to avoid cross-test state when executing in parallel
+        return $"e2e-vec-{Guid.NewGuid():N}";
+    }
+
+    private static async Task EnsureTenantProvisionedAsync(
+        HttpClient client,
+        string tenant,
+        CancellationToken ct
+    )
+    {
+        var baseUrl = GetGatewayBaseUrl();
+        using var req = new HttpRequestMessage(
+            HttpMethod.Post,
+            $"{baseUrl}/db/api/provisioning/tenants"
+        );
+        req.Headers.TryAddWithoutValidation("X-Provision-Key", "letmein");
+        var body = new { tenantId = tenant, displayName = tenant };
+        req.Content = new StringContent(
+            JsonSerializer.Serialize(body),
+            Encoding.UTF8,
+            "application/json"
+        );
+        using var res = await client.SendAsync(req, ct);
+        if (res.StatusCode == HttpStatusCode.OK || res.StatusCode == HttpStatusCode.Created)
+        {
+            return;
+        }
+
+        var txt = await res.Content.ReadAsStringAsync(ct);
+        throw new XunitException(
+            $"Tenant provision failed: {(int)res.StatusCode} {res.StatusCode}. Body: {txt}"
+        );
+    }
+
     private static float[] MakeEmbedding1536()
     {
         // Deterministic synthetic vector: low-variance repeating pattern to keep values bounded
@@ -231,8 +268,9 @@ public class VectorSearchE2E
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(120));
         using var client = CreateClient();
         await WaitForAllAsync(client, cts.Token);
-        var token = await GetAccessTokenAsync(client, cts.Token);
-        var tenant = $"e2e-{Environment.MachineName.ToLowerInvariant()}";
+    var token = await GetAccessTokenAsync(client, cts.Token);
+    var tenant = CreateUniqueTenant();
+    await EnsureTenantProvisionedAsync(client, tenant, cts.Token);
 
         // Seed with an embedding length 4 (pgvector schema expects 1536, but controller tolerates and updates when column exists)
         var (_, coll) = await SeedDocAsync(
@@ -284,8 +322,9 @@ public class VectorSearchE2E
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(120));
         using var client = CreateClient();
         await WaitForAllAsync(client, cts.Token);
-        var token = await GetAccessTokenAsync(client, cts.Token);
-        var tenant = $"e2e-{Environment.MachineName.ToLowerInvariant()}";
+    var token = await GetAccessTokenAsync(client, cts.Token);
+    var tenant = CreateUniqueTenant();
+    await EnsureTenantProvisionedAsync(client, tenant, cts.Token);
 
         // Seed two collections
         _ = await SeedDocAsync(
@@ -344,8 +383,9 @@ public class VectorSearchE2E
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(180));
         using var client = CreateClient();
         await WaitForAllAsync(client, cts.Token);
-        var token = await GetAccessTokenAsync(client, cts.Token);
-        var tenant = $"e2e-{Environment.MachineName.ToLowerInvariant()}";
+    var token = await GetAccessTokenAsync(client, cts.Token);
+    var tenant = CreateUniqueTenant();
+    await EnsureTenantProvisionedAsync(client, tenant, cts.Token);
 
         var emb = MakeEmbedding1536();
         var (docId, collId) = await SeedDocAsync(client, token, tenant, "Vec-1536", emb, cts.Token);

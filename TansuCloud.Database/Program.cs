@@ -16,6 +16,7 @@ using OpenTelemetry.Logs;
 using OpenTelemetry.Metrics;
 using OpenTelemetry.Resources;
 using OpenTelemetry.Trace;
+using Scalar.AspNetCore;
 using StackExchange.Redis;
 using TansuCloud.Database.Caching;
 using TansuCloud.Database.Hosting;
@@ -222,7 +223,8 @@ builder
 
 // Add services to the container.
 
-builder.Services.AddControllers()
+builder
+    .Services.AddControllers()
     .AddJsonOptions(options =>
     {
         // Configure JSON Patch support
@@ -230,56 +232,61 @@ builder.Services.AddControllers()
     });
 
 // Learn more about configuring OpenAPI at https://aka.ms/aspnet/openapi
-builder.Services.AddOpenApi();
-
-// Swagger/OpenAPI configuration
-builder.Services.AddEndpointsApiExplorer();
-builder.Services.AddSwaggerGen(options =>
+// Native .NET 9 OpenAPI with Scalar UI (Task 22.5)
+builder.Services.AddOpenApi(options =>
 {
-    options.SwaggerDoc("v1", new Microsoft.OpenApi.Models.OpenApiInfo
-    {
-        Title = "TansuCloud Database API",
-        Version = "v1",
-        Description = "REST API for document storage with vector search capabilities",
-        Contact = new Microsoft.OpenApi.Models.OpenApiContact
+    options.AddDocumentTransformer(
+        (document, context, cancellationToken) =>
         {
-            Name = "TansuCloud",
-            Url = new Uri("https://github.com/MusaGursoy/TansuCloud")
-        }
-    });
-
-    // Include XML comments for better documentation
-    var xmlFile = $"{System.Reflection.Assembly.GetExecutingAssembly().GetName().Name}.xml";
-    var xmlPath = Path.Combine(AppContext.BaseDirectory, xmlFile);
-    if (File.Exists(xmlPath))
-    {
-        options.IncludeXmlComments(xmlPath);
-    }
-
-    // Configure JWT Bearer authentication in Swagger
-    options.AddSecurityDefinition("Bearer", new Microsoft.OpenApi.Models.OpenApiSecurityScheme
-    {
-        Description = "JWT Authorization header using the Bearer scheme. Enter 'Bearer' [space] and then your token.",
-        Name = "Authorization",
-        In = Microsoft.OpenApi.Models.ParameterLocation.Header,
-        Type = Microsoft.OpenApi.Models.SecuritySchemeType.ApiKey,
-        Scheme = "Bearer"
-    });
-
-    options.AddSecurityRequirement(new Microsoft.OpenApi.Models.OpenApiSecurityRequirement
-    {
-        {
-            new Microsoft.OpenApi.Models.OpenApiSecurityScheme
+            document.Info = new()
             {
-                Reference = new Microsoft.OpenApi.Models.OpenApiReference
+                Title = "TansuCloud Database API",
+                Version = "v1",
+                Description = "REST API for document storage with vector search capabilities",
+                Contact = new()
                 {
-                    Type = Microsoft.OpenApi.Models.ReferenceType.SecurityScheme,
-                    Id = "Bearer"
+                    Name = "TansuCloud",
+                    Url = new Uri("https://github.com/MusaGursoy/TansuCloud")
                 }
-            },
-            Array.Empty<string>()
+            };
+
+            // Configure JWT Bearer authentication scheme
+            document.Components ??= new();
+            document.Components.SecuritySchemes ??=
+                new Dictionary<string, Microsoft.OpenApi.Models.OpenApiSecurityScheme>();
+            document.Components.SecuritySchemes["Bearer"] = new()
+            {
+                Description =
+                    "JWT Authorization header using the Bearer scheme. Enter 'Bearer' [space] and then your token.",
+                Name = "Authorization",
+                In = Microsoft.OpenApi.Models.ParameterLocation.Header,
+                Type = Microsoft.OpenApi.Models.SecuritySchemeType.ApiKey,
+                Scheme = "Bearer"
+            };
+
+            // Apply security requirement to all operations
+            document.SecurityRequirements =
+                new List<Microsoft.OpenApi.Models.OpenApiSecurityRequirement>
+                {
+                    new()
+                    {
+                        {
+                            new Microsoft.OpenApi.Models.OpenApiSecurityScheme
+                            {
+                                Reference = new Microsoft.OpenApi.Models.OpenApiReference
+                                {
+                                    Type = Microsoft.OpenApi.Models.ReferenceType.SecurityScheme,
+                                    Id = "Bearer"
+                                }
+                            },
+                            Array.Empty<string>()
+                        }
+                    }
+                };
+
+            return Task.CompletedTask;
         }
-    });
+    );
 });
 
 // Options binding for provisioning and DI registrations
@@ -309,6 +316,22 @@ var auditConnBuilder = new Npgsql.NpgsqlConnectionStringBuilder(auditConnectionS
 builder.Services.AddDbContext<TansuCloud.Audit.AuditDbContext>(options =>
 {
     options.UseNpgsql(auditConnBuilder.ToString());
+    if (builder.Environment.IsDevelopment())
+    {
+        options.EnableSensitiveDataLogging();
+        options.EnableDetailedErrors();
+    }
+});
+
+// Register Identity DbContext for applying migrations from Database service
+var identityConnBuilder = new Npgsql.NpgsqlConnectionStringBuilder(auditConnectionString)
+{
+    Database = "tansu_identity"
+};
+builder.Services.AddDbContext<TansuCloud.Identity.Data.AppDbContext>(options =>
+{
+    options.UseNpgsql(identityConnBuilder.ToString());
+    options.UseOpenIddict(); // Required for OpenIddict entities
     if (builder.Environment.IsDevelopment())
     {
         options.EnableSensitiveDataLogging();
@@ -1055,11 +1078,8 @@ builder.Services.AddAuthorization(options =>
 
 var app = builder.Build();
 
-// Apply audit database migrations on startup (Task 31, EF-based)
-await TansuCloud.Observability.Auditing.AuditServiceCollectionExtensions.ApplyAuditMigrationsAsync(
-    app.Services,
-    app.Logger
-);
+// Note: Audit database migrations are handled by DatabaseMigrationHostedService.EnsureAuditDatabaseAsync()
+// which runs after the audit database is created. No need to apply them here.
 
 // Startup diagnostic: log OIDC metadata source choice (Task 38)
 try
@@ -1097,35 +1117,22 @@ app.UseMiddleware<RequestEnrichmentMiddleware>();
 // Configure the HTTP request pipeline.
 if (app.Environment.IsDevelopment())
 {
-    app.MapOpenApi();
-    
-    // Configure Swagger to respect X-Forwarded-Prefix from Gateway
-    app.UseSwagger(c =>
-    {
-        c.PreSerializeFilters.Add((swagger, httpReq) =>
+    // Native .NET 9 OpenAPI endpoint
+    app.MapOpenApi().AllowAnonymous();
+
+    // Scalar UI for interactive API documentation (Task 22.5)
+    // Accessible at /scalar/v1 (or /db/scalar/v1 via Gateway)
+    app.MapScalarApiReference(options =>
         {
-            // Adjust server URLs when behind a reverse proxy with path prefix
-            var forwardedPrefix = httpReq.Headers["X-Forwarded-Prefix"].ToString();
-            if (!string.IsNullOrWhiteSpace(forwardedPrefix))
-            {
-                swagger.Servers = new List<Microsoft.OpenApi.Models.OpenApiServer>
-                {
-                    new() { Url = $"{forwardedPrefix}" }
-                };
-            }
-        });
-    });
-    
-    app.UseSwaggerUI(options =>
-    {
-        // Use relative path for SwaggerEndpoint to work correctly behind reverse proxy
-        // The path is relative to the Swagger UI route, so "v1/swagger.json" resolves to:
-        // - /swagger/v1/swagger.json when accessed directly
-        // - /db/swagger/v1/swagger.json when accessed via Gateway (/db prefix preserved by client-side navigation)
-        options.SwaggerEndpoint("v1/swagger.json", "TansuCloud Database API v1");
-        options.RoutePrefix = "swagger"; // Access at /swagger (or /db/swagger via Gateway)
-        options.DocumentTitle = "TansuCloud Database API";
-    });
+            options
+                .WithTitle("TansuCloud Database API")
+                .WithTheme(Scalar.AspNetCore.ScalarTheme.Default)
+                .WithDefaultHttpClient(
+                    Scalar.AspNetCore.ScalarTarget.CSharp,
+                    Scalar.AspNetCore.ScalarClient.HttpClient
+                );
+        })
+        .AllowAnonymous();
 }
 
 // Global exception handler to surface ProblemDetails on unhandled errors (helps E2E diagnose 500s)

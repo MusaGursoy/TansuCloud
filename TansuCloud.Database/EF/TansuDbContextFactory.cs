@@ -4,14 +4,18 @@ using Microsoft.EntityFrameworkCore.Design;
 
 namespace TansuCloud.Database.EF;
 
-public sealed class TansuDbContextFactory : IDesignTimeDbContextFactory<TansuDbContext>
+/// <summary>
+/// Design-time factory for TansuDbContext to enable EF Core tools (migrations, etc.)
+/// </summary>
+public class TansuDbContextFactory : IDesignTimeDbContextFactory<TansuDbContext>
 {
     public TansuDbContext CreateDbContext(string[] args)
     {
-        var cs = Environment.GetEnvironmentVariable("TANSU_DESIGN_TIME_CS")
-                 ?? "Host=localhost;Port=5432;Database=postgres;Username=postgres;Password=postgres";
-        var builder = new DbContextOptionsBuilder<TansuDbContext>()
-            .UseNpgsql(cs);
-        return new TansuDbContext(builder.Options);
+        var optionsBuilder = new DbContextOptionsBuilder<TansuDbContext>();
+        
+        // Use a dummy connection string - migrations don't need a real DB connection
+        optionsBuilder.UseNpgsql("Host=localhost;Database=tansu_tenant_design;Username=postgres;Password=postgres");
+        
+        return new TansuDbContext(optionsBuilder.Options);
     }
-} // End of Class TansuDbContextFactory
+}

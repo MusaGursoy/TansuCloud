@@ -3,9 +3,10 @@ using System.Threading.Channels;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
-using TansuCloud.Identity.Infrastructure.Options;
 using TansuCloud.Identity.Infrastructure.Keys;
+using TansuCloud.Identity.Infrastructure.Options;
 using TansuCloud.Identity.Data;
+using TansuCloud.Identity.Data.Entities;
 
 namespace TansuCloud.Identity.Infrastructure.Security;
 

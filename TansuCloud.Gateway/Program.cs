@@ -462,13 +462,18 @@ var outputCacheRuntime = new OutputCacheRuntime(defaultOutputCacheTtl, staticAss
 builder.Services.AddSingleton<IOutputCacheRuntime>(outputCacheRuntime);
 
 // Policy Center runtime with PostgreSQL persistence (Task 17 - Policy Center)
-var gatewayDbConnectionString = builder.Configuration.GetConnectionString("GatewayDb")
+var gatewayDbConnectionString =
+    builder.Configuration.GetConnectionString("GatewayDb")
     ?? throw new InvalidOperationException("GatewayDb connection string not configured");
 
 builder.Services.AddDbContext<TansuCloud.Gateway.Data.PolicyDbContext>(options =>
-    options.UseNpgsql(gatewayDbConnectionString));
+    options.UseNpgsql(gatewayDbConnectionString)
+);
 
-builder.Services.AddScoped<TansuCloud.Gateway.Data.IPolicyStore, TansuCloud.Gateway.Data.PolicyStore>();
+builder.Services.AddScoped<
+    TansuCloud.Gateway.Data.IPolicyStore,
+    TansuCloud.Gateway.Data.PolicyStore
+>();
 builder.Services.AddSingleton<IPolicyRuntime, PolicyRuntime>();
 
 // Safety controls: Rate Limiting
@@ -564,7 +569,7 @@ builder.Services.AddOutputCache(options =>
         "PublicStaticLong",
         new RuntimeOutputCachePolicy(outputCacheRuntime, isStatic: true)
     );
-    
+
     // Add dynamic cache policy that reads from PolicyRuntime
     options.AddPolicy(
         "DynamicCachePolicy",
@@ -1380,7 +1385,8 @@ using (var scope = app.Services.CreateScope())
     try
     {
         // Apply migrations idempotently
-        var policyDbContext = scope.ServiceProvider.GetRequiredService<TansuCloud.Gateway.Data.PolicyDbContext>();
+        var policyDbContext =
+            scope.ServiceProvider.GetRequiredService<TansuCloud.Gateway.Data.PolicyDbContext>();
         await policyDbContext.Database.MigrateAsync();
         logger.LogInformation("Policy database migrations applied successfully");
 
@@ -1544,7 +1550,7 @@ app.Use(
             || path.StartsWithSegments("/storage", StringComparison.OrdinalIgnoreCase)
         )
         {
-            // Allow anonymous health endpoints and Swagger UI for downstream services (Development only for Swagger)
+            // Allow anonymous health endpoints and Scalar UI for downstream services (Development only for Scalar)
             if (
                 !(
                     path.StartsWithSegments("/db/health", StringComparison.OrdinalIgnoreCase)
@@ -1552,8 +1558,32 @@ app.Use(
                         "/storage/health",
                         StringComparison.OrdinalIgnoreCase
                     )
-                    || (app.Environment.IsDevelopment() && path.StartsWithSegments("/db/swagger", StringComparison.OrdinalIgnoreCase))
-                    || (app.Environment.IsDevelopment() && path.StartsWithSegments("/storage/swagger", StringComparison.OrdinalIgnoreCase))
+                    || (
+                        app.Environment.IsDevelopment()
+                        && (
+                            path.StartsWithSegments(
+                                "/db/scalar",
+                                StringComparison.OrdinalIgnoreCase
+                            )
+                            || path.StartsWithSegments(
+                                "/db/openapi",
+                                StringComparison.OrdinalIgnoreCase
+                            )
+                        )
+                    )
+                    || (
+                        app.Environment.IsDevelopment()
+                        && (
+                            path.StartsWithSegments(
+                                "/storage/scalar",
+                                StringComparison.OrdinalIgnoreCase
+                            )
+                            || path.StartsWithSegments(
+                                "/storage/openapi",
+                                StringComparison.OrdinalIgnoreCase
+                            )
+                        )
+                    )
                 )
             )
             {
@@ -2235,11 +2265,14 @@ adminGroup
 
 // Policy Center admin endpoints (Task 17 - Policy Center)
 adminGroup
-    .MapGet("/policies", async (IPolicyRuntime runtime) =>
-    {
-        var policies = await runtime.GetAllAsync();
-        return Results.Json(policies);
-    })
+    .MapGet(
+        "/policies",
+        async (IPolicyRuntime runtime) =>
+        {
+            var policies = await runtime.GetAllAsync();
+            return Results.Json(policies);
+        }
+    )
     .WithDisplayName("Admin: List all policies");
 
 adminGroup
@@ -2271,19 +2304,21 @@ adminGroup
             {
                 // Parse policy entry
                 var id = body.GetProperty("id").GetString();
-                
+
                 // Handle both integer and string formats for type
                 var typeProp = body.GetProperty("type");
-                string? typeStr = typeProp.ValueKind == JsonValueKind.Number 
-                    ? typeProp.GetInt32().ToString()
-                    : typeProp.GetString();
-                
+                string? typeStr =
+                    typeProp.ValueKind == JsonValueKind.Number
+                        ? typeProp.GetInt32().ToString()
+                        : typeProp.GetString();
+
                 // Handle both integer and string formats for mode
                 var modeProp = body.GetProperty("mode");
-                string? modeStr = modeProp.ValueKind == JsonValueKind.Number
-                    ? modeProp.GetInt32().ToString()
-                    : modeProp.GetString();
-                
+                string? modeStr =
+                    modeProp.ValueKind == JsonValueKind.Number
+                        ? modeProp.GetInt32().ToString()
+                        : modeProp.GetString();
+
                 var description = body.TryGetProperty("description", out var descProp)
                     ? descProp.GetString()
                     : string.Empty;
@@ -2318,6 +2353,11 @@ adminGroup
                     );
                 }
 
+                // Extract enabled flag (default to true if not specified)
+                var enabled = body.TryGetProperty("enabled", out var enabledProp)
+                    ? enabledProp.GetBoolean()
+                    : true;
+
                 var policy = new PolicyEntry
                 {
                     Id = id!,
@@ -2327,7 +2367,7 @@ adminGroup
                     Config = config,
                     CreatedAt = DateTime.UtcNow,
                     UpdatedAt = DateTime.UtcNow,
-                    Enabled = true
+                    Enabled = enabled
                 };
 
                 await runtime.UpsertAsync(policy);
@@ -2353,7 +2393,12 @@ adminGroup
                     };
                     audit.TryEnqueueRedacted(
                         ev,
-                        new { PolicyId = policy.Id, Type = policy.Type, Mode = policy.Mode },
+                        new
+                        {
+                            PolicyId = policy.Id,
+                            Type = policy.Type,
+                            Mode = policy.Mode
+                        },
                         new[] { "PolicyId", "Type", "Mode" }
                     );
                 }
@@ -2474,11 +2519,11 @@ adminGroup
                 }
 
                 // Parse cache config
-                var jsonOptions = new JsonSerializerOptions
-                {
-                    PropertyNameCaseInsensitive = true
-                };
-                var cacheConfig = JsonSerializer.Deserialize<CacheConfig>(config.GetRawText(), jsonOptions);
+                var jsonOptions = new JsonSerializerOptions { PropertyNameCaseInsensitive = true };
+                var cacheConfig = JsonSerializer.Deserialize<CacheConfig>(
+                    config.GetRawText(),
+                    jsonOptions
+                );
                 if (cacheConfig is null)
                 {
                     return Results.Problem(
@@ -2492,7 +2537,7 @@ adminGroup
                 var keyParts = new List<string> { method.ToUpperInvariant(), url };
 
                 var varyByParams = new List<string>();
-                
+
                 if (cacheConfig.VaryByHost && headers.ContainsKey("Host"))
                 {
                     keyParts.Add($"h:{headers["Host"]}");
@@ -2507,7 +2552,7 @@ adminGroup
                         uri = new Uri("http://localhost" + url);
                     }
                     var query = System.Web.HttpUtility.ParseQueryString(uri.Query);
-                    
+
                     if (cacheConfig.VaryByQuery.Count == 0)
                     {
                         // Explicit empty list = don't vary by query
@@ -2549,7 +2594,7 @@ adminGroup
                 }
 
                 var cacheKey = string.Join("|", keyParts);
-                
+
                 // Simulate cache miss (always miss in simulation)
                 var result = new
                 {
@@ -2586,7 +2631,10 @@ adminGroup
 static string GetClientIp(HttpContext http, Dictionary<string, string> headers)
 {
     // Check X-Forwarded-For header first (for tests and proxied requests)
-    if (headers.TryGetValue("X-Forwarded-For", out var forwardedFor) && !string.IsNullOrWhiteSpace(forwardedFor))
+    if (
+        headers.TryGetValue("X-Forwarded-For", out var forwardedFor)
+        && !string.IsNullOrWhiteSpace(forwardedFor)
+    )
     {
         // X-Forwarded-For can contain multiple IPs, take the first one
         var firstIp = forwardedFor.Split(',')[0].Trim();
@@ -2639,11 +2687,11 @@ adminGroup
                 }
 
                 // Parse rate limit config
-                var jsonOptions = new JsonSerializerOptions
-                {
-                    PropertyNameCaseInsensitive = true
-                };
-                var rateLimitConfig = JsonSerializer.Deserialize<RateLimitConfig>(config.GetRawText(), jsonOptions);
+                var jsonOptions = new JsonSerializerOptions { PropertyNameCaseInsensitive = true };
+                var rateLimitConfig = JsonSerializer.Deserialize<RateLimitConfig>(
+                    config.GetRawText(),
+                    jsonOptions
+                );
                 if (rateLimitConfig is null)
                 {
                     return Results.Problem(
@@ -2658,12 +2706,10 @@ adminGroup
                 {
                     "Global" => "global",
                     "PerIp" => GetClientIp(http, headers),
-                    "PerUser" => string.IsNullOrWhiteSpace(userId)
-                        ? "user:anonymous"
-                        : $"user:{userId}",
-                    "PerHost" => headers.ContainsKey("Host")
-                        ? $"host:{headers["Host"]}"
-                        : "host:unknown",
+                    "PerUser"
+                        => string.IsNullOrWhiteSpace(userId) ? "user:anonymous" : $"user:{userId}",
+                    "PerHost"
+                        => headers.ContainsKey("Host") ? $"host:{headers["Host"]}" : "host:unknown",
                     _ => "global"
                 };
 
@@ -2675,7 +2721,8 @@ adminGroup
                     permitLimit = rateLimitConfig.PermitLimit,
                     permitsRemaining = rateLimitConfig.PermitLimit - 1, // Simulate 1 request consumed
                     windowSeconds = rateLimitConfig.WindowSeconds,
-                    retryAfterSeconds = rateLimitConfig.RetryAfterSeconds ?? rateLimitConfig.WindowSeconds,
+                    retryAfterSeconds = rateLimitConfig.RetryAfterSeconds
+                        ?? rateLimitConfig.WindowSeconds,
                     message = $"Simulation uses partition strategy '{rateLimitConfig.PartitionStrategy}'. In production, requests would be counted per partition key."
                 };
 
@@ -3325,7 +3372,12 @@ adminGroup
             // This matches SigNoz/governance.dev.json structure
             var config = new
             {
-                retentionDays = new { traces = 7, logs = 7, metrics = 14 },
+                retentionDays = new
+                {
+                    traces = 7,
+                    logs = 7,
+                    metrics = 14
+                },
                 sampling = new { traceRatio = 1.0 },
                 alertSLOs = new[]
                 {

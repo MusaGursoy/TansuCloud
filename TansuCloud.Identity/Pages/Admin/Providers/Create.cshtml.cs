@@ -3,7 +3,7 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.RazorPages;
 using TansuCloud.Identity.Data;
-using TansuCloud.Identity.Infrastructure.External;
+using TansuCloud.Identity.Data.Entities;
 
 namespace TansuCloud.Identity.Pages.Admin.Providers;
 

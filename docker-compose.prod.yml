@@ -197,6 +197,8 @@ services:
     depends_on:
       pgcat:
         condition: service_healthy
+      db:
+        condition: service_healthy
     networks:
       - tansucloud-network
 
@@ -282,10 +284,12 @@ services:
       # Outbox__DispatchTenant: <tenant-id>
       ConnectionStrings__DefaultConnection: "Host=postgres;Port=5432;Database=postgres;Username=${POSTGRES_USER};Password=${POSTGRES_PASSWORD}"
       Provisioning__AdminConnectionString: "Host=postgres;Port=5432;Database=postgres;Username=${POSTGRES_USER};Password=${POSTGRES_PASSWORD}"
-      Provisioning__RuntimeConnectionString: "Host=pgcat;Port=6432;Database=postgres;Username=${POSTGRES_USER};Password=${POSTGRES_PASSWORD}"
-      # Route audit writes via PgCat
-      Audit__ConnectionString: "Host=pgcat;Port=6432;Database=postgres;Username=${POSTGRES_USER};Password=${POSTGRES_PASSWORD}"
-      # PgCat Admin API for dynamic pool management (zero-downtime tenant provisioning)
+      # Temporarily use direct PostgreSQL instead of PgCat until dynamic pool management is implemented (Task 46)
+      # PgCat HTTP Admin API does not exist - see docs/PgCat-Admin-API-Investigation.md
+      Provisioning__RuntimeConnectionString: "Host=postgres;Port=5432;Database=postgres;Username=${POSTGRES_USER};Password=${POSTGRES_PASSWORD}"
+      # Route audit writes directly to PostgreSQL (PgCat pool management pending)
+      Audit__ConnectionString: "Host=postgres;Port=5432;Database=postgres;Username=${POSTGRES_USER};Password=${POSTGRES_PASSWORD}"
+      # PgCat Admin API configuration (not currently used - HTTP API does not exist)
       PgCat__AdminBaseUrl: http://pgcat:9930
       PGCAT_ADMIN_USER: ${PGCAT_ADMIN_USER}
       PGCAT_ADMIN_PASSWORD: ${PGCAT_ADMIN_PASSWORD}

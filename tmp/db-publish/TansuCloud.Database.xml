@@ -1,0 +1,690 @@
+<?xml version="1.0"?>
+<doc>
+    <assembly>
+        <name>TansuCloud.Database</name>
+    </assembly>
+    <members>
+        <member name="T:TansuCloud.Database.Controllers.CollectionsController">
+            <summary>
+            Manages collections of documents with CRUD operations, caching, and conditional requests.
+            </summary>
+        </member>
+        <member name="M:TansuCloud.Database.Controllers.CollectionsController.#ctor(TansuCloud.Database.Services.ITenantDbContextFactory,Microsoft.Extensions.Logging.ILogger{TansuCloud.Database.Controllers.CollectionsController},TansuCloud.Database.Outbox.IOutboxProducer,Microsoft.Extensions.Caching.Hybrid.HybridCache,TansuCloud.Database.Caching.ITenantCacheVersion,TansuCloud.Observability.Auditing.IAuditLogger)">
+            <summary>
+            Manages collections of documents with CRUD operations, caching, and conditional requests.
+            </summary>
+        </member>
+        <member name="T:TansuCloud.Database.Controllers.CollectionsController.CreateCollectionDto">
+            <summary>
+            Request DTO for creating a new collection.
+            </summary>
+            <param name="name">The name of the collection (required).</param>
+        </member>
+        <member name="M:TansuCloud.Database.Controllers.CollectionsController.CreateCollectionDto.#ctor(System.String)">
+            <summary>
+            Request DTO for creating a new collection.
+            </summary>
+            <param name="name">The name of the collection (required).</param>
+        </member>
+        <member name="P:TansuCloud.Database.Controllers.CollectionsController.CreateCollectionDto.name">
+            <summary>The name of the collection (required).</summary>
+        </member>
+        <member name="T:TansuCloud.Database.Controllers.CollectionsController.CollectionDto">
+            <summary>
+            Response DTO representing a collection.
+            </summary>
+            <param name="id">Unique identifier of the collection.</param>
+            <param name="name">Name of the collection.</param>
+            <param name="createdAt">Timestamp when the collection was created.</param>
+        </member>
+        <member name="M:TansuCloud.Database.Controllers.CollectionsController.CollectionDto.#ctor(System.Guid,System.String,System.DateTimeOffset)">
+            <summary>
+            Response DTO representing a collection.
+            </summary>
+            <param name="id">Unique identifier of the collection.</param>
+            <param name="name">Name of the collection.</param>
+            <param name="createdAt">Timestamp when the collection was created.</param>
+        </member>
+        <member name="P:TansuCloud.Database.Controllers.CollectionsController.CollectionDto.id">
+            <summary>Unique identifier of the collection.</summary>
+        </member>
+        <member name="P:TansuCloud.Database.Controllers.CollectionsController.CollectionDto.name">
+            <summary>Name of the collection.</summary>
+        </member>
+        <member name="P:TansuCloud.Database.Controllers.CollectionsController.CollectionDto.createdAt">
+            <summary>Timestamp when the collection was created.</summary>
+        </member>
+        <member name="M:TansuCloud.Database.Controllers.CollectionsController.List(System.Int32,System.Int32,System.Threading.CancellationToken)">
+            <summary>
+            Lists all collections with pagination support.
+            </summary>
+            <param name="page">Page number (default: 1).</param>
+            <param name="pageSize">Number of items per page (default: 50, max: 500).</param>
+            <param name="ct">Cancellation token.</param>
+            <returns>Paginated list of collections with weak ETag support.</returns>
+            <response code="200">Returns the list of collections.</response>
+            <response code="304">Not Modified - ETag matches (If-None-Match).</response>
+            <response code="400">Invalid pagination parameters.</response>
+            <response code="401">Unauthorized - missing or invalid JWT token.</response>
+        </member>
+        <member name="M:TansuCloud.Database.Controllers.CollectionsController.ListStream(System.Threading.CancellationToken)">
+            <summary>
+            Streams all collections using IAsyncEnumerable for improved memory efficiency.
+            </summary>
+            <param name="ct">Cancellation token.</param>
+            <returns>Stream of collections as newline-delimited JSON.</returns>
+            <response code="200">Returns the stream of collections.</response>
+            <response code="401">Unauthorized - missing or invalid JWT token.</response>
+            <remarks>
+            This endpoint streams collections one-by-one as newline-delimited JSON (NDJSON).
+            Use this for large result sets to reduce memory usage on the server.
+            Response format: each line is a separate JSON object.
+            </remarks>
+        </member>
+        <member name="M:TansuCloud.Database.Controllers.CollectionsController.Create(TansuCloud.Database.Controllers.CollectionsController.CreateCollectionDto,System.Threading.CancellationToken)">
+            <summary>
+            Creates a new collection.
+            </summary>
+            <param name="input">Collection data including name (required).</param>
+            <param name="ct">Cancellation token.</param>
+            <returns>The created collection with its generated ID.</returns>
+            <response code="201">Collection created successfully.</response>
+            <response code="400">Invalid input (e.g., missing or empty name).</response>
+            <response code="401">Unauthorized - missing or invalid JWT token.</response>
+            <response code="403">Forbidden - insufficient permissions (requires db.write scope).</response>
+        </member>
+        <member name="M:TansuCloud.Database.Controllers.CollectionsController.Get(System.Guid,System.Threading.CancellationToken)">
+            <summary>
+            Retrieves a single collection by its unique identifier.
+            </summary>
+            <param name="id">The unique identifier of the collection.</param>
+            <param name="ct">Cancellation token.</param>
+            <returns>The requested collection if found.</returns>
+            <response code="200">Returns the collection.</response>
+            <response code="304">Not Modified - ETag matches (If-None-Match).</response>
+            <response code="404">Collection not found.</response>
+            <response code="401">Unauthorized - missing or invalid JWT token.</response>
+        </member>
+        <member name="T:TansuCloud.Database.Controllers.CollectionsController.UpdateCollectionDto">
+            <summary>
+            Request DTO for updating a collection.
+            </summary>
+            <param name="name">New name for the collection (required).</param>
+        </member>
+        <member name="M:TansuCloud.Database.Controllers.CollectionsController.UpdateCollectionDto.#ctor(System.String)">
+            <summary>
+            Request DTO for updating a collection.
+            </summary>
+            <param name="name">New name for the collection (required).</param>
+        </member>
+        <member name="P:TansuCloud.Database.Controllers.CollectionsController.UpdateCollectionDto.name">
+            <summary>New name for the collection (required).</summary>
+        </member>
+        <member name="M:TansuCloud.Database.Controllers.CollectionsController.Update(System.Guid,TansuCloud.Database.Controllers.CollectionsController.UpdateCollectionDto,System.Threading.CancellationToken)">
+            <summary>
+            Updates an existing collection (full replacement).
+            </summary>
+            <param name="id">ID of the collection to update.</param>
+            <param name="input">New collection data (name).</param>
+            <param name="ct">Cancellation token.</param>
+            <returns>The updated collection.</returns>
+            <response code="200">Collection updated successfully.</response>
+            <response code="400">Invalid input (e.g., missing or empty name).</response>
+            <response code="404">Collection not found.</response>
+            <response code="412">Precondition Failed - If-Match header does not match current ETag.</response>
+            <response code="401">Unauthorized - missing or invalid JWT token.</response>
+            <response code="403">Forbidden - insufficient permissions (requires db.write scope).</response>
+        </member>
+        <member name="M:TansuCloud.Database.Controllers.CollectionsController.Delete(System.Guid,System.Threading.CancellationToken)">
+            <summary>
+            Deletes a collection by ID.
+            </summary>
+            <param name="id">ID of the collection to delete.</param>
+            <param name="ct">Cancellation token.</param>
+            <returns>No content on successful deletion.</returns>
+            <response code="204">Collection deleted successfully.</response>
+            <response code="404">Collection not found.</response>
+            <response code="412">Precondition Failed - If-Match header does not match current ETag.</response>
+            <response code="401">Unauthorized - missing or invalid JWT token.</response>
+            <response code="403">Forbidden - insufficient permissions (requires db.write scope).</response>
+        </member>
+        <member name="T:TansuCloud.Database.Controllers.DocumentsController">
+            <summary>
+            Manages document storage with filtering, sorting, vector search, and conditional requests.
+            </summary>
+        </member>
+        <member name="M:TansuCloud.Database.Controllers.DocumentsController.#ctor(TansuCloud.Database.Services.ITenantDbContextFactory,Microsoft.Extensions.Logging.ILogger{TansuCloud.Database.Controllers.DocumentsController},TansuCloud.Database.Outbox.IOutboxProducer,Microsoft.Extensions.Caching.Hybrid.HybridCache,TansuCloud.Database.Caching.ITenantCacheVersion,TansuCloud.Observability.Auditing.IAuditLogger)">
+            <summary>
+            Manages document storage with filtering, sorting, vector search, and conditional requests.
+            </summary>
+        </member>
+        <member name="T:TansuCloud.Database.Controllers.DocumentsController.DocumentDto">
+            <summary>
+            Response DTO representing a document.
+            </summary>
+            <param name="id">Unique identifier of the document.</param>
+            <param name="collectionId">ID of the collection containing this document.</param>
+            <param name="content">Arbitrary JSON content stored in the document.</param>
+            <param name="createdAt">Timestamp when the document was created.</param>
+        </member>
+        <member name="M:TansuCloud.Database.Controllers.DocumentsController.DocumentDto.#ctor(System.Guid,System.Guid,System.Nullable{System.Text.Json.JsonElement},System.DateTimeOffset)">
+            <summary>
+            Response DTO representing a document.
+            </summary>
+            <param name="id">Unique identifier of the document.</param>
+            <param name="collectionId">ID of the collection containing this document.</param>
+            <param name="content">Arbitrary JSON content stored in the document.</param>
+            <param name="createdAt">Timestamp when the document was created.</param>
+        </member>
+        <member name="P:TansuCloud.Database.Controllers.DocumentsController.DocumentDto.id">
+            <summary>Unique identifier of the document.</summary>
+        </member>
+        <member name="P:TansuCloud.Database.Controllers.DocumentsController.DocumentDto.collectionId">
+            <summary>ID of the collection containing this document.</summary>
+        </member>
+        <member name="P:TansuCloud.Database.Controllers.DocumentsController.DocumentDto.content">
+            <summary>Arbitrary JSON content stored in the document.</summary>
+        </member>
+        <member name="P:TansuCloud.Database.Controllers.DocumentsController.DocumentDto.createdAt">
+            <summary>Timestamp when the document was created.</summary>
+        </member>
+        <member name="T:TansuCloud.Database.Controllers.DocumentsController.CreateDocumentDto">
+            <summary>
+            Request DTO for creating a new document.
+            </summary>
+            <param name="collectionId">ID of the collection to store the document in (required).</param>
+            <param name="content">Arbitrary JSON content to store.</param>
+            <param name="embedding">Optional 1536-dimensional vector embedding for similarity search.</param>
+        </member>
+        <member name="M:TansuCloud.Database.Controllers.DocumentsController.CreateDocumentDto.#ctor(System.Guid,System.Nullable{System.Text.Json.JsonElement},System.Single[])">
+            <summary>
+            Request DTO for creating a new document.
+            </summary>
+            <param name="collectionId">ID of the collection to store the document in (required).</param>
+            <param name="content">Arbitrary JSON content to store.</param>
+            <param name="embedding">Optional 1536-dimensional vector embedding for similarity search.</param>
+        </member>
+        <member name="P:TansuCloud.Database.Controllers.DocumentsController.CreateDocumentDto.collectionId">
+            <summary>ID of the collection to store the document in (required).</summary>
+        </member>
+        <member name="P:TansuCloud.Database.Controllers.DocumentsController.CreateDocumentDto.content">
+            <summary>Arbitrary JSON content to store.</summary>
+        </member>
+        <member name="P:TansuCloud.Database.Controllers.DocumentsController.CreateDocumentDto.embedding">
+            <summary>Optional 1536-dimensional vector embedding for similarity search.</summary>
+        </member>
+        <member name="T:TansuCloud.Database.Controllers.DocumentsController.UpdateDocumentDto">
+            <summary>
+            Request DTO for updating an existing document.
+            </summary>
+            <param name="content">New JSON content (replaces existing content).</param>
+            <param name="embedding">Optional new vector embedding (replaces existing embedding).</param>
+        </member>
+        <member name="M:TansuCloud.Database.Controllers.DocumentsController.UpdateDocumentDto.#ctor(System.Nullable{System.Text.Json.JsonElement},System.Single[])">
+            <summary>
+            Request DTO for updating an existing document.
+            </summary>
+            <param name="content">New JSON content (replaces existing content).</param>
+            <param name="embedding">Optional new vector embedding (replaces existing embedding).</param>
+        </member>
+        <member name="P:TansuCloud.Database.Controllers.DocumentsController.UpdateDocumentDto.content">
+            <summary>New JSON content (replaces existing content).</summary>
+        </member>
+        <member name="P:TansuCloud.Database.Controllers.DocumentsController.UpdateDocumentDto.embedding">
+            <summary>Optional new vector embedding (replaces existing embedding).</summary>
+        </member>
+        <member name="M:TansuCloud.Database.Controllers.DocumentsController.List(System.Nullable{System.Guid},System.Int32,System.Int32,System.String,System.String,System.Nullable{System.DateTimeOffset},System.Nullable{System.DateTimeOffset},System.Threading.CancellationToken)">
+            <summary>
+            Lists documents with filtering, sorting, and pagination support.
+            </summary>
+            <param name="collectionId">Optional filter: only return documents from this collection.</param>
+            <param name="page">Page number (default: 1).</param>
+            <param name="pageSize">Number of items per page (default: 50, max: 500).</param>
+            <param name="sortBy">Sort field: "id", "collectionId", or "createdAt" (default: "createdAt").</param>
+            <param name="sortDir">Sort direction: "asc" or "desc" (default: "desc").</param>
+            <param name="createdAfter">Optional filter: only documents created after this timestamp.</param>
+            <param name="createdBefore">Optional filter: only documents created before this timestamp.</param>
+            <param name="ct">Cancellation token.</param>
+            <returns>Paginated list of documents with weak ETag support.</returns>
+            <response code="200">Returns the list of documents.</response>
+            <response code="304">Not Modified - ETag matches (If-None-Match).</response>
+            <response code="400">Invalid pagination or filter parameters.</response>
+            <response code="401">Unauthorized - missing or invalid JWT token.</response>
+        </member>
+        <member name="M:TansuCloud.Database.Controllers.DocumentsController.Get(System.Guid,System.Threading.CancellationToken)">
+            <summary>
+            Retrieves a single document by its unique identifier.
+            </summary>
+            <param name="id">The unique identifier of the document.</param>
+            <param name="ct">Cancellation token.</param>
+            <returns>The requested document if found.</returns>
+            <response code="200">Returns the document.</response>
+            <response code="206">Partial Content - Range request satisfied.</response>
+            <response code="304">Not Modified - ETag matches (If-None-Match).</response>
+            <response code="404">Document not found.</response>
+            <response code="416">Range Not Satisfiable - invalid range.</response>
+            <response code="401">Unauthorized - missing or invalid JWT token.</response>
+            <remarks>
+            Supports HTTP Range requests for partial content retrieval.
+            Use "Range: bytes=start-end" header to request a specific byte range of the JSON content.
+            </remarks>
+        </member>
+        <member name="M:TansuCloud.Database.Controllers.DocumentsController.ListStream(System.Nullable{System.Guid},System.String,System.String,System.Nullable{System.DateTimeOffset},System.Nullable{System.DateTimeOffset},System.Threading.CancellationToken)">
+            <summary>
+            Streams documents with filtering and sorting support using IAsyncEnumerable for improved memory efficiency.
+            </summary>
+            <param name="collectionId">Optional filter: only return documents from this collection.</param>
+            <param name="sortBy">Sort field: "id", "collectionId", or "createdAt" (default: "createdAt").</param>
+            <param name="sortDir">Sort direction: "asc" or "desc" (default: "desc").</param>
+            <param name="createdAfter">Optional filter: only documents created after this timestamp.</param>
+            <param name="createdBefore">Optional filter: only documents created before this timestamp.</param>
+            <param name="ct">Cancellation token.</param>
+            <returns>Stream of documents as newline-delimited JSON.</returns>
+            <response code="200">Returns the stream of documents.</response>
+            <response code="400">Invalid filter parameters.</response>
+            <response code="401">Unauthorized - missing or invalid JWT token.</response>
+            <remarks>
+            This endpoint streams documents one-by-one as newline-delimited JSON (NDJSON).
+            Use this for large result sets to reduce memory usage on the server.
+            Response format: each line is a separate JSON object.
+            </remarks>
+        </member>
+        <member name="M:TansuCloud.Database.Controllers.DocumentsController.Create(TansuCloud.Database.Controllers.DocumentsController.CreateDocumentDto,System.Threading.CancellationToken)">
+            <summary>
+            Creates a new document in the specified collection.
+            </summary>
+            <param name="input">Document data including collectionId, content, and optional embedding.</param>
+            <param name="ct">Cancellation token.</param>
+            <returns>The created document with its generated ID.</returns>
+            <response code="201">Document created successfully.</response>
+            <response code="400">Invalid input (e.g., empty collectionId).</response>
+            <response code="401">Unauthorized - missing or invalid JWT token.</response>
+            <response code="403">Forbidden - insufficient permissions (requires db.write scope).</response>
+        </member>
+        <member name="M:TansuCloud.Database.Controllers.DocumentsController.Update(System.Guid,TansuCloud.Database.Controllers.DocumentsController.UpdateDocumentDto,System.Threading.CancellationToken)">
+            <summary>
+            Updates an existing document (full replacement).
+            </summary>
+            <param name="id">ID of the document to update.</param>
+            <param name="input">New document data (content and/or embedding).</param>
+            <param name="ct">Cancellation token.</param>
+            <returns>The updated document.</returns>
+            <response code="200">Document updated successfully.</response>
+            <response code="404">Document not found.</response>
+            <response code="412">Precondition Failed - If-Match header does not match current ETag.</response>
+            <response code="401">Unauthorized - missing or invalid JWT token.</response>
+            <response code="403">Forbidden - insufficient permissions (requires db.write scope).</response>
+        </member>
+        <member name="M:TansuCloud.Database.Controllers.DocumentsController.Patch(System.Guid,Microsoft.AspNetCore.JsonPatch.JsonPatchDocument{TansuCloud.Database.Controllers.DocumentsController.UpdateDocumentDto},System.Threading.CancellationToken)">
+            <summary>
+            Partially updates a document using JSON Patch (RFC 6902) operations.
+            </summary>
+            <param name="id">Document ID.</param>
+            <param name="patchDoc">JSON Patch document with operations (add, remove, replace, move, copy, test).</param>
+            <param name="ct">Cancellation token.</param>
+            <returns>The updated document.</returns>
+            <response code="200">Document successfully patched.</response>
+            <response code="400">Invalid JSON Patch document.</response>
+            <response code="404">Document not found.</response>
+            <response code="412">Precondition failed (If-Match mismatch).</response>
+            <remarks>
+            JSON Patch allows efficient partial updates. Example:
+            [
+              { "op": "replace", "path": "/content/title", "value": "New Title" },
+              { "op": "add", "path": "/content/tags/-", "value": "new-tag" }
+            ]
+            </remarks>
+        </member>
+        <member name="M:TansuCloud.Database.Controllers.DocumentsController.Delete(System.Guid,System.Threading.CancellationToken)">
+            <summary>
+            Deletes a document by ID.
+            </summary>
+            <param name="id">ID of the document to delete.</param>
+            <param name="ct">Cancellation token.</param>
+            <returns>No content on successful deletion.</returns>
+            <response code="204">Document deleted successfully.</response>
+            <response code="404">Document not found.</response>
+            <response code="412">Precondition Failed - If-Match header does not match current ETag.</response>
+            <response code="401">Unauthorized - missing or invalid JWT token.</response>
+            <response code="403">Forbidden - insufficient permissions (requires db.write scope).</response>
+        </member>
+        <member name="T:TansuCloud.Database.Controllers.DocumentsController.VectorSearchDto">
+            <summary>
+            Request DTO for vector similarity search within a single collection.
+            </summary>
+            <param name="collectionId">Collection to search within (required).</param>
+            <param name="query">1536-dimensional query vector for similarity matching.</param>
+            <param name="k">Number of nearest neighbors to return (default: 10, max: 100).</param>
+        </member>
+        <member name="M:TansuCloud.Database.Controllers.DocumentsController.VectorSearchDto.#ctor(System.Guid,System.Single[],System.Int32)">
+            <summary>
+            Request DTO for vector similarity search within a single collection.
+            </summary>
+            <param name="collectionId">Collection to search within (required).</param>
+            <param name="query">1536-dimensional query vector for similarity matching.</param>
+            <param name="k">Number of nearest neighbors to return (default: 10, max: 100).</param>
+        </member>
+        <member name="P:TansuCloud.Database.Controllers.DocumentsController.VectorSearchDto.collectionId">
+            <summary>Collection to search within (required).</summary>
+        </member>
+        <member name="P:TansuCloud.Database.Controllers.DocumentsController.VectorSearchDto.query">
+            <summary>1536-dimensional query vector for similarity matching.</summary>
+        </member>
+        <member name="P:TansuCloud.Database.Controllers.DocumentsController.VectorSearchDto.k">
+            <summary>Number of nearest neighbors to return (default: 10, max: 100).</summary>
+        </member>
+        <member name="M:TansuCloud.Database.Controllers.DocumentsController.VectorSearch(TansuCloud.Database.Controllers.DocumentsController.VectorSearchDto,System.Threading.CancellationToken)">
+            <summary>
+            Performs vector similarity search (ANN) within a single collection using pgvector.
+            Returns the top-k documents with the smallest cosine distance to the query vector.
+            </summary>
+            <param name="input">Search parameters (collectionId, query vector, k).</param>
+            <param name="ct">Cancellation token.</param>
+            <returns>List of matching documents ordered by similarity (closest first).</returns>
+            <response code="200">Returns matching documents with similarity scores.</response>
+            <response code="400">Invalid input (e.g., empty collectionId or query vector).</response>
+            <response code="401">Unauthorized - missing or invalid JWT token.</response>
+            <response code="501">Not Implemented - pgvector extension not available.</response>
+            <remarks>
+            Uses pgvector's cosine distance operator (&lt;-&gt;) with HNSW indexes for efficient ANN search.
+            Query vectors must be 1536 dimensions (OpenAI embedding standard).
+            </remarks>
+        </member>
+        <member name="T:TansuCloud.Database.Controllers.DocumentsController.GlobalVectorSearchDto">
+            <summary>
+            Request DTO for cross-collection vector similarity search.
+            </summary>
+            <param name="query">1536-dimensional query vector for similarity matching.</param>
+            <param name="k">Total number of documents to return globally (default: 10, max: 100).</param>
+            <param name="perCollection">Optional limit per collection before global aggregation (0 = no limit).</param>
+        </member>
+        <member name="M:TansuCloud.Database.Controllers.DocumentsController.GlobalVectorSearchDto.#ctor(System.Single[],System.Int32,System.Int32)">
+            <summary>
+            Request DTO for cross-collection vector similarity search.
+            </summary>
+            <param name="query">1536-dimensional query vector for similarity matching.</param>
+            <param name="k">Total number of documents to return globally (default: 10, max: 100).</param>
+            <param name="perCollection">Optional limit per collection before global aggregation (0 = no limit).</param>
+        </member>
+        <member name="P:TansuCloud.Database.Controllers.DocumentsController.GlobalVectorSearchDto.query">
+            <summary>1536-dimensional query vector for similarity matching.</summary>
+        </member>
+        <member name="P:TansuCloud.Database.Controllers.DocumentsController.GlobalVectorSearchDto.k">
+            <summary>Total number of documents to return globally (default: 10, max: 100).</summary>
+        </member>
+        <member name="P:TansuCloud.Database.Controllers.DocumentsController.GlobalVectorSearchDto.perCollection">
+            <summary>Optional limit per collection before global aggregation (0 = no limit).</summary>
+        </member>
+        <member name="M:TansuCloud.Database.Controllers.DocumentsController.VectorSearchGlobal(TansuCloud.Database.Controllers.DocumentsController.GlobalVectorSearchDto,System.Threading.CancellationToken)">
+            <summary>
+            Performs vector similarity search (ANN) across all collections using pgvector.
+            Returns the global top-k documents, optionally capping results per collection first.
+            </summary>
+            <param name="input">Search parameters (query vector, k, optional perCollection cap).</param>
+            <param name="ct">Cancellation token.</param>
+            <returns>List of matching documents from all collections, ordered by similarity (closest first).</returns>
+            <response code="200">Returns matching documents with similarity scores across all collections.</response>
+            <response code="400">Invalid input (e.g., empty query vector).</response>
+            <response code="401">Unauthorized - missing or invalid JWT token.</response>
+            <response code="501">Not Implemented - pgvector extension not available.</response>
+            <remarks>
+            Uses a two-step strategy: first partitions by collection and caps per-collection results (if specified),
+            then selects the global top-k by distance. This prevents a single large collection from dominating results.
+            Query vectors must be 1536 dimensions (OpenAI embedding standard).
+            </remarks>
+        </member>
+        <member name="T:TansuCloud.Database.EF.Migrations.InitialTenantSchema">
+            <inheritdoc />
+        </member>
+        <member name="M:TansuCloud.Database.EF.Migrations.InitialTenantSchema.Up(Microsoft.EntityFrameworkCore.Migrations.MigrationBuilder)">
+            <inheritdoc />
+        </member>
+        <member name="M:TansuCloud.Database.EF.Migrations.InitialTenantSchema.Down(Microsoft.EntityFrameworkCore.Migrations.MigrationBuilder)">
+            <inheritdoc />
+        </member>
+        <member name="M:TansuCloud.Database.EF.Migrations.InitialTenantSchema.BuildTargetModel(Microsoft.EntityFrameworkCore.ModelBuilder)">
+            <inheritdoc />
+        </member>
+        <member name="T:TansuCloud.Database.EF.TansuDbContext">
+            <summary>
+            Primary EF Core DbContext for tenant databases.
+            Note: Vector column DDL and Citus distribution are applied via raw SQL in migrations.
+            </summary>
+        </member>
+        <member name="M:TansuCloud.Database.EF.TansuDbContext.#ctor(Microsoft.EntityFrameworkCore.DbContextOptions{TansuCloud.Database.EF.TansuDbContext})">
+            <summary>
+            Primary EF Core DbContext for tenant databases.
+            Note: Vector column DDL and Citus distribution are applied via raw SQL in migrations.
+            </summary>
+        </member>
+        <member name="T:TansuCloud.Database.EF.TansuDbContextFactory">
+            <summary>
+            Design-time factory for TansuDbContext to enable EF Core tools (migrations, etc.)
+            </summary>
+        </member>
+        <member name="T:TansuCloud.Database.Hosting.DatabaseMigrationHostedService">
+            <summary>
+            Applies database migrations on startup before accepting HTTP traffic.
+            Ensures Audit database is created and migrations are applied automatically.
+            This service runs before DatabaseSchemaHostedService validation.
+            </summary>
+        </member>
+        <member name="M:TansuCloud.Database.Hosting.DatabaseMigrationHostedService.RetryDatabaseOperationAsync``1(System.Func{System.Threading.Tasks.Task{``0}},System.String,System.Threading.CancellationToken)">
+            <summary>
+            Retry helper for database operations that may fail due to PostgreSQL template1 locks or temporary unavailability.
+            Common during container startup when multiple services connect simultaneously.
+            </summary>
+        </member>
+        <member name="T:TansuCloud.Database.Hosting.DatabaseSchemaHostedService">
+            <summary>
+            Validates database schemas at startup before accepting HTTP traffic.
+            Ensures Identity, Audit, and all tenant databases exist with correct schema versions.
+            </summary>
+        </member>
+        <member name="T:TansuCloud.Database.Hosting.ExtensionVersionHealthCheck">
+            <summary>
+            Health check that validates PostgreSQL extension versions across all tenant databases.
+            Reports Degraded when version mismatches are detected after container upgrades.
+            </summary>
+        </member>
+        <member name="T:TansuCloud.Database.Hosting.ExtensionVersionHostedService">
+            <summary>
+            Hosted service that ensures PostgreSQL extensions are updated during application startup.
+            This prevents runtime errors from version mismatches after Docker image upgrades.
+            </summary>
+        </member>
+        <member name="T:TansuCloud.Database.Hosting.PgCatPoolHostedService">
+            <summary>
+            Reconciles PgCat connection pools with tenant databases at startup.
+            - Adds pools for databases that exist but have no pool configured (missing pools)
+            - Removes pools for databases that no longer exist (orphaned pools)
+            Runs once at startup to clean up any inconsistencies from previous runs.
+            New tenant provisioning handles pool creation synchronously, so periodic reconciliation is not needed.
+            </summary>
+        </member>
+        <member name="T:TansuCloud.Database.Outbox.InteractionEvents">
+            <summary>
+            Convenience helpers and payload types for recording user interactions as outbox events.
+            This enables future ML/recommendations without changing domain write logic.
+            </summary>
+        </member>
+        <member name="T:TansuCloud.Database.Outbox.InteractionEvents.InteractionEventPayload">
+            <summary>
+            Minimal interaction payload for analytics/ML pipelines.
+            PII should be minimized or hashed upstream when appropriate.
+            </summary>
+        </member>
+        <member name="M:TansuCloud.Database.Outbox.InteractionEvents.InteractionEventPayload.#ctor(System.String,System.String,System.String,System.String,System.DateTimeOffset,System.Nullable{System.Text.Json.JsonElement})">
+            <summary>
+            Minimal interaction payload for analytics/ML pipelines.
+            PII should be minimized or hashed upstream when appropriate.
+            </summary>
+        </member>
+        <member name="M:TansuCloud.Database.Outbox.InteractionEvents.EnqueueInteraction(TansuCloud.Database.Outbox.IOutboxProducer,TansuCloud.Database.EF.TansuDbContext,TansuCloud.Database.Outbox.InteractionEvents.InteractionEventPayload,System.String)">
+            <summary>
+            Enqueue a normalized InteractionRecorded outbox event.
+            Idempotency can be provided by the caller (e.g., a composite key) when desired.
+            </summary>
+        </member>
+        <member name="T:TansuCloud.Database.Services.ExtensionVersionHealthCheck">
+            <summary>
+            Health check that reports PostgreSQL extension versions across all tenant databases.
+            Provides visibility into extension status after container upgrades.
+            </summary>
+        </member>
+        <member name="T:TansuCloud.Database.Services.ExtensionVersionService">
+            <summary>
+            Service for ensuring PostgreSQL extensions are up-to-date with the loaded library versions.
+            This addresses version mismatches when upgrading Docker images that contain PostgreSQL extensions.
+            Logs all extension version changes to audit table for compliance tracking.
+            </summary>
+        </member>
+        <member name="M:TansuCloud.Database.Services.ExtensionVersionService.EnsureExtensionVersionsAsync(System.Threading.CancellationToken)">
+            <summary>
+            Updates PostgreSQL extensions in all tenant databases to match the loaded library versions.
+            Should be called during application startup to prevent XX000 errors from version mismatches.
+            </summary>
+            <param name="cancellationToken">Cancellation token</param>
+            <returns>Number of databases processed</returns>
+        </member>
+        <member name="M:TansuCloud.Database.Services.ExtensionVersionService.GetExtensionVersionsAsync(System.Threading.CancellationToken)">
+            <summary>
+            Gets the current versions of all tracked extensions across all tenant databases.
+            Used by health checks to report extension version status.
+            </summary>
+            <param name="cancellationToken">Cancellation token</param>
+            <returns>Dictionary of database name to extension versions</returns>
+        </member>
+        <member name="T:TansuCloud.Database.Services.ExtensionVersionStartupService">
+            <summary>
+            Hosted service that runs pre-flight extension version checks during application startup.
+            Ensures PostgreSQL extensions are updated to match library versions before accepting traffic.
+            </summary>
+        </member>
+        <member name="T:TansuCloud.Database.Services.InfrastructureHealthCheck">
+            <summary>
+            Health check that reports infrastructure validation status including:
+            - Schema validation (Identity, Audit, tenant databases)
+            - Tenant count
+            - PgCat pool count (if configured)
+            - ClickHouse connectivity (informational)
+            </summary>
+        </member>
+        <member name="T:TansuCloud.Database.Services.PgCatAdminClient">
+            <summary>
+            Client for PgCat Admin API to manage connection pools dynamically.
+            Enables zero-downtime tenant provisioning by adding pools synchronously.
+            </summary>
+        </member>
+        <member name="M:TansuCloud.Database.Services.PgCatAdminClient.AddPoolAsync(System.String,System.Int32,System.Threading.CancellationToken)">
+            <summary>
+            Adds a new database pool to PgCat via the Admin API.
+            This enables immediate tenant access without waiting for config reload.
+            </summary>
+            <param name="database">Database name (e.g., "tansu_tenant_acme")</param>
+            <param name="poolSize">Number of connections in the pool (default 20)</param>
+            <param name="cancellationToken">Cancellation token</param>
+            <returns>True if pool was added successfully, false if it already exists</returns>
+        </member>
+        <member name="M:TansuCloud.Database.Services.PgCatAdminClient.RemovePoolAsync(System.String,System.Threading.CancellationToken)">
+            <summary>
+            Removes a database pool from PgCat via the Admin API.
+            Useful for tenant deprovisioning or cleanup.
+            </summary>
+            <param name="database">Database name (e.g., "tansu_tenant_acme")</param>
+            <param name="cancellationToken">Cancellation token</param>
+            <returns>True if pool was removed successfully</returns>
+        </member>
+        <member name="M:TansuCloud.Database.Services.PgCatAdminClient.ListPoolsAsync(System.Threading.CancellationToken)">
+            <summary>
+            Lists all configured pools in PgCat.
+            Useful for diagnostics and validation.
+            </summary>
+            <param name="cancellationToken">Cancellation token</param>
+            <returns>List of database names with configured pools</returns>
+        </member>
+        <member name="T:TansuCloud.Database.Services.SchemaVersion">
+            <summary>
+            Represents a schema version record in the __SchemaVersion table.
+            Tracks the current schema version and migration history for a database.
+            </summary>
+        </member>
+        <member name="P:TansuCloud.Database.Services.SchemaVersion.Id">
+            <summary>
+            Unique identifier for this version record.
+            </summary>
+        </member>
+        <member name="P:TansuCloud.Database.Services.SchemaVersion.DatabaseName">
+            <summary>
+            Database name (e.g., tansu_identity, tansu_audit, tansu_tenant_acme).
+            </summary>
+        </member>
+        <member name="P:TansuCloud.Database.Services.SchemaVersion.Version">
+            <summary>
+            Current schema version (e.g., 1.0.0).
+            </summary>
+        </member>
+        <member name="P:TansuCloud.Database.Services.SchemaVersion.AppliedAt">
+            <summary>
+            When this version was applied (UTC).
+            </summary>
+        </member>
+        <member name="P:TansuCloud.Database.Services.SchemaVersion.Description">
+            <summary>
+            Optional description of changes in this version.
+            </summary>
+        </member>
+        <member name="P:TansuCloud.Database.Services.SchemaVersion.Metadata">
+            <summary>
+            Optional metadata about the migration (JSON).
+            </summary>
+        </member>
+        <member name="T:TansuCloud.Database.Services.SchemaVersionService">
+            <summary>
+            Service for managing schema versions across all databases.
+            Provides methods to track, validate, and report schema versions.
+            </summary>
+        </member>
+        <member name="T:TansuCloud.Database.Services.SchemaVersionService.ExpectedVersions">
+            <summary>
+            Expected schema versions for system databases.
+            </summary>
+        </member>
+        <member name="M:TansuCloud.Database.Services.SchemaVersionService.EnsureSchemaVersionTableAsync(System.String,System.Threading.CancellationToken)">
+            <summary>
+            Ensures the __SchemaVersion table exists in the specified database.
+            </summary>
+        </member>
+        <member name="M:TansuCloud.Database.Services.SchemaVersionService.RecordSchemaVersionAsync(System.String,System.String,System.String,System.Object,System.Threading.CancellationToken)">
+            <summary>
+            Records a new schema version for a database.
+            </summary>
+        </member>
+        <member name="M:TansuCloud.Database.Services.SchemaVersionService.GetCurrentVersionAsync(System.String,System.Threading.CancellationToken)">
+            <summary>
+            Gets the current schema version for a database.
+            Returns null if no version is recorded.
+            </summary>
+        </member>
+        <member name="M:TansuCloud.Database.Services.SchemaVersionService.ValidateDatabaseSchemaAsync(System.String,System.String,System.Threading.CancellationToken)">
+            <summary>
+            Validates that a database exists and has the expected schema version.
+            </summary>
+        </member>
+        <member name="M:TansuCloud.Database.Services.SchemaVersionService.DatabaseExistsAsync(System.String,System.Threading.CancellationToken)">
+            <summary>
+            Checks if a database exists.
+            </summary>
+        </member>
+        <member name="M:TansuCloud.Database.Services.SchemaVersionService.GetTenantDatabasesAsync(System.Threading.CancellationToken)">
+            <summary>
+            Gets all tenant databases (prefixed with tansu_tenant_).
+            </summary>
+        </member>
+        <member name="M:TansuCloud.Database.Services.SchemaVersionService.GetConnectionStringForDatabase(System.String)">
+            <summary>
+            Gets a connection string for a specific database.
+            </summary>
+        </member>
+    </members>
+</doc>

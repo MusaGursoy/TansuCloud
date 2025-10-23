@@ -21,6 +21,23 @@ public class TansuDbContext(DbContextOptions<TansuDbContext> options) : DbContex
         var provider = Database.ProviderName;
         var isInMemory =
             provider != null && provider.Contains("InMemory", StringComparison.OrdinalIgnoreCase);
+
+        // ValueComparer for JsonDocument - compares the raw JSON text representation
+        // This MUST be set for ALL providers, not just InMemory, because EF Core requires it
+        // for change tracking of JsonDocument properties.
+        var jsonComparer =
+            new Microsoft.EntityFrameworkCore.ChangeTracking.ValueComparer<JsonDocument?>(
+                (a, b) =>
+                    (a == null && b == null)
+                    || (
+                        a != null
+                        && b != null
+                        && a.RootElement.GetRawText() == b.RootElement.GetRawText()
+                    ),
+                v => v == null ? 0 : v.RootElement.GetRawText().GetHashCode(),
+                v => v // Snapshot function - just return the same instance
+            );
+
         var jsonConverter = new ValueConverter<JsonDocument?, string?>(
             v => v == null ? null : v.RootElement.GetRawText(),
             v => v == null ? null : JsonDocument.Parse(v, new JsonDocumentOptions())
@@ -42,10 +59,18 @@ public class TansuDbContext(DbContextOptions<TansuDbContext> options) : DbContex
             eb.HasKey(x => x.Id);
             eb.Property(x => x.Id).HasColumnName("id");
             eb.Property(x => x.CollectionId).HasColumnName("collection_id");
+            var docContent = eb.Property(x => x.Content);
+            docContent.HasColumnName("content");
+            // ALWAYS set ValueComparer for JsonDocument (required for EF Core change tracking)
+            docContent.Metadata.SetValueComparer(jsonComparer);
             if (isInMemory)
-                eb.Property(x => x.Content).HasColumnName("content").HasConversion(jsonConverter);
+            {
+                docContent.HasConversion(jsonConverter);
+            }
             else
-                eb.Property(x => x.Content).HasColumnName("content").HasColumnType("jsonb"); // map JsonDocument to jsonb
+            {
+                docContent.HasColumnType("jsonb"); // map JsonDocument to jsonb
+            }
             eb.Property(x => x.CreatedAt).HasColumnName("created_at");
             eb.HasOne<Collection>()
                 .WithMany()
@@ -62,10 +87,18 @@ public class TansuDbContext(DbContextOptions<TansuDbContext> options) : DbContex
             eb.Property(x => x.Id).HasColumnName("id");
             eb.Property(x => x.OccurredAt).HasColumnName("occurred_at");
             eb.Property(x => x.Type).HasColumnName("type");
+            var outboxPayload = eb.Property(x => x.Payload);
+            outboxPayload.HasColumnName("payload");
+            // ALWAYS set ValueComparer for JsonDocument (required for EF Core change tracking)
+            outboxPayload.Metadata.SetValueComparer(jsonComparer);
             if (isInMemory)
-                eb.Property(x => x.Payload).HasColumnName("payload").HasConversion(jsonConverter);
+            {
+                outboxPayload.HasConversion(jsonConverter);
+            }
             else
-                eb.Property(x => x.Payload).HasColumnName("payload").HasColumnType("jsonb");
+            {
+                outboxPayload.HasColumnType("jsonb");
+            }
             eb.Property(x => x.Status).HasColumnName("status");
             eb.Property(x => x.Attempts).HasColumnName("attempts");
             eb.Property(x => x.NextAttemptAt).HasColumnName("next_attempt_at");

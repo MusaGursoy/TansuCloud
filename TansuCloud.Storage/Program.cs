@@ -16,10 +16,11 @@ using OpenTelemetry.Logs;
 using OpenTelemetry.Metrics;
 using OpenTelemetry.Resources;
 using OpenTelemetry.Trace;
+using Scalar.AspNetCore;
 using StackExchange.Redis;
 using TansuCloud.Observability;
-using TansuCloud.Observability.Caching;
 using TansuCloud.Observability.Auditing;
+using TansuCloud.Observability.Caching;
 using TansuCloud.Observability.Shared.Configuration;
 using TansuCloud.Storage.Hosting;
 using TansuCloud.Storage.Security;
@@ -155,10 +156,9 @@ builder
     .AddCheck("self", () => HealthCheckResult.Healthy(), tags: new[] { "self" });
 
 // Readiness: verify OTLP exporter reachability and W3C Activity id format
-builder.Services.AddHealthChecks().AddCheck<OtlpConnectivityHealthCheck>(
-    "otlp",
-    tags: new[] { "ready", "otlp" }
-);
+builder
+    .Services.AddHealthChecks()
+    .AddCheck<OtlpConnectivityHealthCheck>("otlp", tags: new[] { "ready", "otlp" });
 
 // Phase 0: health status transition publisher for ops visibility
 builder.Services.AddSingleton<IHealthCheckPublisher, HealthTransitionPublisher>();
@@ -243,7 +243,63 @@ builder.Services.PostConfigure<BrotliCompressionProviderOptions>(o =>
 });
 
 // Learn more about configuring OpenAPI at https://aka.ms/aspnet/openapi
-builder.Services.AddOpenApi();
+// Native .NET 9 OpenAPI with Scalar UI (Task 22.5)
+builder.Services.AddOpenApi(options =>
+{
+    options.AddDocumentTransformer(
+        (document, context, cancellationToken) =>
+        {
+            document.Info = new()
+            {
+                Title = "TansuCloud Storage API",
+                Version = "v1",
+                Description =
+                    "REST API for object storage with multipart upload, presigned URLs, image transforms, and quota management",
+                Contact = new()
+                {
+                    Name = "TansuCloud",
+                    Url = new Uri("https://github.com/MusaGursoy/TansuCloud")
+                }
+            };
+
+            // Configure JWT Bearer authentication scheme
+            document.Components ??= new();
+            document.Components.SecuritySchemes ??=
+                new Dictionary<string, Microsoft.OpenApi.Models.OpenApiSecurityScheme>();
+            document.Components.SecuritySchemes["Bearer"] = new()
+            {
+                Description =
+                    "JWT Authorization header using the Bearer scheme. Enter 'Bearer' [space] and then your token.",
+                Name = "Authorization",
+                In = Microsoft.OpenApi.Models.ParameterLocation.Header,
+                Type = Microsoft.OpenApi.Models.SecuritySchemeType.ApiKey,
+                Scheme = "Bearer"
+            };
+
+            // Apply security requirement to all operations
+            document.SecurityRequirements =
+                new List<Microsoft.OpenApi.Models.OpenApiSecurityRequirement>
+                {
+                    new()
+                    {
+                        {
+                            new Microsoft.OpenApi.Models.OpenApiSecurityScheme
+                            {
+                                Reference = new Microsoft.OpenApi.Models.OpenApiReference
+                                {
+                                    Type = Microsoft.OpenApi.Models.ReferenceType.SecurityScheme,
+                                    Id = "Bearer"
+                                }
+                            },
+                            Array.Empty<string>()
+                        }
+                    }
+                };
+
+            return Task.CompletedTask;
+        }
+    );
+});
 
 // Options and DI
 builder
@@ -623,7 +679,18 @@ app.UseMiddleware<RequestEnrichmentMiddleware>();
 // Configure the HTTP request pipeline.
 if (app.Environment.IsDevelopment())
 {
-    app.MapOpenApi();
+    // Native .NET 9 OpenAPI endpoint
+    app.MapOpenApi().AllowAnonymous();
+
+    // Scalar UI for interactive API documentation (Task 22.5)
+    // Accessible at /scalar/v1 (or /storage/scalar/v1 via Gateway)
+    app.MapScalarApiReference(options =>
+    {
+        options
+            .WithTitle("TansuCloud Storage API")
+            .WithTheme(ScalarTheme.Default)
+            .WithDefaultHttpClient(ScalarTarget.CSharp, ScalarClient.HttpClient);
+    }).AllowAnonymous();
 }
 
 app.UseAuthentication();

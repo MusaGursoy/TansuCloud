@@ -3,7 +3,7 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using TansuCloud.Identity.Data;
-using TansuCloud.Identity.Infrastructure.External;
+using TansuCloud.Identity.Data.Entities;
 using TansuCloud.Identity.Infrastructure.Security;
 
 namespace TansuCloud.Identity.Controllers;

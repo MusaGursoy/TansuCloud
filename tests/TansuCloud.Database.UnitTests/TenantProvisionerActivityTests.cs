@@ -5,8 +5,10 @@ using System.Threading;
 using FluentAssertions;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
+using Moq;
 using Npgsql;
 using TansuCloud.Database.Provisioning;
+using TansuCloud.Database.Services;
 using TansuCloud.Observability;
 using Xunit;
 
@@ -24,7 +26,8 @@ public class TenantProvisionerActivityTests
                     "Host=127.0.0.1;Port=65535;Database=postgres;Username=postgres;Password=postgres"
             }
         );
-        var provisioner = new TenantProvisioner(options, NullLogger<TenantProvisioner>.Instance);
+        var mockPgCatAdmin = new Moq.Mock<PgCatAdminClient>();
+        var provisioner = new TenantProvisioner(options, NullLogger<TenantProvisioner>.Instance, mockPgCatAdmin.Object);
         var request = new TenantProvisionRequest("activity-tenant", "Activity Tenant");
 
         const string backgroundSourceName = "TansuCloud.Background";
