@@ -1,0 +1,516 @@
+@page "/tenant/{tenantId}/database"
+@page "/tenant/{tenantId}/database/{section}"
+@using MudBlazor
+@using TansuCloud.Dashboard.Services
+@using TansuCloud.Dashboard.Components.Layout
+@inject ITenantContextService TenantContext
+@inject ISnackbar Snackbar
+@inject IDialogService DialogService
+@layout TenantLayout
+
+<PageTitle>Database - @TenantId</PageTitle>
+
+<MudContainer MaxWidth="MaxWidth.ExtraLarge" Class="pa-4">
+    <MudText Typo="Typo.h4" Class="mb-4">Database Management</MudText>
+    <MudText Typo="Typo.body2" Color="Color.Secondary" Class="mb-6">
+        Manage collections, vector settings, and document retention for your tenant database
+    </MudText>
+
+    @if (_isLoading)
+    {
+        <MudProgressCircular Indeterminate="true" Color="Color.Primary" Size="Size.Large" />
+    }
+    else
+    {
+        <!-- Database Overview Cards -->
+        <MudGrid Class="mb-6">
+            <MudItem xs="12" sm="6" md="3">
+                <MudCard Elevation="2">
+                    <MudCardContent>
+                        <MudText Typo="Typo.body2" Color="Color.Secondary">Total Collections</MudText>
+                        <MudText Typo="Typo.h4">@_collections.Count</MudText>
+                    </MudCardContent>
+                </MudCard>
+            </MudItem>
+            <MudItem xs="12" sm="6" md="3">
+                <MudCard Elevation="2">
+                    <MudCardContent>
+                        <MudText Typo="Typo.body2" Color="Color.Secondary">Total Documents</MudText>
+                        <MudText Typo="Typo.h4">@_totalDocuments.ToString("N0")</MudText>
+                    </MudCardContent>
+                </MudCard>
+            </MudItem>
+            <MudItem xs="12" sm="6" md="3">
+                <MudCard Elevation="2">
+                    <MudCardContent>
+                        <MudText Typo="Typo.body2" Color="Color.Secondary">Vector Indexes</MudText>
+                        <MudText Typo="Typo.h4">@_vectorIndexCount</MudText>
+                    </MudCardContent>
+                </MudCard>
+            </MudItem>
+            <MudItem xs="12" sm="6" md="3">
+                <MudCard Elevation="2">
+                    <MudCardContent>
+                        <MudText Typo="Typo.body2" Color="Color.Secondary">Database Size</MudText>
+                        <MudText Typo="Typo.h4">@_databaseSizeMB.ToString("N0") MB</MudText>
+                    </MudCardContent>
+                </MudCard>
+            </MudItem>
+        </MudGrid>
+
+        <!-- Collections Table -->
+        <MudCard Elevation="2" Class="mb-6">
+            <MudCardHeader>
+                <CardHeaderContent>
+                    <MudText Typo="Typo.h6">Collections</MudText>
+                </CardHeaderContent>
+                <CardHeaderActions>
+                    <MudButton Variant="Variant.Filled"
+                               Color="Color.Primary"
+                               StartIcon="@Icons.Material.Filled.Add"
+                               OnClick="@OpenCreateCollectionDialog"
+                               data-testid="create-collection-button">
+                        Create Collection
+                    </MudButton>
+                </CardHeaderActions>
+            </MudCardHeader>
+            <MudCardContent>
+                <MudDataGrid T="CollectionModel"
+                             Items="@_collections"
+                             Filterable="true"
+                             SortMode="SortMode.Multiple"
+                             Hover="true"
+                             Dense="true">
+                    <Columns>
+                        <PropertyColumn Property="x => x.Name" Title="Collection Name">
+                            <CellTemplate>
+                                <MudStack Row="true" AlignItems="AlignItems.Center">
+                                    <MudIcon Icon="@Icons.Material.Filled.TableChart" Size="Size.Small" Color="Color.Primary" />
+                                    <MudText Typo="Typo.body2">@context.Item.Name</MudText>
+                                </MudStack>
+                            </CellTemplate>
+                        </PropertyColumn>
+                        <PropertyColumn Property="x => x.DocumentCount" Title="Documents">
+                            <CellTemplate>
+                                <MudText Typo="Typo.body2">@context.Item.DocumentCount.ToString("N0")</MudText>
+                            </CellTemplate>
+                        </PropertyColumn>
+                        <PropertyColumn Property="x => x.SizeMB" Title="Size (MB)">
+                            <CellTemplate>
+                                <MudText Typo="Typo.body2">@context.Item.SizeMB.ToString("F2")</MudText>
+                            </CellTemplate>
+                        </PropertyColumn>
+                        <PropertyColumn Property="x => x.HasVectorIndex" Title="Vector Index">
+                            <CellTemplate>
+                                <MudChip T="string"
+                                         Size="Size.Small"
+                                         Color="@(context.Item.HasVectorIndex ? Color.Success : Color.Default)">
+                                    @(context.Item.HasVectorIndex ? "Enabled" : "Disabled")
+                                </MudChip>
+                            </CellTemplate>
+                        </PropertyColumn>
+                        <PropertyColumn Property="x => x.IndexType" Title="Index Type">
+                            <CellTemplate>
+                                @if (context.Item.HasVectorIndex)
+                                {
+                                    <MudChip T="string" Size="Size.Small" Color="Color.Info">@context.Item.IndexType</MudChip>
+                                }
+                                else
+                                {
+                                    <MudText Typo="Typo.body2" Color="Color.Secondary">N/A</MudText>
+                                }
+                            </CellTemplate>
+                        </PropertyColumn>
+                        <PropertyColumn Property="x => x.RetentionDays" Title="Retention">
+                            <CellTemplate>
+                                @if (context.Item.RetentionDays.HasValue)
+                                {
+                                    <MudText Typo="Typo.body2">@context.Item.RetentionDays.Value days</MudText>
+                                }
+                                else
+                                {
+                                    <MudText Typo="Typo.body2" Color="Color.Secondary">Indefinite</MudText>
+                                }
+                            </CellTemplate>
+                        </PropertyColumn>
+                        <PropertyColumn Property="x => x.CreatedAt" Title="Created">
+                            <CellTemplate>
+                                <MudText Typo="Typo.body2">@context.Item.CreatedAt.ToString("yyyy-MM-dd")</MudText>
+                            </CellTemplate>
+                        </PropertyColumn>
+                        <TemplateColumn Title="Actions" Sortable="false">
+                            <CellTemplate>
+                                <MudMenu Icon="@Icons.Material.Filled.MoreVert" Size="Size.Small" Dense="true">
+                                    <MudMenuItem OnClick="@(() => ViewCollectionDetails(context.Item))"
+                                                 Icon="@Icons.Material.Filled.Info">
+                                        View Details
+                                    </MudMenuItem>
+                                    <MudMenuItem OnClick="@(() => EditVectorSettings(context.Item))"
+                                                 Icon="@Icons.Material.Filled.Tune">
+                                        Vector Settings
+                                    </MudMenuItem>
+                                    <MudMenuItem OnClick="@(() => EditRetentionPolicy(context.Item))"
+                                                 Icon="@Icons.Material.Filled.Schedule">
+                                        Retention Policy
+                                    </MudMenuItem>
+                                    <MudMenuItem OnClick="@(() => RebuildIndexes(context.Item))"
+                                                 Icon="@Icons.Material.Filled.Refresh">
+                                        Rebuild Indexes
+                                    </MudMenuItem>
+                                    <MudDivider />
+                                    <MudMenuItem OnClick="@(() => DeleteCollection(context.Item))"
+                                                 Icon="@Icons.Material.Filled.Delete"
+                                                 IconColor="Color.Error">
+                                        Delete Collection
+                                    </MudMenuItem>
+                                </MudMenu>
+                            </CellTemplate>
+                        </TemplateColumn>
+                    </Columns>
+                </MudDataGrid>
+            </MudCardContent>
+        </MudCard>
+
+        <!-- Retention Simulator -->
+        <MudCard Elevation="2" Class="mb-6">
+            <MudCardHeader>
+                <CardHeaderContent>
+                    <MudText Typo="Typo.h6">Retention Simulator</MudText>
+                    <MudText Typo="Typo.body2" Color="Color.Secondary">
+                        Estimate the impact of retention policies on document count and storage
+                    </MudText>
+                </CardHeaderContent>
+            </MudCardHeader>
+            <MudCardContent>
+                <MudGrid>
+                    <MudItem xs="12" md="6">
+                        <MudSelect T="string"
+                                   @bind-Value="_selectedCollectionForSimulation"
+                                   Label="Collection"
+                                   Variant="Variant.Outlined"
+                                   Required="true"
+                                   Class="mb-4"
+                                   data-testid="simulator-collection-select">
+                            @foreach (var collection in _collections)
+                            {
+                                <MudSelectItem T="string" Value="@collection.CollectionId">@collection.Name</MudSelectItem>
+                            }
+                        </MudSelect>
+
+                        <MudNumericField T="int"
+                                         @bind-Value="_simulationRetentionDays"
+                                         Label="Retention Period (Days)"
+                                         Variant="Variant.Outlined"
+                                         Min="1"
+                                         Max="3650"
+                                         HelperText="Documents older than this will be deleted"
+                                         Class="mb-4"
+                                         data-testid="simulator-retention-input" />
+
+                        <MudButton Variant="Variant.Filled"
+                                   Color="Color.Primary"
+                                   OnClick="@RunRetentionSimulation"
+                                   Disabled="@string.IsNullOrWhiteSpace(_selectedCollectionForSimulation)"
+                                   data-testid="run-simulation-button">
+                            Run Simulation
+                        </MudButton>
+                    </MudItem>
+                    
+                    <MudItem xs="12" md="6">
+                        @if (_simulationResult != null)
+                        {
+                            <MudPaper Elevation="1" Class="pa-4">
+                                <MudText Typo="Typo.h6" Class="mb-3">Simulation Results</MudText>
+                                
+                                <MudText Typo="Typo.body2" Class="mb-2">
+                                    <strong>Current Documents:</strong> @_simulationResult.CurrentDocuments.ToString("N0")
+                                </MudText>
+                                <MudText Typo="Typo.body2" Class="mb-2">
+                                    <strong>Documents to Delete:</strong> 
+                                    <span style="color: var(--mud-palette-error);">@_simulationResult.DocumentsToDelete.ToString("N0")</span>
+                                </MudText>
+                                <MudText Typo="Typo.body2" Class="mb-2">
+                                    <strong>Remaining Documents:</strong> @_simulationResult.RemainingDocuments.ToString("N0")
+                                </MudText>
+                                
+                                <MudDivider Class="my-3" />
+                                
+                                <MudText Typo="Typo.body2" Class="mb-2">
+                                    <strong>Current Size:</strong> @_simulationResult.CurrentSizeMB.ToString("F2") MB
+                                </MudText>
+                                <MudText Typo="Typo.body2" Class="mb-2">
+                                    <strong>Size to Reclaim:</strong> 
+                                    <span style="color: var(--mud-palette-success);">@_simulationResult.SizeReclaimedMB.ToString("F2") MB</span>
+                                </MudText>
+                                <MudText Typo="Typo.body2" Class="mb-2">
+                                    <strong>Estimated Size After:</strong> @_simulationResult.EstimatedSizeMB.ToString("F2") MB
+                                </MudText>
+                                
+                                <MudAlert Severity="Severity.Info" Class="mt-4">
+                                    Reduction: @_simulationResult.ReductionPercentage.ToString("F1")% of current storage
+                                </MudAlert>
+                            </MudPaper>
+                        }
+                    </MudItem>
+                </MudGrid>
+            </MudCardContent>
+        </MudCard>
+
+        <!-- Vector Settings Overview -->
+        <MudCard Elevation="2">
+            <MudCardHeader>
+                <CardHeaderContent>
+                    <MudText Typo="Typo.h6">Vector Search Configuration</MudText>
+                    <MudText Typo="Typo.body2" Color="Color.Secondary">
+                        Default vector embedding settings for new collections
+                    </MudText>
+                </CardHeaderContent>
+                <CardHeaderActions>
+                    <MudButton Variant="Variant.Outlined"
+                               Color="Color.Primary"
+                               StartIcon="@Icons.Material.Filled.Settings"
+                               OnClick="@OpenVectorConfigDialog"
+                               data-testid="edit-vector-config-button">
+                        Edit Defaults
+                    </MudButton>
+                </CardHeaderActions>
+            </MudCardHeader>
+            <MudCardContent>
+                <MudGrid>
+                    <MudItem xs="12" sm="6" md="3">
+                        <MudText Typo="Typo.body2" Color="Color.Secondary">Embedding Dimension</MudText>
+                        <MudText Typo="Typo.h6">@_vectorConfig.EmbeddingDimension</MudText>
+                    </MudItem>
+                    <MudItem xs="12" sm="6" md="3">
+                        <MudText Typo="Typo.body2" Color="Color.Secondary">Default Index Type</MudText>
+                        <MudText Typo="Typo.h6">@_vectorConfig.DefaultIndexType</MudText>
+                    </MudItem>
+                    <MudItem xs="12" sm="6" md="3">
+                        <MudText Typo="Typo.body2" Color="Color.Secondary">Distance Metric</MudText>
+                        <MudText Typo="Typo.h6">@_vectorConfig.DistanceMetric</MudText>
+                    </MudItem>
+                    <MudItem xs="12" sm="6" md="3">
+                        <MudText Typo="Typo.body2" Color="Color.Secondary">HNSW M Parameter</MudText>
+                        <MudText Typo="Typo.h6">@_vectorConfig.HnswM</MudText>
+                    </MudItem>
+                </MudGrid>
+                
+                <MudAlert Severity="Severity.Info" Class="mt-4">
+                    <MudText Typo="Typo.body2">
+                        <strong>Note:</strong> Vector index settings apply to new collections. Existing collections retain their configured settings.
+                        Use "Vector Settings" action on individual collections to modify their index configuration.
+                    </MudText>
+                </MudAlert>
+            </MudCardContent>
+        </MudCard>
+    }
+</MudContainer>
+
+@code {
+    [Parameter]
+    public string TenantId { get; set; } = string.Empty;
+
+    [Parameter]
+    public string? Section { get; set; }
+
+    private bool _isLoading = true;
+    private List<CollectionModel> _collections = new();
+    
+    // Database metrics (mock)
+    private int _totalDocuments = 458732;
+    private int _vectorIndexCount = 3;
+    private int _databaseSizeMB = 2456;
+
+    // Retention simulator
+    private string _selectedCollectionForSimulation = string.Empty;
+    private int _simulationRetentionDays = 90;
+    private RetentionSimulationResult? _simulationResult;
+
+    // Vector configuration
+    private VectorConfigModel _vectorConfig = new()
+    {
+        EmbeddingDimension = 1536,
+        DefaultIndexType = "HNSW",
+        DistanceMetric = "Cosine",
+        HnswM = 16,
+        HnswEfConstruction = 64
+    };
+
+    protected override async Task OnInitializedAsync()
+    {
+        TenantContext.SetTenant(TenantId);
+        await LoadDatabaseDataAsync();
+    }
+
+    private async Task LoadDatabaseDataAsync()
+    {
+        _isLoading = true;
+        
+        // Simulate API call - TODO: Replace with actual Database service API calls
+        await Task.Delay(500);
+        
+        // Mock collection data
+        _collections = new List<CollectionModel>
+        {
+            new CollectionModel
+            {
+                CollectionId = "coll-1",
+                Name = "products",
+                DocumentCount = 125400,
+                SizeMB = 852.4m,
+                HasVectorIndex = true,
+                IndexType = "HNSW",
+                RetentionDays = null,
+                CreatedAt = DateTime.UtcNow.AddMonths(-12)
+            },
+            new CollectionModel
+            {
+                CollectionId = "coll-2",
+                Name = "user_content",
+                DocumentCount = 287542,
+                SizeMB = 1248.6m,
+                HasVectorIndex = true,
+                IndexType = "IVFFlat",
+                RetentionDays = 180,
+                CreatedAt = DateTime.UtcNow.AddMonths(-8)
+            },
+            new CollectionModel
+            {
+                CollectionId = "coll-3",
+                Name = "analytics_events",
+                DocumentCount = 45790,
+                SizeMB = 355.2m,
+                HasVectorIndex = false,
+                IndexType = null,
+                RetentionDays = 30,
+                CreatedAt = DateTime.UtcNow.AddMonths(-3)
+            }
+        };
+        
+        _isLoading = false;
+    }
+
+    private async Task OpenCreateCollectionDialog()
+    {
+        // TODO: Create CreateCollectionDialog component
+        Snackbar.Add("Create collection dialog - Coming soon", Severity.Info);
+    }
+
+    private async Task ViewCollectionDetails(CollectionModel collection)
+    {
+        // TODO: Navigate to collection details page or show dialog
+        Snackbar.Add($"Viewing details for {collection.Name}...", Severity.Info);
+    }
+
+    private async Task EditVectorSettings(CollectionModel collection)
+    {
+        // TODO: Create VectorSettingsDialog component
+        Snackbar.Add($"Edit vector settings for {collection.Name} - Coming soon", Severity.Info);
+    }
+
+    private async Task EditRetentionPolicy(CollectionModel collection)
+    {
+        // TODO: Create RetentionPolicyDialog component
+        Snackbar.Add($"Edit retention policy for {collection.Name} - Coming soon", Severity.Info);
+    }
+
+    private async Task RebuildIndexes(CollectionModel collection)
+    {
+        var result = await DialogService.ShowMessageBox(
+            "Rebuild Indexes",
+            $"Rebuilding indexes for '{collection.Name}' may take several minutes and will temporarily impact query performance. Continue?",
+            yesText: "Rebuild", cancelText: "Cancel");
+
+        if (result == true)
+        {
+            // TODO: Call Database API to rebuild indexes
+            Snackbar.Add($"Rebuilding indexes for {collection.Name}...", Severity.Info);
+        }
+    }
+
+    private async Task DeleteCollection(CollectionModel collection)
+    {
+        var result = await DialogService.ShowMessageBox(
+            "Delete Collection",
+            $"Are you sure you want to delete collection '{collection.Name}'? This will permanently delete all {collection.DocumentCount:N0} documents. This action cannot be undone.",
+            yesText: "Delete", cancelText: "Cancel");
+
+        if (result == true)
+        {
+            // TODO: Call Database API to delete collection
+            _collections.Remove(collection);
+            Snackbar.Add($"Collection '{collection.Name}' deleted successfully", Severity.Success);
+        }
+    }
+
+    private async Task RunRetentionSimulation()
+    {
+        if (string.IsNullOrWhiteSpace(_selectedCollectionForSimulation))
+        {
+            Snackbar.Add("Please select a collection", Severity.Warning);
+            return;
+        }
+
+        var collection = _collections.FirstOrDefault(c => c.CollectionId == _selectedCollectionForSimulation);
+        if (collection == null) return;
+
+        // Simulate retention calculation - TODO: Replace with actual Database API call
+        await Task.Delay(300);
+
+        // Mock calculation: assume 20% of documents are older than retention period
+        var documentsToDelete = (int)(collection.DocumentCount * 0.2);
+        var sizeToReclaim = collection.SizeMB * 0.2m;
+
+        _simulationResult = new RetentionSimulationResult
+        {
+            CurrentDocuments = collection.DocumentCount,
+            DocumentsToDelete = documentsToDelete,
+            RemainingDocuments = collection.DocumentCount - documentsToDelete,
+            CurrentSizeMB = collection.SizeMB,
+            SizeReclaimedMB = sizeToReclaim,
+            EstimatedSizeMB = collection.SizeMB - sizeToReclaim,
+            ReductionPercentage = (sizeToReclaim / collection.SizeMB) * 100
+        };
+
+        Snackbar.Add("Simulation complete", Severity.Success);
+    }
+
+    private async Task OpenVectorConfigDialog()
+    {
+        // TODO: Create VectorConfigDialog component
+        Snackbar.Add("Edit vector configuration dialog - Coming soon", Severity.Info);
+    }
+
+    // Model classes
+    public record CollectionModel
+    {
+        public string CollectionId { get; init; } = string.Empty;
+        public string Name { get; init; } = string.Empty;
+        public int DocumentCount { get; init; }
+        public decimal SizeMB { get; init; }
+        public bool HasVectorIndex { get; init; }
+        public string? IndexType { get; init; }
+        public int? RetentionDays { get; init; }
+        public DateTime CreatedAt { get; init; }
+    }
+
+    public record RetentionSimulationResult
+    {
+        public int CurrentDocuments { get; init; }
+        public int DocumentsToDelete { get; init; }
+        public int RemainingDocuments { get; init; }
+        public decimal CurrentSizeMB { get; init; }
+        public decimal SizeReclaimedMB { get; init; }
+        public decimal EstimatedSizeMB { get; init; }
+        public decimal ReductionPercentage { get; init; }
+    }
+
+    public record VectorConfigModel
+    {
+        public int EmbeddingDimension { get; init; }
+        public string DefaultIndexType { get; init; } = string.Empty;
+        public string DistanceMetric { get; init; } = string.Empty;
+        public int HnswM { get; init; }
+        public int HnswEfConstruction { get; init; }
+    }
+}

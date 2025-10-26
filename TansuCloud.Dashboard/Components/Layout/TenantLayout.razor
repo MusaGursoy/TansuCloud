@@ -1,0 +1,278 @@
+@inherits LayoutComponentBase
+@inject NavigationManager Navigation
+@inject ITenantContextService TenantContext
+@inject IDialogService DialogService
+@using TansuCloud.Dashboard.Services
+@using TansuCloud.Dashboard.Components.Tenant
+@using MudBlazor
+
+<!-- MudBlazor Providers -->
+<MudThemeProvider Theme="@_customTheme" />
+<MudPopoverProvider />
+<MudDialogProvider />
+<MudSnackbarProvider />
+
+<MudLayout>
+    <!-- App Bar (Top Navigation) -->
+    <MudAppBar Elevation="1" Dense="false">
+        <MudIconButton Icon="@Icons.Material.Filled.Menu" Color="Color.Inherit" Edge="Edge.Start" OnClick="@ToggleDrawer" />
+        <MudText Typo="Typo.h5" Class="ml-3">TansuCloud</MudText>
+        <MudSpacer />
+        
+        <!-- Tenant Switcher -->
+        @if (!string.IsNullOrWhiteSpace(_currentTenantName))
+        {
+            <MudChip T="string" Icon="@Icons.Material.Filled.Business" Color="Color.Primary" Variant="Variant.Outlined" Size="Size.Medium" Class="mr-4">
+                @_currentTenantName
+            </MudChip>
+            <MudIconButton Icon="@Icons.Material.Filled.SwapHoriz" Color="Color.Inherit" OnClick="@OpenTenantSwitcher" Title="Switch Tenant" />
+        }
+        
+        <MudIconButton Icon="@Icons.Material.Filled.Notifications" Color="Color.Inherit" />
+        <MudMenu Icon="@Icons.Material.Filled.AccountCircle" Color="Color.Inherit" AnchorOrigin="Origin.BottomRight" TransformOrigin="Origin.TopRight">
+            <MudMenuItem Icon="@Icons.Material.Filled.Person">Profile</MudMenuItem>
+            <MudMenuItem Icon="@Icons.Material.Filled.Settings">Settings</MudMenuItem>
+            <MudDivider />
+            <MudMenuItem Icon="@Icons.Material.Filled.Dashboard" Href="/dashboard">Platform Admin</MudMenuItem>
+            <MudDivider />
+            <MudMenuItem Icon="@Icons.Material.Filled.Logout">Logout</MudMenuItem>
+        </MudMenu>
+    </MudAppBar>
+
+    <!-- Sidebar Drawer (Left Navigation) -->
+    <MudDrawer @bind-Open="@_drawerOpen" Elevation="2" Variant="@DrawerVariant.Mini" OpenMiniOnHover="true" Width="240px" MiniWidth="64px" ClipMode="DrawerClipMode.Always">
+        <MudDrawerHeader Class="d-flex align-center justify-center pa-4">
+            <MudIcon Icon="@Icons.Material.Filled.Cloud" Color="Color.Primary" Size="Size.Large" />
+        </MudDrawerHeader>
+        <MudNavMenu>
+            <!-- Tenant Overview -->
+            <MudNavGroup Title="Overview" Icon="@Icons.Material.Filled.Dashboard" Expanded="true">
+                <MudNavLink Href="@GetTenantRoute("")" Match="NavLinkMatch.All" Icon="@Icons.Material.Filled.Home">Dashboard</MudNavLink>
+                <MudNavLink Href="@GetTenantRoute("activity")" Icon="@Icons.Material.Filled.Timeline">Activity</MudNavLink>
+            </MudNavGroup>
+
+            <!-- Users & Roles -->
+            <MudNavGroup Title="Users & Roles" Icon="@Icons.Material.Filled.People">
+                <MudNavLink Href="@GetTenantRoute("users")" Icon="@Icons.Material.Filled.Person">Users</MudNavLink>
+                <MudNavLink Href="@GetTenantRoute("roles")" Icon="@Icons.Material.Filled.AdminPanelSettings">Roles</MudNavLink>
+                <MudNavLink Href="@GetTenantRoute("invitations")" Icon="@Icons.Material.Filled.Email">Invitations</MudNavLink>
+            </MudNavGroup>
+
+            <!-- API Keys -->
+            <MudNavGroup Title="API Keys" Icon="@Icons.Material.Filled.Key">
+                <MudNavLink Href="@GetTenantRoute("api-keys")" Icon="@Icons.Material.Filled.VpnKey">Manage Keys</MudNavLink>
+                <MudNavLink Href="@GetTenantRoute("api-keys/usage")" Icon="@Icons.Material.Filled.Analytics">Usage Stats</MudNavLink>
+            </MudNavGroup>
+
+            <!-- Storage -->
+            <MudNavGroup Title="Storage" Icon="@Icons.Material.Filled.Storage">
+                <MudNavLink Href="@GetTenantRoute("storage/buckets")" Icon="@Icons.Material.Filled.Folder">Buckets</MudNavLink>
+                <MudNavLink Href="@GetTenantRoute("storage/objects")" Icon="@Icons.Material.Filled.InsertDriveFile">Object Browser</MudNavLink>
+                <MudNavLink Href="@GetTenantRoute("storage/quotas")" Icon="@Icons.Material.Filled.DataUsage">Quotas & Lifecycle</MudNavLink>
+                <MudNavLink Href="@GetTenantRoute("storage/transforms")" Icon="@Icons.Material.Filled.Transform">Transform Presets</MudNavLink>
+            </MudNavGroup>
+
+            <!-- Database -->
+            <MudNavGroup Title="Database" Icon="@Icons.Material.Filled.Dns">
+                <MudNavLink Href="@GetTenantRoute("database/collections")" Icon="@Icons.Material.Filled.Collections">Collections</MudNavLink>
+                <MudNavLink Href="@GetTenantRoute("database/vectors")" Icon="@Icons.Material.Filled.Hub">Vector Settings</MudNavLink>
+                <MudNavLink Href="@GetTenantRoute("database/indexes")" Icon="@Icons.Material.Filled.FormatListNumbered">Indexes</MudNavLink>
+                <MudNavLink Href="@GetTenantRoute("database/retention")" Icon="@Icons.Material.Filled.Schedule">Retention</MudNavLink>
+            </MudNavGroup>
+
+            <!-- Webhooks -->
+            <MudNavGroup Title="Webhooks" Icon="@Icons.Material.Filled.Webhook">
+                <MudNavLink Href="@GetTenantRoute("webhooks")" Icon="@Icons.Material.Filled.Http">Endpoints</MudNavLink>
+                <MudNavLink Href="@GetTenantRoute("webhooks/deliveries")" Icon="@Icons.Material.Filled.Send">Delivery Log</MudNavLink>
+                <MudNavLink Href="@GetTenantRoute("webhooks/test")" Icon="@Icons.Material.Filled.BugReport">Test Webhook</MudNavLink>
+            </MudNavGroup>
+
+            <!-- Policies -->
+            <MudNavGroup Title="Policies" Icon="@Icons.Material.Filled.Security">
+                <MudNavLink Href="@GetTenantRoute("policies/cache")" Icon="@Icons.Material.Filled.Cached">Cache Overrides</MudNavLink>
+                <MudNavLink Href="@GetTenantRoute("policies/rate-limit")" Icon="@Icons.Material.Filled.Speed">Rate Limit Overrides</MudNavLink>
+                <MudNavLink Href="@GetTenantRoute("policies/cors")" Icon="@Icons.Material.Filled.Public">CORS Settings</MudNavLink>
+            </MudNavGroup>
+
+            <!-- Settings -->
+            <MudNavGroup Title="Settings" Icon="@Icons.Material.Filled.Settings">
+                <MudNavLink Href="@GetTenantRoute("settings")" Icon="@Icons.Material.Filled.Tune">General</MudNavLink>
+                <MudNavLink Href="@GetTenantRoute("settings/billing")" Icon="@Icons.Material.Filled.Receipt">Billing</MudNavLink>
+                <MudNavLink Href="@GetTenantRoute("settings/audit")" Icon="@Icons.Material.Filled.History">Audit Log</MudNavLink>
+            </MudNavGroup>
+        </MudNavMenu>
+    </MudDrawer>
+
+    <!-- Main Content -->
+    <MudMainContent>
+        <MudContainer MaxWidth="MaxWidth.False" Class="pa-4">
+            <!-- Breadcrumbs -->
+            @if (_breadcrumbs.Any())
+            {
+                <MudBreadcrumbs Items="@_breadcrumbs" Class="mb-4" />
+            }
+            
+            <!-- Tenant Guard: Show error if invalid tenant -->
+            @if (_showAccessError)
+            {
+                <MudAlert Severity="Severity.Error" Variant="Variant.Filled" Class="mb-4">
+                    <MudText Typo="Typo.body1"><strong>Access Denied</strong></MudText>
+                    <MudText Typo="Typo.body2">You do not have permission to access tenant "@_currentTenantId" or it does not exist.</MudText>
+                    <MudButton Color="Color.Error" Variant="Variant.Text" Href="/dashboard" Class="mt-2">Return to Dashboard</MudButton>
+                </MudAlert>
+            }
+            else if (_isLoading)
+            {
+                <MudProgressLinear Color="Color.Primary" Indeterminate="true" Class="mb-4" />
+            }
+            else
+            {
+                @Body
+            }
+        </MudContainer>
+    </MudMainContent>
+</MudLayout>
+
+<!-- Blazor Error UI -->
+<div id="blazor-error-ui" data-nosnippet>
+    <MudAlert Severity="Severity.Error" Variant="Variant.Filled">
+        An unhandled error has occurred.
+        <MudButton Color="Color.Error" Variant="Variant.Text" Href="" Class="ml-2">Reload</MudButton>
+        <MudIconButton Icon="@Icons.Material.Filled.Close" Color="Color.Inherit" Size="Size.Small" OnClick="@(() => { })" Class="ml-2" />
+    </MudAlert>
+</div>
+
+@code {
+    private bool _drawerOpen = true;
+    private bool _isLoading = true;
+    private bool _showAccessError = false;
+    private string? _currentTenantId;
+    private string? _currentTenantName;
+    private List<BreadcrumbItem> _breadcrumbs = new();
+
+    protected override async Task OnInitializedAsync()
+    {
+        await base.OnInitializedAsync();
+        
+        // Extract tenant ID from current URL: /dashboard/tenant/{tenantId}/...
+        var uri = new Uri(Navigation.Uri);
+        var segments = uri.LocalPath.Split('/', StringSplitOptions.RemoveEmptyEntries);
+        
+        if (segments.Length >= 3 && segments[0] == "dashboard" && segments[1] == "tenant")
+        {
+            _currentTenantId = segments[2];
+            _isLoading = true;
+            
+            // Validate access to this tenant
+            var hasAccess = await TenantContext.ValidateAccessAsync(_currentTenantId);
+            if (!hasAccess)
+            {
+                _showAccessError = true;
+                _isLoading = false;
+                return;
+            }
+
+            // Set tenant context
+            TenantContext.SetTenant(_currentTenantId);
+
+            // Fetch tenant metadata
+            var metadata = await TenantContext.GetTenantMetadataAsync(_currentTenantId);
+            _currentTenantName = metadata?.DisplayName ?? _currentTenantId;
+
+            // Build breadcrumbs
+            BuildBreadcrumbs(segments);
+            
+            _isLoading = false;
+        }
+        else
+        {
+            // Invalid route structure
+            _showAccessError = true;
+            _isLoading = false;
+        }
+    }
+
+    private void BuildBreadcrumbs(string[] segments)
+    {
+        _breadcrumbs = new List<BreadcrumbItem>
+        {
+            new("Dashboard", href: "/dashboard", icon: Icons.Material.Filled.Dashboard),
+            new(_currentTenantName ?? _currentTenantId ?? "Tenant", href: GetTenantRoute(""), icon: Icons.Material.Filled.Business)
+        };
+
+        // Add additional breadcrumb items based on route depth
+        if (segments.Length > 3)
+        {
+            var section = segments[3];
+            _breadcrumbs.Add(new(FormatBreadcrumbText(section), href: null));
+        }
+    }
+
+    private string FormatBreadcrumbText(string segment)
+    {
+        return string.Join(" ", segment.Split('-', '_').Select(s => char.ToUpperInvariant(s[0]) + s.Substring(1)));
+    }
+
+    private string GetTenantRoute(string path)
+    {
+        if (string.IsNullOrWhiteSpace(_currentTenantId))
+            return "/dashboard";
+        
+        var basePath = $"/dashboard/tenant/{_currentTenantId}";
+        return string.IsNullOrWhiteSpace(path) ? basePath : $"{basePath}/{path.TrimStart('/')}";
+    }
+
+    private void ToggleDrawer()
+    {
+        _drawerOpen = !_drawerOpen;
+    }
+
+    private async Task OpenTenantSwitcher()
+    {
+        var options = new DialogOptions
+        {
+            MaxWidth = MaxWidth.Small,
+            FullWidth = true,
+            CloseOnEscapeKey = true,
+            CloseButton = true
+        };
+
+        var dialog = await DialogService.ShowAsync<TenantSwitcherDialog>("Switch Tenant", options);
+        var result = await dialog.Result;
+
+        if (result is not null && !result.Canceled)
+        {
+            // Dialog handles navigation, tenant context will be updated by the page's OnInitialized
+            // Force UI refresh to show updated tenant name
+            StateHasChanged();
+        }
+    }
+
+    private MudTheme _customTheme = new()
+    {
+        PaletteLight = new PaletteLight
+        {
+            Primary = "#594AE2",           // TansuCloud brand purple
+            Secondary = "#26C6DA",         // Cyan accent
+            AppbarBackground = "#594AE2",  // Match primary
+            Background = "#F5F5F7",        // Light gray background
+            Surface = "#FFFFFF",
+            DrawerBackground = "#FFFFFF",
+            DrawerText = "rgba(0,0,0,0.87)",
+            Success = "#4CAF50",
+            Error = "#F44336",
+            Warning = "#FF9800",
+            Info = "#2196F3"
+        },
+        PaletteDark = new PaletteDark
+        {
+            Primary = "#7C6FE8",
+            Secondary = "#26C6DA",
+            AppbarBackground = "#1E1E2E",
+            Background = "#121218",
+            Surface = "#1E1E2E",
+            DrawerBackground = "#1E1E2E",
+            DrawerText = "rgba(255,255,255,0.87)"
+        }
+    };
+} // End of Code TenantLayout

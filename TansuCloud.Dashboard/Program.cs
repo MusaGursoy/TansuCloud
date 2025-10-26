@@ -1867,6 +1867,13 @@ builder.Services.AddAuthorization(options =>
 
 // HttpClient for server-side calls to backend via Gateway
 builder.Services.AddTransient<TansuCloud.Dashboard.Security.BearerTokenHandler>();
+
+// Register tenant context service for tenant management pages
+builder.Services.AddScoped<
+    TansuCloud.Dashboard.Services.ITenantContextService,
+    TansuCloud.Dashboard.Services.TenantContextService
+>();
+
 builder
     .Services.AddHttpClient(
         "Gateway",

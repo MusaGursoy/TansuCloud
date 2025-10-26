@@ -1,0 +1,529 @@
+@page "/tenant/{tenantId}/policies"
+@using MudBlazor
+@using TansuCloud.Dashboard.Services
+@using TansuCloud.Dashboard.Components.Layout
+@using System.Text.Json
+@inject ITenantContextService TenantContext
+@inject ISnackbar Snackbar
+@inject IDialogService DialogService
+@layout TenantLayout
+
+<PageTitle>Policy Overrides | TansuCloud</PageTitle>
+
+<MudContainer MaxWidth="MaxWidth.ExtraExtraLarge" Class="mt-4 mb-8">
+    <!-- Header -->
+    <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Center" Class="mb-6">
+        <MudStack Spacing="1">
+            <MudText Typo="Typo.h4">Policy Overrides</MudText>
+            <MudText Typo="Typo.body2" Color="Color.Secondary">
+                Override default cache and rate limiting policies for this tenant
+            </MudText>
+        </MudStack>
+        <MudStack Row="true" Spacing="2">
+            <MudButton Variant="Variant.Outlined" 
+                       StartIcon="@Icons.Material.Filled.Refresh" 
+                       Color="Color.Default"
+                       OnClick="LoadPoliciesAsync"
+                       data-testid="refresh-policies-button">
+                Refresh
+            </MudButton>
+            <MudButton Variant="Variant.Filled" 
+                       StartIcon="@Icons.Material.Filled.Add" 
+                       Color="Color.Primary"
+                       OnClick="OpenCreatePolicyDialog"
+                       data-testid="create-policy-button">
+                Create Override
+            </MudButton>
+        </MudStack>
+    </MudStack>
+
+    <!-- Overview Cards -->
+    <MudGrid Class="mb-6">
+        <MudItem xs="12" sm="6" md="3">
+            <MudCard Elevation="2">
+                <MudCardContent>
+                    <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Center">
+                        <MudStack Spacing="0">
+                            <MudText Typo="Typo.body2" Color="Color.Secondary">Total Overrides</MudText>
+                            <MudText Typo="Typo.h4">@_policies.Count</MudText>
+                        </MudStack>
+                        <MudIcon Icon="@Icons.Material.Filled.Policy" Size="Size.Large" Color="Color.Primary" />
+                    </MudStack>
+                </MudCardContent>
+            </MudCard>
+        </MudItem>
+
+        <MudItem xs="12" sm="6" md="3">
+            <MudCard Elevation="2">
+                <MudCardContent>
+                    <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Center">
+                        <MudStack Spacing="0">
+                            <MudText Typo="Typo.body2" Color="Color.Secondary">Active Overrides</MudText>
+                            <MudText Typo="Typo.h4">@_policies.Count(p => p.IsActive)</MudText>
+                        </MudStack>
+                        <MudIcon Icon="@Icons.Material.Filled.CheckCircle" Size="Size.Large" Color="Color.Success" />
+                    </MudStack>
+                </MudCardContent>
+            </MudCard>
+        </MudItem>
+
+        <MudItem xs="12" sm="6" md="3">
+            <MudCard Elevation="2">
+                <MudCardContent>
+                    <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Center">
+                        <MudStack Spacing="0">
+                            <MudText Typo="Typo.body2" Color="Color.Secondary">Cache Policies</MudText>
+                            <MudText Typo="Typo.h4">@_policies.Count(p => p.Type == PolicyType.Cache)</MudText>
+                        </MudStack>
+                        <MudIcon Icon="@Icons.Material.Filled.Speed" Size="Size.Large" Color="Color.Info" />
+                    </MudStack>
+                </MudCardContent>
+            </MudCard>
+        </MudItem>
+
+        <MudItem xs="12" sm="6" md="3">
+            <MudCard Elevation="2">
+                <MudCardContent>
+                    <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Center">
+                        <MudStack Spacing="0">
+                            <MudText Typo="Typo.body2" Color="Color.Secondary">Rate Limit Policies</MudText>
+                            <MudText Typo="Typo.h4">@_policies.Count(p => p.Type == PolicyType.RateLimit)</MudText>
+                        </MudStack>
+                        <MudIcon Icon="@Icons.Material.Filled.AvTimer" Size="Size.Large" Color="Color.Warning" />
+                    </MudStack>
+                </MudCardContent>
+            </MudCard>
+        </MudItem>
+    </MudGrid>
+
+    <!-- Tabs for Policy Types -->
+    <MudTabs Elevation="2" Rounded="true" ApplyEffectsToContainer="true" PanelClass="pa-6" @bind-ActivePanelIndex="_activeTabIndex">
+        <MudTabPanel Text="Cache Policies" Icon="@Icons.Material.Filled.Speed">
+            <MudDataGrid T="PolicyOverrideModel" Items="@_cachePolicies" Elevation="0" Dense="true" Hover="true">
+                <Columns>
+                    <PropertyColumn Property="x => x.Name" Title="Policy Name">
+                        <CellTemplate>
+                            <MudStack Spacing="0">
+                                <MudText Typo="Typo.body2"><strong>@context.Item.Name</strong></MudText>
+                                <MudText Typo="Typo.caption" Color="Color.Secondary">@context.Item.Description</MudText>
+                            </MudStack>
+                        </CellTemplate>
+                    </PropertyColumn>
+                    <PropertyColumn Property="x => x.RoutePattern" Title="Route Pattern">
+                        <CellTemplate>
+                            <MudChip Size="Size.Small" Color="Color.Default">@context.Item.RoutePattern</MudChip>
+                        </CellTemplate>
+                    </PropertyColumn>
+                    <TemplateColumn Title="Configuration">
+                        <CellTemplate>
+                            @if (context.Item.CacheConfig != null)
+                            {
+                                <MudStack Spacing="0">
+                                    <MudText Typo="Typo.caption">TTL: <strong>@context.Item.CacheConfig.TtlSeconds</strong>s</MudText>
+                                    <MudText Typo="Typo.caption">VaryBy Host: <strong>@(context.Item.CacheConfig.VaryByHost ? "Yes" : "No")</strong></MudText>
+                                    @if (context.Item.CacheConfig.VaryByQuery?.Any() == true)
+                                    {
+                                        <MudText Typo="Typo.caption">VaryBy Query: <strong>@string.Join(", ", context.Item.CacheConfig.VaryByQuery)</strong></MudText>
+                                    }
+                                </MudStack>
+                            }
+                        </CellTemplate>
+                    </TemplateColumn>
+                    <PropertyColumn Property="x => x.EnforcementMode" Title="Mode">
+                        <CellTemplate>
+                            <MudChip Size="Size.Small" Color="@GetEnforcementModeColor(context.Item.EnforcementMode)">
+                                @context.Item.EnforcementMode
+                            </MudChip>
+                        </CellTemplate>
+                    </PropertyColumn>
+                    <PropertyColumn Property="x => x.IsActive" Title="Status">
+                        <CellTemplate>
+                            <MudChip Size="Size.Small" Color="@(context.Item.IsActive ? Color.Success : Color.Default)">
+                                @(context.Item.IsActive ? "Active" : "Inactive")
+                            </MudChip>
+                        </CellTemplate>
+                    </PropertyColumn>
+                    <PropertyColumn Property="x => x.CreatedAt" Title="Created" Format="yyyy-MM-dd HH:mm" />
+                    <TemplateColumn Title="Actions" Sortable="false">
+                        <CellTemplate>
+                            <MudStack Row="true" Spacing="1">
+                                <MudIconButton Icon="@Icons.Material.Filled.PlayArrow" 
+                                               Size="Size.Small" 
+                                               Color="Color.Success"
+                                               OnClick="@(() => TestPolicy(context.Item))"
+                                               data-testid="@($"test-policy-{context.Item.Id}")"
+                                               Title="Test Policy" />
+                                <MudIconButton Icon="@Icons.Material.Filled.Edit" 
+                                               Size="Size.Small" 
+                                               Color="Color.Primary"
+                                               OnClick="@(() => EditPolicy(context.Item))"
+                                               Title="Edit" />
+                                <MudIconButton Icon="@(context.Item.IsActive ? Icons.Material.Filled.ToggleOn : Icons.Material.Filled.ToggleOff)" 
+                                               Size="Size.Small" 
+                                               Color="@(context.Item.IsActive ? Color.Success : Color.Default)"
+                                               OnClick="@(() => TogglePolicyStatus(context.Item))"
+                                               Title="@(context.Item.IsActive ? "Deactivate" : "Activate")" />
+                                <MudIconButton Icon="@Icons.Material.Filled.Delete" 
+                                               Size="Size.Small" 
+                                               Color="Color.Error"
+                                               OnClick="@(() => DeletePolicy(context.Item))"
+                                               Title="Delete" />
+                            </MudStack>
+                        </CellTemplate>
+                    </TemplateColumn>
+                </Columns>
+                <PagerContent>
+                    <MudDataGridPager T="PolicyOverrideModel" />
+                </PagerContent>
+            </MudDataGrid>
+        </MudTabPanel>
+
+        <MudTabPanel Text="Rate Limit Policies" Icon="@Icons.Material.Filled.AvTimer">
+            <MudDataGrid T="PolicyOverrideModel" Items="@_rateLimitPolicies" Elevation="0" Dense="true" Hover="true">
+                <Columns>
+                    <PropertyColumn Property="x => x.Name" Title="Policy Name">
+                        <CellTemplate>
+                            <MudStack Spacing="0">
+                                <MudText Typo="Typo.body2"><strong>@context.Item.Name</strong></MudText>
+                                <MudText Typo="Typo.caption" Color="Color.Secondary">@context.Item.Description</MudText>
+                            </MudStack>
+                        </CellTemplate>
+                    </PropertyColumn>
+                    <PropertyColumn Property="x => x.RoutePattern" Title="Route Pattern">
+                        <CellTemplate>
+                            <MudChip Size="Size.Small" Color="Color.Default">@context.Item.RoutePattern</MudChip>
+                        </CellTemplate>
+                    </PropertyColumn>
+                    <TemplateColumn Title="Configuration">
+                        <CellTemplate>
+                            @if (context.Item.RateLimitConfig != null)
+                            {
+                                <MudStack Spacing="0">
+                                    <MudText Typo="Typo.caption">Limit: <strong>@context.Item.RateLimitConfig.PermitLimit</strong> / @context.Item.RateLimitConfig.WindowSeconds s</MudText>
+                                    <MudText Typo="Typo.caption">Strategy: <strong>@context.Item.RateLimitConfig.PartitionStrategy</strong></MudText>
+                                    <MudText Typo="Typo.caption">Queue: <strong>@context.Item.RateLimitConfig.QueueLimit</strong></MudText>
+                                </MudStack>
+                            }
+                        </CellTemplate>
+                    </TemplateColumn>
+                    <PropertyColumn Property="x => x.EnforcementMode" Title="Mode">
+                        <CellTemplate>
+                            <MudChip Size="Size.Small" Color="@GetEnforcementModeColor(context.Item.EnforcementMode)">
+                                @context.Item.EnforcementMode
+                            </MudChip>
+                        </CellTemplate>
+                    </PropertyColumn>
+                    <PropertyColumn Property="x => x.IsActive" Title="Status">
+                        <CellTemplate>
+                            <MudChip Size="Size.Small" Color="@(context.Item.IsActive ? Color.Success : Color.Default)">
+                                @(context.Item.IsActive ? "Active" : "Inactive")
+                            </MudChip>
+                        </CellTemplate>
+                    </PropertyColumn>
+                    <PropertyColumn Property="x => x.CreatedAt" Title="Created" Format="yyyy-MM-dd HH:mm" />
+                    <TemplateColumn Title="Actions" Sortable="false">
+                        <CellTemplate>
+                            <MudStack Row="true" Spacing="1">
+                                <MudIconButton Icon="@Icons.Material.Filled.PlayArrow" 
+                                               Size="Size.Small" 
+                                               Color="Color.Success"
+                                               OnClick="@(() => TestPolicy(context.Item))"
+                                               data-testid="@($"test-policy-{context.Item.Id}")"
+                                               Title="Test Policy" />
+                                <MudIconButton Icon="@Icons.Material.Filled.Edit" 
+                                               Size="Size.Small" 
+                                               Color="Color.Primary"
+                                               OnClick="@(() => EditPolicy(context.Item))"
+                                               Title="Edit" />
+                                <MudIconButton Icon="@(context.Item.IsActive ? Icons.Material.Filled.ToggleOn : Icons.Material.Filled.ToggleOff)" 
+                                               Size="Size.Small" 
+                                               Color="@(context.Item.IsActive ? Color.Success : Color.Default)"
+                                               OnClick="@(() => TogglePolicyStatus(context.Item))"
+                                               Title="@(context.Item.IsActive ? "Deactivate" : "Activate")" />
+                                <MudIconButton Icon="@Icons.Material.Filled.Delete" 
+                                               Size="Size.Small" 
+                                               Color="Color.Error"
+                                               OnClick="@(() => DeletePolicy(context.Item))"
+                                               Title="Delete" />
+                            </MudStack>
+                        </CellTemplate>
+                    </TemplateColumn>
+                </Columns>
+                <PagerContent>
+                    <MudDataGridPager T="PolicyOverrideModel" />
+                </PagerContent>
+            </MudDataGrid>
+        </MudTabPanel>
+    </MudTabs>
+
+    <!-- Info Card -->
+    <MudCard Elevation="2" Class="mt-6">
+        <MudCardContent>
+            <MudStack Spacing="2">
+                <MudText Typo="Typo.h6">
+                    <MudIcon Icon="@Icons.Material.Filled.Info" Class="mr-2" />
+                    Policy Override Information
+                </MudText>
+                <MudDivider />
+                <MudText Typo="Typo.body2">
+                    Policy overrides allow you to customize cache and rate limiting behavior for specific routes within this tenant.
+                    These settings take precedence over the default instance-wide policies.
+                </MudText>
+                <MudText Typo="Typo.body2" Color="Color.Secondary">
+                    <strong>Enforcement Modes:</strong>
+                </MudText>
+                <MudList T="string" Dense="true">
+                    <MudListItem T="string" Icon="@Icons.Material.Filled.Science">
+                        <strong>Shadow:</strong> Policy evaluated but not enforced; results logged for testing and analysis.
+                    </MudListItem>
+                    <MudListItem T="string" Icon="@Icons.Material.Filled.Visibility">
+                        <strong>Audit Only:</strong> Policy evaluated, violations logged and alerted, but requests not blocked.
+                    </MudListItem>
+                    <MudListItem T="string" Icon="@Icons.Material.Filled.Security">
+                        <strong>Enforce:</strong> Policy actively enforced; violations result in 304 (cache) or 429 (rate limit) responses.
+                    </MudListItem>
+                </MudList>
+            </MudStack>
+        </MudCardContent>
+    </MudCard>
+</MudContainer>
+
+@code {
+    [Parameter]
+    public string TenantId { get; set; } = string.Empty;
+
+    private List<PolicyOverrideModel> _policies = new();
+    private List<PolicyOverrideModel> _cachePolicies => _policies.Where(p => p.Type == PolicyType.Cache).ToList();
+    private List<PolicyOverrideModel> _rateLimitPolicies => _policies.Where(p => p.Type == PolicyType.RateLimit).ToList();
+    private int _activeTabIndex = 0;
+
+    protected override async Task OnInitializedAsync()
+    {
+        TenantContext.SetTenant(TenantId);
+        await LoadPoliciesAsync();
+    }
+
+    private async Task LoadPoliciesAsync()
+    {
+        // TODO: Replace with actual API call to Gateway
+        // GET /api/tenants/{tenantId}/policies with X-Tansu-Tenant header
+        await Task.Delay(300); // Simulate API call
+
+        // Mock data - replace with real API integration
+        _policies = new List<PolicyOverrideModel>
+        {
+            new PolicyOverrideModel
+            {
+                Id = "cache-api-v1",
+                Name = "API v1 Cache",
+                Description = "Cache GET requests to /api/v1/* endpoints",
+                Type = PolicyType.Cache,
+                RoutePattern = "/api/v1/**",
+                EnforcementMode = EnforcementMode.Enforce,
+                IsActive = true,
+                CreatedAt = DateTime.UtcNow.AddDays(-10),
+                UpdatedAt = DateTime.UtcNow.AddDays(-2),
+                CacheConfig = new CacheConfigModel
+                {
+                    TtlSeconds = 300,
+                    VaryByHost = true,
+                    VaryByQuery = new List<string> { "page", "limit", "filter" },
+                    VaryByHeaders = new List<string> { "Accept-Language" },
+                    UseDefaultVaryByRules = false
+                }
+            },
+            new PolicyOverrideModel
+            {
+                Id = "cache-static-assets",
+                Name = "Static Assets Cache",
+                Description = "Long-term cache for static resources",
+                Type = PolicyType.Cache,
+                RoutePattern = "/static/**",
+                EnforcementMode = EnforcementMode.Enforce,
+                IsActive = true,
+                CreatedAt = DateTime.UtcNow.AddDays(-15),
+                UpdatedAt = DateTime.UtcNow.AddDays(-15),
+                CacheConfig = new CacheConfigModel
+                {
+                    TtlSeconds = 86400, // 24 hours
+                    VaryByHost = false,
+                    VaryByQuery = null,
+                    VaryByHeaders = new List<string> { "Accept-Encoding" },
+                    UseDefaultVaryByRules = false
+                }
+            },
+            new PolicyOverrideModel
+            {
+                Id = "ratelimit-api-per-user",
+                Name = "API Rate Limit (Per User)",
+                Description = "Limit authenticated users to 1000 req/hour",
+                Type = PolicyType.RateLimit,
+                RoutePattern = "/api/**",
+                EnforcementMode = EnforcementMode.Enforce,
+                IsActive = true,
+                CreatedAt = DateTime.UtcNow.AddDays(-8),
+                UpdatedAt = DateTime.UtcNow.AddDays(-1),
+                RateLimitConfig = new RateLimitConfigModel
+                {
+                    WindowSeconds = 3600,
+                    PermitLimit = 1000,
+                    QueueLimit = 10,
+                    PartitionStrategy = "PerUser",
+                    StatusCode = 429,
+                    RetryAfterSeconds = 3600
+                }
+            },
+            new PolicyOverrideModel
+            {
+                Id = "ratelimit-uploads-per-ip",
+                Name = "Upload Rate Limit (Per IP)",
+                Description = "Limit uploads to 10 per minute per IP",
+                Type = PolicyType.RateLimit,
+                RoutePattern = "/storage/api/objects/*",
+                EnforcementMode = EnforcementMode.AuditOnly,
+                IsActive = true,
+                CreatedAt = DateTime.UtcNow.AddDays(-3),
+                UpdatedAt = DateTime.UtcNow.AddDays(-3),
+                RateLimitConfig = new RateLimitConfigModel
+                {
+                    WindowSeconds = 60,
+                    PermitLimit = 10,
+                    QueueLimit = 0,
+                    PartitionStrategy = "PerIp",
+                    StatusCode = 429,
+                    RetryAfterSeconds = 60
+                }
+            },
+            new PolicyOverrideModel
+            {
+                Id = "ratelimit-search-shadow",
+                Name = "Search Rate Limit (Testing)",
+                Description = "Testing rate limit for search endpoints",
+                Type = PolicyType.RateLimit,
+                RoutePattern = "/db/api/documents/search/**",
+                EnforcementMode = EnforcementMode.Shadow,
+                IsActive = false,
+                CreatedAt = DateTime.UtcNow.AddHours(-6),
+                UpdatedAt = DateTime.UtcNow.AddHours(-6),
+                RateLimitConfig = new RateLimitConfigModel
+                {
+                    WindowSeconds = 60,
+                    PermitLimit = 30,
+                    QueueLimit = 5,
+                    PartitionStrategy = "PerUser",
+                    StatusCode = 429,
+                    RetryAfterSeconds = null
+                }
+            }
+        };
+
+        StateHasChanged();
+    }
+
+    private void OpenCreatePolicyDialog()
+    {
+        // TODO: Open dialog for creating new policy override
+        Snackbar.Add("Create policy dialog - coming soon", Severity.Info);
+    }
+
+    private void EditPolicy(PolicyOverrideModel policy)
+    {
+        // TODO: Open dialog for editing policy
+        Snackbar.Add($"Edit policy '{policy.Name}' - coming soon", Severity.Info);
+    }
+
+    private async Task TestPolicy(PolicyOverrideModel policy)
+    {
+        // TODO: Open simulator dialog like in Admin CacheRatePolicies page
+        Snackbar.Add($"Testing policy '{policy.Name}'...", Severity.Normal);
+        await Task.Delay(1000);
+        Snackbar.Add($"Policy test completed successfully", Severity.Success);
+    }
+
+    private async Task TogglePolicyStatus(PolicyOverrideModel policy)
+    {
+        // TODO: Replace with actual API call
+        await Task.Delay(200);
+        policy.IsActive = !policy.IsActive;
+        Snackbar.Add($"Policy '{policy.Name}' {(policy.IsActive ? "activated" : "deactivated")}", Severity.Success);
+        StateHasChanged();
+    }
+
+    private async Task DeletePolicy(PolicyOverrideModel policy)
+    {
+        var confirmed = await DialogService.ShowMessageBox(
+            "Delete Policy Override",
+            $"Are you sure you want to delete the policy override '{policy.Name}'? This action cannot be undone.",
+            yesText: "Delete",
+            cancelText: "Cancel");
+
+        if (confirmed == true)
+        {
+            // TODO: Replace with actual API call
+            await Task.Delay(200);
+            _policies.Remove(policy);
+            Snackbar.Add($"Policy override '{policy.Name}' deleted", Severity.Success);
+            StateHasChanged();
+        }
+    }
+
+    private Color GetEnforcementModeColor(EnforcementMode mode)
+    {
+        return mode switch
+        {
+            EnforcementMode.Shadow => Color.Secondary,
+            EnforcementMode.AuditOnly => Color.Warning,
+            EnforcementMode.Enforce => Color.Success,
+            _ => Color.Default
+        };
+    }
+
+    // Models
+    public enum PolicyType
+    {
+        Cache = 3,
+        RateLimit = 4
+    }
+
+    public enum EnforcementMode
+    {
+        Shadow = 0,
+        AuditOnly = 1,
+        Enforce = 2
+    }
+
+    public record PolicyOverrideModel
+    {
+        public string Id { get; set; } = string.Empty;
+        public string Name { get; set; } = string.Empty;
+        public string Description { get; set; } = string.Empty;
+        public PolicyType Type { get; set; }
+        public string RoutePattern { get; set; } = string.Empty;
+        public EnforcementMode EnforcementMode { get; set; }
+        public bool IsActive { get; set; }
+        public DateTime CreatedAt { get; set; }
+        public DateTime UpdatedAt { get; set; }
+        public CacheConfigModel? CacheConfig { get; set; }
+        public RateLimitConfigModel? RateLimitConfig { get; set; }
+    }
+
+    public record CacheConfigModel
+    {
+        public int TtlSeconds { get; set; }
+        public bool VaryByHost { get; set; }
+        public List<string>? VaryByQuery { get; set; }
+        public List<string> VaryByHeaders { get; set; } = new();
+        public List<string> VaryByRouteValues { get; set; } = new();
+        public bool UseDefaultVaryByRules { get; set; }
+    }
+
+    public record RateLimitConfigModel
+    {
+        public int WindowSeconds { get; set; }
+        public int PermitLimit { get; set; }
+        public int QueueLimit { get; set; }
+        public string PartitionStrategy { get; set; } = "Global";
+        public int StatusCode { get; set; } = 429;
+        public int? RetryAfterSeconds { get; set; }
+    }
+}

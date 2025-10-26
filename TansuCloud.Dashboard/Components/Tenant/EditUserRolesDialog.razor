@@ -1,0 +1,128 @@
+@using MudBlazor
+
+<MudDialog>
+    <DialogContent>
+        <MudText Typo="Typo.body1" Class="mb-2">
+            <strong>@User.Name</strong>
+        </MudText>
+        <MudText Typo="Typo.body2" Color="Color.Secondary" Class="mb-4">
+            @User.Email
+        </MudText>
+
+        <MudText Typo="Typo.subtitle2" Class="mb-2">Assign Roles</MudText>
+        <MudText Typo="Typo.body2" Color="Color.Secondary" Class="mb-3">
+            Select one or more roles for this user
+        </MudText>
+
+        @foreach (var role in _availableRoles)
+        {
+            <MudCheckBox @bind-Value="@_selectedRoles[role.Name]"
+                        Label="@role.Name"
+                        Color="Color.Primary"
+                        data-testid="@($"role-checkbox-{role.Name.ToLower()}")">
+                <MudText Typo="Typo.body2">@role.Name</MudText>
+                <MudText Typo="Typo.caption" Color="Color.Secondary">@role.Description</MudText>
+            </MudCheckBox>
+        }
+
+        @if (!string.IsNullOrWhiteSpace(_errorMessage))
+        {
+            <MudAlert Severity="Severity.Error" Class="mt-4">@_errorMessage</MudAlert>
+        }
+    </DialogContent>
+    <DialogActions>
+        <MudButton OnClick="Cancel" data-testid="cancel-button">Cancel</MudButton>
+        <MudButton Variant="Variant.Filled"
+                   Color="Color.Primary"
+                   OnClick="SaveRoles"
+                   data-testid="save-roles-button">
+            Save Changes
+        </MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code {
+    [CascadingParameter]
+    private MudBlazor.IDialogReference? MudDialog { get; set; }
+
+    [Parameter]
+    public UserModel User { get; set; } = null!;
+
+    private List<RoleDefinition> _availableRoles = new();
+    private Dictionary<string, bool> _selectedRoles = new();
+    private string? _errorMessage;
+
+    protected override void OnInitialized()
+    {
+        // Define available roles
+        _availableRoles = new List<RoleDefinition>
+        {
+            new("User", "Basic access to tenant resources"),
+            new("Developer", "Development and API access"),
+            new("TenantAdmin", "Full tenant administration capabilities"),
+            new("Billing", "Access to billing and subscription management")
+        };
+
+        // Initialize selected roles based on user's current roles
+        foreach (var role in _availableRoles)
+        {
+            _selectedRoles[role.Name] = User.Roles.Contains(role.Name);
+        }
+    }
+
+    private async Task SaveRoles()
+    {
+        _errorMessage = null;
+
+        try
+        {
+            var selectedRoleNames = _selectedRoles
+                .Where(kvp => kvp.Value)
+                .Select(kvp => kvp.Key)
+                .ToArray();
+
+            if (selectedRoleNames.Length == 0)
+            {
+                _errorMessage = "User must have at least one role assigned";
+                return;
+            }
+
+            // TODO: Call Identity service API to update user roles
+            // PUT /identity/api/tenants/{tenantId}/users/{userId}/roles
+            // Body: { roles: string[] }
+            await Task.Delay(300); // Simulate API call
+
+            // Close dialog with success
+            MudDialog?.Close(DialogResult.Ok(selectedRoleNames));
+        }
+        catch (Exception ex)
+        {
+            _errorMessage = $"Failed to update roles: {ex.Message}";
+        }
+    }
+
+    private void Cancel()
+    {
+        MudDialog?.Close(DialogResult.Cancel());
+    }
+
+    // Models (matching Users.razor)
+    public record UserModel(
+        string UserId,
+        string Name,
+        string Email,
+        string[] Roles,
+        UserStatus Status,
+        DateTimeOffset InvitedAt,
+        DateTimeOffset? LastLogin
+    );
+
+    public enum UserStatus
+    {
+        Active,
+        Invited,
+        Inactive
+    }
+
+    private record RoleDefinition(string Name, string Description);
+}

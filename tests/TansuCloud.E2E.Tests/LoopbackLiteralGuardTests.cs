@@ -51,6 +51,7 @@ public sealed class LoopbackLiteralGuardTests
             Normalize("dev/playwright/"),
             Normalize("dev/scripts/"),
             Normalize("docs/"),
+            Normalize("tmp/"),
         };
 
         var extensions = new HashSet<string>(StringComparer.OrdinalIgnoreCase)

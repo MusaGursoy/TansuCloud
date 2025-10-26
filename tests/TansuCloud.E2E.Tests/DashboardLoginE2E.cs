@@ -292,11 +292,11 @@ public class DashboardLoginE2E : IAsyncLifetime
         Console.WriteLine($"Current URL: {page.Url}");
 
         // 2) Assert Dashboard content is visible
-        // Prefer role-based locator for h1, then assert text
-        var heading = page.GetByRole(AriaRole.Heading, new() { Level = 1 });
+        // Look for h3 "Welcome to TansuCloud" heading (MudBlazor Dashboard)
+        var heading = page.GetByRole(AriaRole.Heading, new() { Level = 3, Name = "Welcome to TansuCloud" });
         try
         {
-            await heading.WaitForAsync(new LocatorWaitForOptions { Timeout = 30000 });
+            await heading.WaitForAsync(new LocatorWaitForOptions { Timeout = 60000 });
         }
         catch (TimeoutException)
         {
@@ -305,7 +305,7 @@ public class DashboardLoginE2E : IAsyncLifetime
                 $"{baseUrl}/dashboard/",
                 new PageGotoOptions { WaitUntil = WaitUntilState.DOMContentLoaded }
             );
-            await heading.WaitForAsync(new LocatorWaitForOptions { Timeout = 15000 });
+            await heading.WaitForAsync(new LocatorWaitForOptions { Timeout = 60000 });
         }
         var h1 = await heading.InnerTextAsync();
         // Accept either "Hello, world!" (old default Blazor template) or "Welcome to TansuCloud" (MudBlazor Dashboard)

@@ -1,0 +1,418 @@
+@page "/tenant/{tenantId}/storage"
+@page "/tenant/{tenantId}/storage/{section}"
+@using MudBlazor
+@using TansuCloud.Dashboard.Services
+@using TansuCloud.Dashboard.Components.Layout
+@inject ITenantContextService TenantContext
+@inject ISnackbar Snackbar
+@inject IDialogService DialogService
+@layout TenantLayout
+
+<PageTitle>Storage - @TenantId</PageTitle>
+
+<MudContainer MaxWidth="MaxWidth.ExtraLarge" Class="pa-4">
+    <MudText Typo="Typo.h4" Class="mb-4">Storage Management</MudText>
+    <MudText Typo="Typo.body2" Color="Color.Secondary" Class="mb-6">
+        Manage buckets, quotas, lifecycle policies, and object storage for your tenant
+    </MudText>
+
+    @if (_isLoading)
+    {
+        <MudProgressCircular Indeterminate="true" Color="Color.Primary" Size="Size.Large" />
+    }
+    else
+    {
+        <!-- Storage Overview Cards -->
+        <MudGrid Class="mb-6">
+            <MudItem xs="12" sm="6" md="3">
+                <MudCard Elevation="2">
+                    <MudCardContent>
+                        <MudText Typo="Typo.body2" Color="Color.Secondary">Total Buckets</MudText>
+                        <MudText Typo="Typo.h4">@_buckets.Count</MudText>
+                    </MudCardContent>
+                </MudCard>
+            </MudItem>
+            <MudItem xs="12" sm="6" md="3">
+                <MudCard Elevation="2">
+                    <MudCardContent>
+                        <MudText Typo="Typo.body2" Color="Color.Secondary">Storage Used</MudText>
+                        <MudText Typo="Typo.h4">@_storageUsed GB</MudText>
+                        <MudProgressLinear Value="@_storagePercentage" Color="Color.Primary" Class="mt-2" />
+                    </MudCardContent>
+                </MudCard>
+            </MudItem>
+            <MudItem xs="12" sm="6" md="3">
+                <MudCard Elevation="2">
+                    <MudCardContent>
+                        <MudText Typo="Typo.body2" Color="Color.Secondary">Storage Quota</MudText>
+                        <MudText Typo="Typo.h4">@_storageQuota GB</MudText>
+                    </MudCardContent>
+                </MudCard>
+            </MudItem>
+            <MudItem xs="12" sm="6" md="3">
+                <MudCard Elevation="2">
+                    <MudCardContent>
+                        <MudText Typo="Typo.body2" Color="Color.Secondary">Total Objects</MudText>
+                        <MudText Typo="Typo.h4">@_totalObjects</MudText>
+                    </MudCardContent>
+                </MudCard>
+            </MudItem>
+        </MudGrid>
+
+        <!-- Buckets Table -->
+        <MudCard Elevation="2" Class="mb-6">
+            <MudCardHeader>
+                <CardHeaderContent>
+                    <MudText Typo="Typo.h6">Buckets</MudText>
+                </CardHeaderContent>
+                <CardHeaderActions>
+                    <MudButton Variant="Variant.Filled"
+                               Color="Color.Primary"
+                               StartIcon="@Icons.Material.Filled.Add"
+                               OnClick="@OpenCreateBucketDialog"
+                               data-testid="create-bucket-button">
+                        Create Bucket
+                    </MudButton>
+                </CardHeaderActions>
+            </MudCardHeader>
+            <MudCardContent>
+                <MudDataGrid T="BucketModel"
+                             Items="@_buckets"
+                             Filterable="true"
+                             SortMode="SortMode.Multiple"
+                             Hover="true"
+                             Dense="true">
+                    <Columns>
+                        <PropertyColumn Property="x => x.Name" Title="Bucket Name">
+                            <CellTemplate>
+                                <MudStack Row="true" AlignItems="AlignItems.Center">
+                                    <MudIcon Icon="@Icons.Material.Filled.Folder" Size="Size.Small" Color="Color.Primary" />
+                                    <MudText Typo="Typo.body2">@context.Item.Name</MudText>
+                                </MudStack>
+                            </CellTemplate>
+                        </PropertyColumn>
+                        <PropertyColumn Property="x => x.ObjectCount" Title="Objects" />
+                        <PropertyColumn Property="x => x.SizeGB" Title="Size (GB)">
+                            <CellTemplate>
+                                <MudText Typo="Typo.body2">@context.Item.SizeGB.ToString("F2")</MudText>
+                            </CellTemplate>
+                        </PropertyColumn>
+                        <PropertyColumn Property="x => x.QuotaGB" Title="Quota (GB)" />
+                        <PropertyColumn Property="x => x.Versioning" Title="Versioning">
+                            <CellTemplate>
+                                <MudChip T="string"
+                                         Size="Size.Small"
+                                         Color="@(context.Item.Versioning ? Color.Success : Color.Default)">
+                                    @(context.Item.Versioning ? "Enabled" : "Disabled")
+                                </MudChip>
+                            </CellTemplate>
+                        </PropertyColumn>
+                        <PropertyColumn Property="x => x.LifecyclePolicy" Title="Lifecycle">
+                            <CellTemplate>
+                                @if (!string.IsNullOrWhiteSpace(context.Item.LifecyclePolicy))
+                                {
+                                    <MudChip T="string" Size="Size.Small" Color="Color.Info">Configured</MudChip>
+                                }
+                                else
+                                {
+                                    <MudText Typo="Typo.body2" Color="Color.Secondary">None</MudText>
+                                }
+                            </CellTemplate>
+                        </PropertyColumn>
+                        <PropertyColumn Property="x => x.CreatedAt" Title="Created">
+                            <CellTemplate>
+                                <MudText Typo="Typo.body2">@context.Item.CreatedAt.ToString("yyyy-MM-dd")</MudText>
+                            </CellTemplate>
+                        </PropertyColumn>
+                        <TemplateColumn Title="Actions" Sortable="false">
+                            <CellTemplate>
+                                <MudMenu Icon="@Icons.Material.Filled.MoreVert" Size="Size.Small" Dense="true">
+                                    <MudMenuItem OnClick="@(() => BrowseBucket(context.Item))"
+                                                 Icon="@Icons.Material.Filled.FolderOpen">
+                                        Browse Objects
+                                    </MudMenuItem>
+                                    <MudMenuItem OnClick="@(() => EditQuota(context.Item))"
+                                                 Icon="@Icons.Material.Filled.Edit">
+                                        Edit Quota
+                                    </MudMenuItem>
+                                    <MudMenuItem OnClick="@(() => EditLifecyclePolicy(context.Item))"
+                                                 Icon="@Icons.Material.Filled.Settings">
+                                        Lifecycle Policy
+                                    </MudMenuItem>
+                                    <MudMenuItem OnClick="@(() => ToggleVersioning(context.Item))"
+                                                 Icon="@Icons.Material.Filled.History">
+                                        @(context.Item.Versioning ? "Disable" : "Enable") Versioning
+                                    </MudMenuItem>
+                                    <MudDivider />
+                                    <MudMenuItem OnClick="@(() => DeleteBucket(context.Item))"
+                                                 Icon="@Icons.Material.Filled.Delete"
+                                                 IconColor="Color.Error">
+                                        Delete Bucket
+                                    </MudMenuItem>
+                                </MudMenu>
+                            </CellTemplate>
+                        </TemplateColumn>
+                    </Columns>
+                </MudDataGrid>
+            </MudCardContent>
+        </MudCard>
+
+        <!-- Transform Presets Section -->
+        <MudCard Elevation="2">
+            <MudCardHeader>
+                <CardHeaderContent>
+                    <MudText Typo="Typo.h6">Image Transform Presets</MudText>
+                    <MudText Typo="Typo.body2" Color="Color.Secondary">
+                        Define reusable image transformation presets for your buckets
+                    </MudText>
+                </CardHeaderContent>
+                <CardHeaderActions>
+                    <MudButton Variant="Variant.Outlined"
+                               Color="Color.Primary"
+                               StartIcon="@Icons.Material.Filled.Add"
+                               OnClick="@OpenCreatePresetDialog"
+                               data-testid="create-preset-button">
+                        Add Preset
+                    </MudButton>
+                </CardHeaderActions>
+            </MudCardHeader>
+            <MudCardContent>
+                <MudDataGrid T="TransformPresetModel"
+                             Items="@_transformPresets"
+                             Filterable="true"
+                             Hover="true"
+                             Dense="true">
+                    <Columns>
+                        <PropertyColumn Property="x => x.Name" Title="Preset Name" />
+                        <PropertyColumn Property="x => x.Width" Title="Width (px)" />
+                        <PropertyColumn Property="x => x.Height" Title="Height (px)" />
+                        <PropertyColumn Property="x => x.Format" Title="Format" />
+                        <PropertyColumn Property="x => x.Quality" Title="Quality" />
+                        <TemplateColumn Title="Actions" Sortable="false">
+                            <CellTemplate>
+                                <MudIconButton Icon="@Icons.Material.Filled.Edit"
+                                               Size="Size.Small"
+                                               OnClick="@(() => EditPreset(context.Item))"
+                                               data-testid="@($"edit-preset-{context.Item.Name.ToLower()}")" />
+                                <MudIconButton Icon="@Icons.Material.Filled.Delete"
+                                               Size="Size.Small"
+                                               Color="Color.Error"
+                                               OnClick="@(() => DeletePreset(context.Item))"
+                                               data-testid="@($"delete-preset-{context.Item.Name.ToLower()}")" />
+                            </CellTemplate>
+                        </TemplateColumn>
+                    </Columns>
+                </MudDataGrid>
+            </MudCardContent>
+        </MudCard>
+    }
+</MudContainer>
+
+@code {
+    [Parameter]
+    public string TenantId { get; set; } = string.Empty;
+
+    [Parameter]
+    public string? Section { get; set; }
+
+    private bool _isLoading = true;
+    private List<BucketModel> _buckets = new();
+    private List<TransformPresetModel> _transformPresets = new();
+    
+    // Storage metrics (mock)
+    private int _storageUsed = 42;
+    private int _storageQuota = 100;
+    private double _storagePercentage => (_storageUsed / (double)_storageQuota) * 100;
+    private int _totalObjects = 15284;
+
+    protected override async Task OnInitializedAsync()
+    {
+        TenantContext.SetTenant(TenantId);
+        await LoadStorageDataAsync();
+    }
+
+    private async Task LoadStorageDataAsync()
+    {
+        _isLoading = true;
+        
+        // Simulate API call - TODO: Replace with actual Storage service API calls
+        await Task.Delay(500);
+        
+        // Mock bucket data
+        _buckets = new List<BucketModel>
+        {
+            new BucketModel
+            {
+                BucketId = "bucket-1",
+                Name = "product-images",
+                ObjectCount = 8456,
+                SizeGB = 25.4m,
+                QuotaGB = 50,
+                Versioning = true,
+                LifecyclePolicy = "Delete after 90 days",
+                CreatedAt = DateTime.UtcNow.AddMonths(-6)
+            },
+            new BucketModel
+            {
+                BucketId = "bucket-2",
+                Name = "user-uploads",
+                ObjectCount = 5243,
+                SizeGB = 12.8m,
+                QuotaGB = 30,
+                Versioning = false,
+                LifecyclePolicy = null,
+                CreatedAt = DateTime.UtcNow.AddMonths(-3)
+            },
+            new BucketModel
+            {
+                BucketId = "bucket-3",
+                Name = "backups",
+                ObjectCount = 1585,
+                SizeGB = 3.6m,
+                QuotaGB = 20,
+                Versioning = true,
+                LifecyclePolicy = "Archive after 30 days",
+                CreatedAt = DateTime.UtcNow.AddYears(-1)
+            }
+        };
+        
+        // Mock transform presets
+        _transformPresets = new List<TransformPresetModel>
+        {
+            new TransformPresetModel
+            {
+                PresetId = "preset-1",
+                Name = "thumbnail",
+                Width = 150,
+                Height = 150,
+                Format = "webp",
+                Quality = 85
+            },
+            new TransformPresetModel
+            {
+                PresetId = "preset-2",
+                Name = "medium",
+                Width = 800,
+                Height = 600,
+                Format = "webp",
+                Quality = 90
+            },
+            new TransformPresetModel
+            {
+                PresetId = "preset-3",
+                Name = "large",
+                Width = 1920,
+                Height = 1080,
+                Format = "jpg",
+                Quality = 95
+            }
+        };
+        
+        _isLoading = false;
+    }
+
+    private async Task OpenCreateBucketDialog()
+    {
+        // TODO: Create CreateBucketDialog component
+        Snackbar.Add("Create bucket dialog - Coming soon", Severity.Info);
+    }
+
+    private async Task BrowseBucket(BucketModel bucket)
+    {
+        // TODO: Navigate to object browser page
+        Snackbar.Add($"Opening object browser for {bucket.Name}...", Severity.Info);
+    }
+
+    private async Task EditQuota(BucketModel bucket)
+    {
+        // TODO: Create EditQuotaDialog component
+        Snackbar.Add($"Edit quota for {bucket.Name} - Coming soon", Severity.Info);
+    }
+
+    private async Task EditLifecyclePolicy(BucketModel bucket)
+    {
+        // TODO: Create LifecyclePolicyDialog component
+        Snackbar.Add($"Edit lifecycle policy for {bucket.Name} - Coming soon", Severity.Info);
+    }
+
+    private async Task ToggleVersioning(BucketModel bucket)
+    {
+        var action = bucket.Versioning ? "disable" : "enable";
+        var result = await DialogService.ShowMessageBox(
+            "Toggle Versioning",
+            $"Are you sure you want to {action} versioning for '{bucket.Name}'?",
+            yesText: "Confirm", cancelText: "Cancel");
+
+        if (result == true)
+        {
+            // TODO: Call Storage API to toggle versioning
+            bucket.Versioning = !bucket.Versioning;
+            Snackbar.Add($"Versioning {action}d for {bucket.Name}", Severity.Success);
+        }
+    }
+
+    private async Task DeleteBucket(BucketModel bucket)
+    {
+        var result = await DialogService.ShowMessageBox(
+            "Delete Bucket",
+            $"Are you sure you want to delete '{bucket.Name}'? This will permanently delete all objects in this bucket. This action cannot be undone.",
+            yesText: "Delete", cancelText: "Cancel");
+
+        if (result == true)
+        {
+            // TODO: Call Storage API to delete bucket
+            _buckets.Remove(bucket);
+            Snackbar.Add($"Bucket '{bucket.Name}' deleted successfully", Severity.Success);
+        }
+    }
+
+    private async Task OpenCreatePresetDialog()
+    {
+        // TODO: Create TransformPresetDialog component
+        Snackbar.Add("Create transform preset dialog - Coming soon", Severity.Info);
+    }
+
+    private async Task EditPreset(TransformPresetModel preset)
+    {
+        // TODO: Create TransformPresetDialog component
+        Snackbar.Add($"Edit preset '{preset.Name}' - Coming soon", Severity.Info);
+    }
+
+    private async Task DeletePreset(TransformPresetModel preset)
+    {
+        var result = await DialogService.ShowMessageBox(
+            "Delete Transform Preset",
+            $"Are you sure you want to delete the '{preset.Name}' preset?",
+            yesText: "Delete", cancelText: "Cancel");
+
+        if (result == true)
+        {
+            // TODO: Call Storage API to delete preset
+            _transformPresets.Remove(preset);
+            Snackbar.Add($"Transform preset '{preset.Name}' deleted", Severity.Success);
+        }
+    }
+
+    // Model classes
+    public record BucketModel
+    {
+        public string BucketId { get; init; } = string.Empty;
+        public string Name { get; init; } = string.Empty;
+        public int ObjectCount { get; init; }
+        public decimal SizeGB { get; init; }
+        public int QuotaGB { get; init; }
+        public bool Versioning { get; set; }
+        public string? LifecyclePolicy { get; init; }
+        public DateTime CreatedAt { get; init; }
+    }
+
+    public record TransformPresetModel
+    {
+        public string PresetId { get; init; } = string.Empty;
+        public string Name { get; init; } = string.Empty;
+        public int Width { get; init; }
+        public int Height { get; init; }
+        public string Format { get; init; } = string.Empty;
+        public int Quality { get; init; }
+    }
+}

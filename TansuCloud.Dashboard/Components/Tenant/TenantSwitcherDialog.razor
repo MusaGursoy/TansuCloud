@@ -1,0 +1,179 @@
+@using TansuCloud.Dashboard.Services
+@using MudBlazor
+@inject ITenantContextService TenantContext
+@inject NavigationManager Navigation
+
+<MudDialog>
+    <DialogContent>
+        <MudText Typo="Typo.h6" Class="mb-4">Switch Tenant</MudText>
+        
+        @if (_isLoading)
+        {
+            <MudProgressLinear Color="Color.Primary" Indeterminate="true" Class="mb-4" />
+            <MudText Typo="Typo.body2" Color="Color.Secondary" Align="Align.Center">Loading tenants...</MudText>
+        }
+        else if (_tenants.Count == 0)
+        {
+            <MudAlert Severity="Severity.Info" Class="mb-4">
+                <MudText Typo="Typo.body2">You don't have access to any tenants.</MudText>
+            </MudAlert>
+        }
+        else
+        {
+            <!-- Search Box -->
+            <MudTextField @bind-Value="_searchQuery"
+                          Label="Search tenants"
+                          Variant="Variant.Outlined"
+                          Adornment="Adornment.Start"
+                          AdornmentIcon="@Icons.Material.Filled.Search"
+                          Immediate="true"
+                          Class="mb-4"
+                          data-testid="tenant-search-input" />
+
+            <!-- Tenant List -->
+            <MudList T="string" Clickable="true" Dense="true" Class="tenant-list">
+                @foreach (var tenant in FilteredTenants)
+                {
+                    var isCurrent = tenant.TenantId.Equals(TenantContext.CurrentTenantId, StringComparison.OrdinalIgnoreCase);
+                    
+                    <MudListItem T="string" 
+                                 OnClick="@(() => SelectTenant(tenant))"
+                                 Class="@(isCurrent ? "tenant-item-current" : "tenant-item")"
+                                 data-testid="tenant-item">
+                        <div class="d-flex align-center justify-space-between">
+                            <div class="d-flex align-center">
+                                <MudIcon Icon="@Icons.Material.Filled.Business" 
+                                         Color="@(isCurrent ? Color.Primary : Color.Default)" 
+                                         Class="mr-3" />
+                                <div>
+                                    <MudText Typo="Typo.body1" Class="mb-1">
+                                        <strong>@tenant.DisplayName</strong>
+                                    </MudText>
+                                    <MudText Typo="Typo.caption" Color="Color.Secondary">
+                                        @tenant.TenantId
+                                    </MudText>
+                                </div>
+                            </div>
+                            @if (isCurrent)
+                            {
+                                <MudChip T="string" Size="Size.Small" Color="Color.Primary" Variant="Variant.Text">
+                                    Current
+                                </MudChip>
+                            }
+                        </div>
+                    </MudListItem>
+                }
+            </MudList>
+
+            @if (!FilteredTenants.Any() && !string.IsNullOrWhiteSpace(_searchQuery))
+            {
+                <MudText Typo="Typo.body2" Color="Color.Secondary" Align="Align.Center" Class="mt-4">
+                    No tenants match your search.
+                </MudText>
+            }
+        }
+
+        @if (!string.IsNullOrWhiteSpace(_errorMessage))
+        {
+            <MudAlert Severity="Severity.Error" Class="mt-4">@_errorMessage</MudAlert>
+        }
+    </DialogContent>
+    <DialogActions>
+        <MudButton OnClick="Cancel" data-testid="cancel-button">Cancel</MudButton>
+    </DialogActions>
+</MudDialog>
+
+<style>
+    .tenant-list {
+        max-height: 400px;
+        overflow-y: auto;
+    }
+    
+    .tenant-item {
+        border-bottom: 1px solid var(--mud-palette-divider);
+        padding: 12px 16px;
+    }
+    
+    .tenant-item-current {
+        border-bottom: 1px solid var(--mud-palette-divider);
+        padding: 12px 16px;
+        background-color: var(--mud-palette-action-default-hover);
+    }
+    
+    .tenant-item:hover {
+        background-color: var(--mud-palette-action-default-hover);
+    }
+</style>
+
+@code {
+    [CascadingParameter]
+    private MudBlazor.IDialogReference? MudDialog { get; set; }
+
+    private List<TenantMetadata> _tenants = new();
+    private string _searchQuery = string.Empty;
+    private bool _isLoading = true;
+    private string? _errorMessage;
+
+    private IEnumerable<TenantMetadata> FilteredTenants
+    {
+        get
+        {
+            if (string.IsNullOrWhiteSpace(_searchQuery))
+            {
+                return _tenants;
+            }
+
+            var query = _searchQuery.Trim().ToLowerInvariant();
+            return _tenants.Where(t =>
+                t.TenantId.Contains(query, StringComparison.OrdinalIgnoreCase) ||
+                t.DisplayName.Contains(query, StringComparison.OrdinalIgnoreCase)
+            );
+        }
+    }
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadTenantsAsync();
+    }
+
+    private async Task LoadTenantsAsync()
+    {
+        _isLoading = true;
+        _errorMessage = null;
+
+        try
+        {
+            var tenants = await TenantContext.ListAccessibleTenantsAsync();
+            _tenants = tenants.OrderBy(t => t.DisplayName).ToList();
+        }
+        catch (Exception ex)
+        {
+            _errorMessage = "Failed to load tenants. Please try again.";
+            // In production, log the exception
+            Console.WriteLine($"Error loading tenants: {ex.Message}");
+        }
+        finally
+        {
+            _isLoading = false;
+        }
+    }
+
+    private void SelectTenant(TenantMetadata tenant)
+    {
+        if (tenant.TenantId.Equals(TenantContext.CurrentTenantId, StringComparison.OrdinalIgnoreCase))
+        {
+            // Already on this tenant, just close
+            MudDialog?.Close();
+            return;
+        }
+
+        // Navigate to the overview page of the selected tenant
+        Navigation.NavigateTo($"/dashboard/tenant/{tenant.TenantId}");
+        MudDialog?.Close();
+    }
+
+    private void Cancel()
+    {
+        MudDialog?.Close();
+    }
+}

@@ -584,11 +584,12 @@ Unlike long-running services (Database, Gateway, Dashboard, Storage, Identity) t
 - **Standard services**: 500ms EF startup cost paid ONCE → negligible (kept runtime model for flexibility)
 - **Functions service**: 500ms EF startup cost paid PER COLD START → significant
 - **Performance gain**: ~100ms (20%) per cold start
-- **Impact at scale**: 
-  - 1,000 invocations/day: ~8 min/day → ~7 min/day (saves 1 min/day)
+- **Impact at scale**:
+  - 1,000 invocations/day: ~8 min/day → ~7 min/day (saves 1 min/day)+
   - 100,000 invocations/day: ~14 hours/day → ~11 hours/day (saves 3 hours/day)
 
 **Implementation checklist**:
+
 - ✅ Compiled model infrastructure already exists in `TansuDbContextFactory.cs` (disabled but ready)
 - ⏳ Generate compiled model before Task 45 implementation: `dotnet ef dbcontext optimize --output-dir EF --namespace TansuCloud.Database.EF`
 - ⏳ Enable compiled model ONLY in `TansuCloud.Functions` service by uncommenting `TryUseCompiledModel()`

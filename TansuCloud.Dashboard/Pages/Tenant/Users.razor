@@ -1,0 +1,412 @@
+@page "/tenant/{TenantId}/users"
+@layout TenantLayout
+@using TansuCloud.Dashboard.Services
+@using TansuCloud.Dashboard.Components.Tenant
+@using MudBlazor
+@inject ITenantContextService TenantContext
+@inject IDialogService DialogService
+@inject ISnackbar Snackbar
+
+<PageTitle>Users & Roles - @TenantId</PageTitle>
+
+<MudText Typo="Typo.h4" Class="mb-4">Users & Roles</MudText>
+
+@if (!_isLoaded)
+{
+    <MudProgressLinear Color="Color.Primary" Indeterminate="true" Class="mb-4" />
+    <MudText Typo="Typo.body2" Color="Color.Secondary">Loading users...</MudText>
+}
+else
+{
+    <!-- Action Bar -->
+    <MudStack Row="true" AlignItems="AlignItems.Center" Justify="Justify.SpaceBetween" Class="mb-4">
+        <MudTextField @bind-Value="_searchQuery"
+                      Placeholder="Search users by name or email..."
+                      Adornment="Adornment.Start"
+                      AdornmentIcon="@Icons.Material.Filled.Search"
+                      Variant="Variant.Outlined"
+                      Margin="Margin.Dense"
+                      Style="max-width: 400px;"
+                      Immediate="true"
+                      data-testid="user-search-input" />
+        
+        <MudButton Variant="Variant.Filled"
+                   Color="Color.Primary"
+                   StartIcon="@Icons.Material.Filled.PersonAdd"
+                   OnClick="OpenInviteUserDialog"
+                   data-testid="invite-user-button">
+            Invite User
+        </MudButton>
+    </MudStack>
+
+    <!-- Users Table -->
+    <MudCard Elevation="2" Class="mb-4">
+        <MudCardContent Class="pa-0">
+            <MudDataGrid T="UserModel"
+                         Items="@FilteredUsers"
+                         Dense="true"
+                         Hover="true"
+                         ReadOnly="true"
+                         Elevation="0">
+                <Columns>
+                    <PropertyColumn Property="x => x.Name" Title="Name">
+                        <CellTemplate>
+                            <div class="d-flex align-center">
+                                <MudAvatar Color="Color.Primary" Size="Size.Small" Class="mr-2">
+                                    @context.Item.Name.Substring(0, 1).ToUpper()
+                                </MudAvatar>
+                                <div>
+                                    <MudText Typo="Typo.body2"><strong>@context.Item.Name</strong></MudText>
+                                    <MudText Typo="Typo.caption" Color="Color.Secondary">@context.Item.Email</MudText>
+                                </div>
+                            </div>
+                        </CellTemplate>
+                    </PropertyColumn>
+                    
+                    <PropertyColumn Property="x => x.Roles" Title="Roles">
+                        <CellTemplate>
+                            @foreach (var role in context.Item.Roles)
+                            {
+                                <MudChip T="string" 
+                                         Size="Size.Small" 
+                                         Color="@GetRoleColor(role)" 
+                                         Variant="Variant.Outlined" 
+                                         Class="mr-1">
+                                    @role
+                                </MudChip>
+                            }
+                        </CellTemplate>
+                    </PropertyColumn>
+                    
+                    <PropertyColumn Property="x => x.Status" Title="Status">
+                        <CellTemplate>
+                            @if (context.Item.Status == UserStatus.Active)
+                            {
+                                <MudChip T="string" Size="Size.Small" Color="Color.Success" Icon="@Icons.Material.Filled.CheckCircle">
+                                    Active
+                                </MudChip>
+                            }
+                            else if (context.Item.Status == UserStatus.Invited)
+                            {
+                                <MudChip T="string" Size="Size.Small" Color="Color.Info" Icon="@Icons.Material.Filled.Mail">
+                                    Invited
+                                </MudChip>
+                            }
+                            else
+                            {
+                                <MudChip T="string" Size="Size.Small" Color="Color.Default" Icon="@Icons.Material.Filled.Block">
+                                    Inactive
+                                </MudChip>
+                            }
+                        </CellTemplate>
+                    </PropertyColumn>
+                    
+                    <PropertyColumn Property="x => x.LastLogin" Title="Last Login">
+                        <CellTemplate>
+                            <MudText Typo="Typo.body2">
+                                @(context.Item.LastLogin?.ToString("g") ?? "Never")
+                            </MudText>
+                        </CellTemplate>
+                    </PropertyColumn>
+                    
+                    <PropertyColumn Property="x => x.InvitedAt" Title="Joined">
+                        <CellTemplate>
+                            <MudText Typo="Typo.body2">@context.Item.InvitedAt.ToString("d")</MudText>
+                        </CellTemplate>
+                    </PropertyColumn>
+                    
+                    <TemplateColumn Title="Actions" Sortable="false">
+                        <CellTemplate>
+                            <MudMenu Icon="@Icons.Material.Filled.MoreVert" Size="Size.Small" Dense="true">
+                                <MudMenuItem Icon="@Icons.Material.Filled.Edit" 
+                                           OnClick="@(() => EditUserRoles(context.Item))">
+                                    Edit Roles
+                                </MudMenuItem>
+                                
+                                @if (context.Item.Status == UserStatus.Invited)
+                                {
+                                    <MudMenuItem Icon="@Icons.Material.Filled.Send" 
+                                               OnClick="@(() => ResendInvite(context.Item))">
+                                        Resend Invite
+                                    </MudMenuItem>
+                                }
+                                
+                                <MudDivider />
+                                
+                                @if (context.Item.Status == UserStatus.Active)
+                                {
+                                    <MudMenuItem Icon="@Icons.Material.Filled.Block" 
+                                               OnClick="@(() => DeactivateUser(context.Item))">
+                                        Deactivate
+                                    </MudMenuItem>
+                                }
+                                else if (context.Item.Status == UserStatus.Inactive)
+                                {
+                                    <MudMenuItem Icon="@Icons.Material.Filled.CheckCircle" 
+                                               OnClick="@(() => ActivateUser(context.Item))">
+                                        Activate
+                                    </MudMenuItem>
+                                }
+                                
+                                <MudMenuItem Icon="@Icons.Material.Filled.Delete" 
+                                           OnClick="@(() => RemoveUser(context.Item))">
+                                    Remove User
+                                </MudMenuItem>
+                            </MudMenu>
+                        </CellTemplate>
+                    </TemplateColumn>
+                </Columns>
+                <PagerContent>
+                    <MudDataGridPager T="UserModel" />
+                </PagerContent>
+            </MudDataGrid>
+        </MudCardContent>
+    </MudCard>
+
+    <!-- Audit Trail Section -->
+    <MudCard Elevation="2">
+        <MudCardHeader>
+            <CardHeaderContent>
+                <MudText Typo="Typo.h6">Recent Activity</MudText>
+            </CardHeaderContent>
+        </MudCardHeader>
+        <MudCardContent>
+            <MudTimeline TimelineOrientation="TimelineOrientation.Vertical" TimelinePosition="TimelinePosition.Start">
+                @foreach (var activity in _recentActivities.Take(5))
+                {
+                    <MudTimelineItem Color="@GetActivityColor(activity.Type)" Size="Size.Small">
+                        <MudText Typo="Typo.body2"><strong>@activity.Description</strong></MudText>
+                        <MudText Typo="Typo.caption" Color="Color.Secondary">
+                            @activity.Timestamp.ToString("g") by @activity.PerformedBy
+                        </MudText>
+                    </MudTimelineItem>
+                }
+            </MudTimeline>
+            
+            @if (_recentActivities.Count == 0)
+            {
+                <MudText Typo="Typo.body2" Color="Color.Secondary" Align="Align.Center">
+                    No recent activity
+                </MudText>
+            }
+        </MudCardContent>
+    </MudCard>
+}
+
+@code {
+    [Parameter]
+    public string TenantId { get; set; } = string.Empty;
+
+    private List<UserModel> _users = new();
+    private List<UserActivity> _recentActivities = new();
+    private string _searchQuery = string.Empty;
+    private bool _isLoaded = false;
+
+    private IEnumerable<UserModel> FilteredUsers
+    {
+        get
+        {
+            if (string.IsNullOrWhiteSpace(_searchQuery))
+            {
+                return _users;
+            }
+
+            var query = _searchQuery.Trim().ToLowerInvariant();
+            return _users.Where(u =>
+                u.Name.Contains(query, StringComparison.OrdinalIgnoreCase) ||
+                u.Email.Contains(query, StringComparison.OrdinalIgnoreCase)
+            );
+        }
+    }
+
+    protected override async Task OnInitializedAsync()
+    {
+        TenantContext.SetTenant(TenantId);
+        await LoadUsersAsync();
+        LoadRecentActivities();
+    }
+
+    private async Task LoadUsersAsync()
+    {
+        _isLoaded = false;
+
+        // TODO: Replace with actual API call to Identity service
+        // GET /identity/api/tenants/{tenantId}/users
+        await Task.Delay(500); // Simulate API call
+
+        _users = new List<UserModel>
+        {
+            new("user-1", "Alice Johnson", "alice@acme-dev.com", 
+                new[] { "TenantAdmin", "User" }, UserStatus.Active, 
+                DateTimeOffset.UtcNow.AddDays(-30), DateTimeOffset.UtcNow.AddHours(-2)),
+            new("user-2", "Bob Smith", "bob@acme-dev.com", 
+                new[] { "User" }, UserStatus.Active, 
+                DateTimeOffset.UtcNow.AddDays(-15), DateTimeOffset.UtcNow.AddDays(-1)),
+            new("user-3", "Carol White", "carol@acme-dev.com", 
+                new[] { "User", "Developer" }, UserStatus.Invited, 
+                DateTimeOffset.UtcNow.AddDays(-2), null),
+            new("user-4", "David Brown", "david@acme-dev.com", 
+                new[] { "User" }, UserStatus.Inactive, 
+                DateTimeOffset.UtcNow.AddDays(-60), DateTimeOffset.UtcNow.AddDays(-30))
+        };
+
+        _isLoaded = true;
+    }
+
+    private void LoadRecentActivities()
+    {
+        // TODO: Replace with actual API call to audit service
+        _recentActivities = new List<UserActivity>
+        {
+            new(UserActivityType.UserInvited, "Carol White was invited to the tenant", 
+                DateTimeOffset.UtcNow.AddDays(-2), "Alice Johnson"),
+            new(UserActivityType.RoleAssigned, "Bob Smith was assigned Developer role", 
+                DateTimeOffset.UtcNow.AddDays(-5), "Alice Johnson"),
+            new(UserActivityType.UserActivated, "Alice Johnson joined the tenant", 
+                DateTimeOffset.UtcNow.AddDays(-30), "System")
+        };
+    }
+
+    private async Task OpenInviteUserDialog()
+    {
+        var parameters = new DialogParameters
+        {
+            ["TenantId"] = TenantId
+        };
+
+        var options = new DialogOptions
+        {
+            MaxWidth = MaxWidth.Small,
+            FullWidth = true,
+            CloseOnEscapeKey = true
+        };
+
+        var dialog = await DialogService.ShowAsync<InviteUserDialog>("Invite User", parameters, options);
+        var result = await dialog.Result;
+
+        if (result is not null && !result.Canceled)
+        {
+            Snackbar.Add("Invitation sent successfully!", Severity.Success);
+            await LoadUsersAsync();
+            LoadRecentActivities();
+        }
+    }
+
+    private async Task EditUserRoles(UserModel user)
+    {
+        var parameters = new DialogParameters
+        {
+            ["User"] = user
+        };
+
+        var options = new DialogOptions
+        {
+            MaxWidth = MaxWidth.Small,
+            FullWidth = true,
+            CloseOnEscapeKey = true
+        };
+
+        var dialog = await DialogService.ShowAsync<EditUserRolesDialog>("Edit Roles", parameters, options);
+        var result = await dialog.Result;
+
+        if (result is not null && !result.Canceled)
+        {
+            Snackbar.Add($"Roles updated for {user.Name}", Severity.Success);
+            await LoadUsersAsync();
+            LoadRecentActivities();
+        }
+    }
+
+    private async Task ResendInvite(UserModel user)
+    {
+        // TODO: Call Identity service API to resend invitation
+        await Task.Delay(100);
+        Snackbar.Add($"Invitation resent to {user.Email}", Severity.Info);
+    }
+
+    private async Task DeactivateUser(UserModel user)
+    {
+        // TODO: Call Identity service API to deactivate user
+        await Task.Delay(100);
+        Snackbar.Add($"{user.Name} has been deactivated", Severity.Warning);
+        await LoadUsersAsync();
+    }
+
+    private async Task ActivateUser(UserModel user)
+    {
+        // TODO: Call Identity service API to activate user
+        await Task.Delay(100);
+        Snackbar.Add($"{user.Name} has been activated", Severity.Success);
+        await LoadUsersAsync();
+    }
+
+    private async Task RemoveUser(UserModel user)
+    {
+        // TODO: Show confirmation dialog
+        // TODO: Call Identity service API to remove user from tenant
+        await Task.Delay(100);
+        Snackbar.Add($"{user.Name} has been removed from the tenant", Severity.Error);
+        await LoadUsersAsync();
+        LoadRecentActivities();
+    }
+
+    private Color GetRoleColor(string role)
+    {
+        return role switch
+        {
+            "TenantAdmin" => Color.Primary,
+            "Developer" => Color.Info,
+            "User" => Color.Default,
+            _ => Color.Secondary
+        };
+    }
+
+    private Color GetActivityColor(UserActivityType type)
+    {
+        return type switch
+        {
+            UserActivityType.UserInvited => Color.Info,
+            UserActivityType.UserActivated => Color.Success,
+            UserActivityType.UserDeactivated => Color.Warning,
+            UserActivityType.UserRemoved => Color.Error,
+            UserActivityType.RoleAssigned => Color.Primary,
+            UserActivityType.RoleRemoved => Color.Secondary,
+            _ => Color.Default
+        };
+    }
+
+    // Models
+    private record UserModel(
+        string UserId,
+        string Name,
+        string Email,
+        string[] Roles,
+        UserStatus Status,
+        DateTimeOffset InvitedAt,
+        DateTimeOffset? LastLogin
+    );
+
+    private enum UserStatus
+    {
+        Active,
+        Invited,
+        Inactive
+    }
+
+    private record UserActivity(
+        UserActivityType Type,
+        string Description,
+        DateTimeOffset Timestamp,
+        string PerformedBy
+    );
+
+    private enum UserActivityType
+    {
+        UserInvited,
+        UserActivated,
+        UserDeactivated,
+        UserRemoved,
+        RoleAssigned,
+        RoleRemoved
+    }
+}

@@ -21,7 +21,8 @@ public class OutboxRedisIntegrationTests
 {
     private static bool TryGetRedis(out string conn)
     {
-        conn = Environment.GetEnvironmentVariable("REDIS_URL") ?? "";
+        // Default to localhost:6379 for E2E tests when Redis is exposed by docker-compose
+        conn = Environment.GetEnvironmentVariable("REDIS_URL") ?? "127.0.0.1:6379";
         if (string.IsNullOrWhiteSpace(conn))
             return false;
         return true;

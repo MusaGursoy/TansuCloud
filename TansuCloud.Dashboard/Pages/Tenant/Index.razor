@@ -1,0 +1,231 @@
+@page "/tenant/{TenantId}"
+@layout TenantLayout
+@using TansuCloud.Dashboard.Services
+@using MudBlazor
+@inject ITenantContextService TenantContext
+
+<PageTitle>@_pageTitle</PageTitle>
+
+<MudText Typo="Typo.h4" Class="mb-4">Tenant Overview</MudText>
+
+@if (_metadata is not null)
+{
+    <!-- Tenant Info Card -->
+    <MudCard Class="mb-4">
+        <MudCardHeader>
+            <CardHeaderContent>
+                <MudText Typo="Typo.h6">Tenant Information</MudText>
+            </CardHeaderContent>
+            <CardHeaderActions>
+                <MudChip T="string" Icon="@Icons.Material.Filled.CheckCircle" Color="Color.Success" Variant="Variant.Text" Size="Size.Small">
+                    Active
+                </MudChip>
+            </CardHeaderActions>
+        </MudCardHeader>
+        <MudCardContent>
+            <MudGrid>
+                <MudItem xs="12" sm="6" md="3">
+                    <MudText Typo="Typo.subtitle2" Color="Color.Secondary">Tenant ID</MudText>
+                    <MudText Typo="Typo.body1"><strong>@_metadata.TenantId</strong></MudText>
+                </MudItem>
+                <MudItem xs="12" sm="6" md="3">
+                    <MudText Typo="Typo.subtitle2" Color="Color.Secondary">Display Name</MudText>
+                    <MudText Typo="Typo.body1"><strong>@_metadata.DisplayName</strong></MudText>
+                </MudItem>
+                <MudItem xs="12" sm="6" md="3">
+                    <MudText Typo="Typo.subtitle2" Color="Color.Secondary">Created At</MudText>
+                    <MudText Typo="Typo.body1"><strong>@_metadata.CreatedAt.ToString("yyyy-MM-dd")</strong></MudText>
+                </MudItem>
+                <MudItem xs="12" sm="6" md="3">
+                    <MudText Typo="Typo.subtitle2" Color="Color.Secondary">Status</MudText>
+                    <MudText Typo="Typo.body1"><strong>@(_metadata.IsActive ? "Active" : "Inactive")</strong></MudText>
+                </MudItem>
+            </MudGrid>
+        </MudCardContent>
+    </MudCard>
+
+    <!-- Quick Stats Grid -->
+    <MudGrid Class="mb-4">
+        <MudItem xs="12" sm="6" md="3">
+            <MudCard Elevation="2">
+                <MudCardContent Class="pa-4">
+                    <MudStack Row="true" AlignItems="AlignItems.Center" Justify="Justify.SpaceBetween">
+                        <div>
+                            <MudText Typo="Typo.subtitle2" Color="Color.Secondary">Users</MudText>
+                            <MudText Typo="Typo.h5" Class="mt-2"><strong>@_stats.UserCount</strong></MudText>
+                        </div>
+                        <MudIcon Icon="@Icons.Material.Filled.People" Color="Color.Primary" Size="Size.Large" />
+                    </MudStack>
+                </MudCardContent>
+            </MudCard>
+        </MudItem>
+
+        <MudItem xs="12" sm="6" md="3">
+            <MudCard Elevation="2">
+                <MudCardContent Class="pa-4">
+                    <MudStack Row="true" AlignItems="AlignItems.Center" Justify="Justify.SpaceBetween">
+                        <div>
+                            <MudText Typo="Typo.subtitle2" Color="Color.Secondary">API Keys</MudText>
+                            <MudText Typo="Typo.h5" Class="mt-2"><strong>@_stats.ApiKeyCount</strong></MudText>
+                        </div>
+                        <MudIcon Icon="@Icons.Material.Filled.Key" Color="Color.Secondary" Size="Size.Large" />
+                    </MudStack>
+                </MudCardContent>
+            </MudCard>
+        </MudItem>
+
+        <MudItem xs="12" sm="6" md="3">
+            <MudCard Elevation="2">
+                <MudCardContent Class="pa-4">
+                    <MudStack Row="true" AlignItems="AlignItems.Center" Justify="Justify.SpaceBetween">
+                        <div>
+                            <MudText Typo="Typo.subtitle2" Color="Color.Secondary">Storage Used</MudText>
+                            <MudText Typo="Typo.h5" Class="mt-2"><strong>@_stats.StorageUsedMb MB</strong></MudText>
+                        </div>
+                        <MudIcon Icon="@Icons.Material.Filled.Storage" Color="Color.Info" Size="Size.Large" />
+                    </MudStack>
+                </MudCardContent>
+            </MudCard>
+        </MudItem>
+
+        <MudItem xs="12" sm="6" md="3">
+            <MudCard Elevation="2">
+                <MudCardContent Class="pa-4">
+                    <MudStack Row="true" AlignItems="AlignItems.Center" Justify="Justify.SpaceBetween">
+                        <div>
+                            <MudText Typo="Typo.subtitle2" Color="Color.Secondary">Collections</MudText>
+                            <MudText Typo="Typo.h5" Class="mt-2"><strong>@_stats.CollectionCount</strong></MudText>
+                        </div>
+                        <MudIcon Icon="@Icons.Material.Filled.Collections" Color="Color.Success" Size="Size.Large" />
+                    </MudStack>
+                </MudCardContent>
+            </MudCard>
+        </MudItem>
+    </MudGrid>
+
+    <!-- Quick Actions -->
+    <MudCard Class="mb-4">
+        <MudCardHeader>
+            <CardHeaderContent>
+                <MudText Typo="Typo.h6">Quick Actions</MudText>
+            </CardHeaderContent>
+        </MudCardHeader>
+        <MudCardContent>
+            <MudGrid>
+                <MudItem xs="12" sm="6" md="3">
+                    <MudButton Variant="Variant.Outlined" Color="Color.Primary" FullWidth="true" StartIcon="@Icons.Material.Filled.PersonAdd" Href="@($"/dashboard/tenant/{TenantId}/users")">
+                        Invite User
+                    </MudButton>
+                </MudItem>
+                <MudItem xs="12" sm="6" md="3">
+                    <MudButton Variant="Variant.Outlined" Color="Color.Secondary" FullWidth="true" StartIcon="@Icons.Material.Filled.Key" Href="@($"/dashboard/tenant/{TenantId}/api-keys")">
+                        Create API Key
+                    </MudButton>
+                </MudItem>
+                <MudItem xs="12" sm="6" md="3">
+                    <MudButton Variant="Variant.Outlined" Color="Color.Info" FullWidth="true" StartIcon="@Icons.Material.Filled.Upload" Href="@($"/dashboard/tenant/{TenantId}/storage/objects")">
+                        Upload File
+                    </MudButton>
+                </MudItem>
+                <MudItem xs="12" sm="6" md="3">
+                    <MudButton Variant="Variant.Outlined" Color="Color.Success" FullWidth="true" StartIcon="@Icons.Material.Filled.AddCircle" Href="@($"/dashboard/tenant/{TenantId}/database/collections")">
+                        Add Collection
+                    </MudButton>
+                </MudItem>
+            </MudGrid>
+        </MudCardContent>
+    </MudCard>
+
+    <!-- Recent Activity -->
+    <MudCard>
+        <MudCardHeader>
+            <CardHeaderContent>
+                <MudText Typo="Typo.h6">Recent Activity</MudText>
+            </CardHeaderContent>
+            <CardHeaderActions>
+                <MudButton Variant="Variant.Text" Color="Color.Primary" EndIcon="@Icons.Material.Filled.ArrowForward" Href="@($"/dashboard/tenant/{TenantId}/activity")">
+                    View All
+                </MudButton>
+            </CardHeaderActions>
+        </MudCardHeader>
+        <MudCardContent>
+            @if (!_recentActivities.Any())
+            {
+                <MudText Typo="Typo.body2" Color="Color.Secondary" Align="Align.Center" Class="pa-4">
+                    No recent activity
+                </MudText>
+            }
+            else
+            {
+                <MudTimeline TimelinePosition="TimelinePosition.Start">
+                    @foreach (var activity in _recentActivities)
+                    {
+                        <MudTimelineItem Color="Color.Primary" Size="Size.Small">
+                            <ItemContent>
+                                <MudText Typo="Typo.body2">@activity.Description</MudText>
+                                <MudText Typo="Typo.caption" Color="Color.Secondary">@activity.Timestamp.ToString("g")</MudText>
+                            </ItemContent>
+                        </MudTimelineItem>
+                    }
+                </MudTimeline>
+            }
+        </MudCardContent>
+    </MudCard>
+}
+else
+{
+    <MudProgressLinear Color="Color.Primary" Indeterminate="true" />
+}
+
+@code {
+    [Parameter]
+    public string TenantId { get; set; } = string.Empty;
+
+    private string _pageTitle = "Tenant Overview";
+    private TenantMetadata? _metadata;
+    private TenantStats _stats = new(0, 0, 0, 0);
+    private List<ActivityItem> _recentActivities = new();
+
+    protected override async Task OnInitializedAsync()
+    {
+        await base.OnInitializedAsync();
+
+        if (!string.IsNullOrWhiteSpace(TenantId))
+        {
+            _metadata = await TenantContext.GetTenantMetadataAsync(TenantId);
+            _pageTitle = $"{_metadata?.DisplayName ?? TenantId} - Overview";
+
+            // Load tenant stats (mock data for now)
+            await LoadStatsAsync();
+            await LoadRecentActivityAsync();
+        }
+    }
+
+    private async Task LoadStatsAsync()
+    {
+        // TODO: Fetch real stats from backend APIs
+        await Task.Delay(100); // Simulate API call
+        _stats = new TenantStats(
+            UserCount: 5,
+            ApiKeyCount: 3,
+            StorageUsedMb: 128,
+            CollectionCount: 7
+        );
+    }
+
+    private async Task LoadRecentActivityAsync()
+    {
+        // TODO: Fetch real activity from audit log
+        await Task.Delay(100); // Simulate API call
+        _recentActivities = new List<ActivityItem>
+        {
+            new("User invited: alice@example.com", DateTimeOffset.UtcNow.AddHours(-2)),
+            new("API Key created: storage-key-***", DateTimeOffset.UtcNow.AddHours(-5)),
+            new("Collection created: products", DateTimeOffset.UtcNow.AddDays(-1)),
+            new("File uploaded: document.pdf", DateTimeOffset.UtcNow.AddDays(-2))
+        };
+    }
+
+    private record TenantStats(int UserCount, int ApiKeyCount, int StorageUsedMb, int CollectionCount);
+    private record ActivityItem(string Description, DateTimeOffset Timestamp);
+}

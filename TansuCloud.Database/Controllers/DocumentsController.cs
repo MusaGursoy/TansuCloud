@@ -1,11 +1,15 @@
 // Tansu.Cloud Public Repository:    https://github.com/MusaGursoy/TansuCloud
+using System.Collections;
+using System.Collections.Generic;
 using System.Globalization;
+using System.Linq;
 using System.Text.Json;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Caching.Hybrid;
 using Microsoft.Extensions.Primitives;
+using Newtonsoft.Json.Linq;
 using TansuCloud.Database.Caching;
 using TansuCloud.Database.EF;
 using TansuCloud.Database.Services;
@@ -62,34 +66,38 @@ public sealed class DocumentsController(
     } // End of Method WeakETagEquals
 
     // Helper for parsing HTTP Range header (RFC 9110)
-    private static (bool valid, long start, long end)? ParseRange(string? rangeHeader, long contentLength)
+    private static (bool valid, long start, long end)? ParseRange(
+        string? rangeHeader,
+        long contentLength
+    )
     {
         if (string.IsNullOrWhiteSpace(rangeHeader))
             return null;
-        
+
         // Expected format: "bytes=start-end" or "bytes=start-"
         if (!rangeHeader.StartsWith("bytes=", StringComparison.OrdinalIgnoreCase))
             return (false, 0, 0);
-        
+
         var rangeValue = rangeHeader.Substring(6).Trim();
         var parts = rangeValue.Split('-');
         if (parts.Length != 2)
             return (false, 0, 0);
-        
-        long start = 0, end = contentLength - 1;
-        
+
+        long start = 0,
+            end = contentLength - 1;
+
         if (!string.IsNullOrWhiteSpace(parts[0]))
         {
             if (!long.TryParse(parts[0], out start) || start < 0 || start >= contentLength)
                 return (false, 0, 0);
         }
-        
+
         if (!string.IsNullOrWhiteSpace(parts[1]))
         {
             if (!long.TryParse(parts[1], out end) || end < start || end >= contentLength)
                 return (false, 0, 0);
         }
-        
+
         return (true, start, end);
     } // End of Method ParseRange
 
@@ -157,19 +165,133 @@ public sealed class DocumentsController(
 
     /// <summary>
     /// Request DTO for updating an existing document.
+    /// Mutable class to support JSON Patch operations.
     /// </summary>
-    /// <param name="content">New JSON content (replaces existing content).</param>
-    /// <param name="embedding">Optional new vector embedding (replaces existing embedding).</param>
-    public sealed record UpdateDocumentDto(
-        System.Text.Json.JsonElement? content,
-        float[]? embedding
-    );
+    public sealed class UpdateDocumentDto
+    {
+        /// <summary>
+        /// New JSON content (replaces existing content). Uses Dictionary for JSON Patch compatibility.
+        /// </summary>
+        [Newtonsoft.Json.JsonProperty("content")]
+        public Dictionary<string, object?>? Content { get; set; }
+
+        /// <summary>
+        /// Optional new vector embedding (replaces existing embedding).
+        /// </summary>
+        [Newtonsoft.Json.JsonProperty("embedding")]
+        public float[]? Embedding { get; set; }
+    }
 
     private static JsonElement? ToElement(JsonDocument? doc)
     {
         if (doc is null)
             return null;
         return doc.RootElement.Clone();
+    }
+
+    /// <summary>
+    /// Converts JsonElement to Dictionary for JSON Patch operations.
+    /// </summary>
+    private static Dictionary<string, object?>? JsonElementToDictionary(JsonElement? element)
+    {
+        if (!element.HasValue)
+            return null;
+
+        var dict = new Dictionary<string, object?>();
+        foreach (var property in element.Value.EnumerateObject())
+        {
+            dict[property.Name] = JsonValueToObject(property.Value);
+        }
+        return dict;
+    }
+
+    /// <summary>
+    /// Converts JsonElement value to appropriate C# object.
+    /// </summary>
+    private static object? JsonValueToObject(JsonElement element)
+    {
+        return element.ValueKind switch
+        {
+            JsonValueKind.String => element.GetString(),
+            JsonValueKind.Number => element.TryGetInt64(out var l) ? l : element.GetDouble(),
+            JsonValueKind.True => true,
+            JsonValueKind.False => false,
+            JsonValueKind.Null => null,
+            JsonValueKind.Array => element.EnumerateArray().Select(JsonValueToObject).ToList(),
+            JsonValueKind.Object => JsonElementToDictionary(element),
+            _ => element.GetRawText()
+        };
+    }
+
+    private static Dictionary<string, object?>? NormalizePatchedContent(
+        Dictionary<string, object?>? content
+    )
+    {
+        if (content is null)
+            return null;
+
+        var normalized = new Dictionary<string, object?>(content.Count, StringComparer.Ordinal);
+        foreach (var kvp in content)
+        {
+            normalized[kvp.Key] = NormalizePatchedValue(kvp.Value);
+        }
+
+        return normalized;
+    }
+
+    private static object? NormalizePatchedValue(object? value)
+    {
+        switch (value)
+        {
+            case null:
+                return null;
+            case JValue jValue:
+                return jValue.Value;
+            case JObject jObject:
+                return jObject
+                    .Properties()
+                    .ToDictionary(
+                        p => p.Name,
+                        p => NormalizePatchedValue(p.Value),
+                        StringComparer.Ordinal
+                    );
+            case JArray jArray:
+                return jArray.Select(token => NormalizePatchedValue(token)).ToList();
+            case IDictionary<string, object?> dict:
+                return dict.ToDictionary(
+                    kvp => kvp.Key,
+                    kvp => NormalizePatchedValue(kvp.Value),
+                    StringComparer.Ordinal
+                );
+            case IDictionary dictionary:
+                var normalizedDict = new Dictionary<string, object?>(
+                    dictionary.Count,
+                    StringComparer.Ordinal
+                );
+                foreach (DictionaryEntry entry in dictionary)
+                {
+                    var key = entry.Key switch
+                    {
+                        null => string.Empty,
+                        string s => s,
+                        _
+                            => Convert.ToString(entry.Key, CultureInfo.InvariantCulture)
+                                ?? string.Empty
+                    };
+
+                    normalizedDict[key] = NormalizePatchedValue(entry.Value);
+                }
+                return normalizedDict;
+            case IList list:
+                var normalizedList = new List<object?>(list.Count);
+                foreach (var item in list)
+                {
+                    normalizedList.Add(NormalizePatchedValue(item));
+                }
+                return normalizedList;
+            default:
+                return value;
+        }
     }
 
     /// <summary>
@@ -359,8 +481,8 @@ public sealed class DocumentsController(
                 cacheKeyItem,
                 async token =>
                 {
-                    var e0 = await db.Documents
-                        .AsNoTracking()
+                    var e0 = await db
+                        .Documents.AsNoTracking()
                         .FirstOrDefaultAsync(x => x.Id == id, token);
                     return e0 is null
                         ? null
@@ -381,53 +503,56 @@ public sealed class DocumentsController(
                 cached.id.ToString(),
                 cached.createdAt.ToUnixTimeMilliseconds().ToString()
             );
-            
+
             // Set Accept-Ranges header
             Response.Headers.AcceptRanges = "bytes";
-            
+
             var inm0 = Request.Headers.IfNoneMatch;
             if (!StringValues.IsNullOrEmpty(inm0) && AnyIfNoneMatchMatches(inm0, etag0))
             {
                 Response.Headers.ETag = etag0;
                 return StatusCode(StatusCodes.Status304NotModified);
             }
-            
+
             // Handle Range requests
             var rangeHeader = Request.Headers.Range.ToString();
             if (!string.IsNullOrWhiteSpace(rangeHeader))
             {
                 var jsonBytes = System.Text.Encoding.UTF8.GetBytes(
-                    JsonSerializer.Serialize(cached, new JsonSerializerOptions { WriteIndented = false })
+                    JsonSerializer.Serialize(
+                        cached,
+                        new JsonSerializerOptions { WriteIndented = false }
+                    )
                 );
                 var contentLength = jsonBytes.Length;
                 var rangeResult = ParseRange(rangeHeader, contentLength);
-                
+
                 if (rangeResult is null)
                 {
                     // No valid range, return full content
                     Response.Headers.ETag = etag0;
                     return Ok(cached);
                 }
-                
+
                 if (!rangeResult.Value.valid)
                 {
                     // Invalid range
                     Response.Headers.ContentRange = $"bytes */{contentLength}";
                     return StatusCode(StatusCodes.Status416RangeNotSatisfiable);
                 }
-                
+
                 var (_, start, end) = rangeResult.Value;
                 var rangeLength = (int)(end - start + 1);
                 var rangeBytes = new byte[rangeLength];
                 Array.Copy(jsonBytes, start, rangeBytes, 0, rangeLength);
-                
+
                 Response.Headers.ETag = etag0;
                 Response.Headers.ContentRange = $"bytes {start}-{end}/{contentLength}";
                 Response.ContentType = "application/json";
                 Response.StatusCode = StatusCodes.Status206PartialContent;
                 return File(rangeBytes, "application/json");
             }
-            
+
             Response.Headers.ETag = etag0;
             return Ok(cached);
         }
@@ -439,17 +564,17 @@ public sealed class DocumentsController(
             e.Id.ToString(),
             e.CreatedAt.ToUnixTimeMilliseconds().ToString()
         );
-        
+
         // Set Accept-Ranges header
         Response.Headers.AcceptRanges = "bytes";
-        
+
         var inm = Request.Headers.IfNoneMatch;
         if (!StringValues.IsNullOrEmpty(inm) && AnyIfNoneMatchMatches(inm, etag))
         {
             Response.Headers.ETag = etag;
             return StatusCode(StatusCodes.Status304NotModified);
         }
-        
+
         // Handle Range requests
         var rangeHeader2 = Request.Headers.Range.ToString();
         if (!string.IsNullOrWhiteSpace(rangeHeader2))
@@ -460,33 +585,33 @@ public sealed class DocumentsController(
             );
             var contentLength = jsonBytes.Length;
             var rangeResult = ParseRange(rangeHeader2, contentLength);
-            
+
             if (rangeResult is null)
             {
                 // No valid range, return full content
                 Response.Headers.ETag = etag;
                 return Ok(dto);
             }
-            
+
             if (!rangeResult.Value.valid)
             {
                 // Invalid range
                 Response.Headers.ContentRange = $"bytes */{contentLength}";
                 return StatusCode(StatusCodes.Status416RangeNotSatisfiable);
             }
-            
+
             var (_, start, end) = rangeResult.Value;
             var rangeLength = (int)(end - start + 1);
             var rangeBytes = new byte[rangeLength];
             Array.Copy(jsonBytes, start, rangeBytes, 0, rangeLength);
-            
+
             Response.Headers.ETag = etag;
             Response.Headers.ContentRange = $"bytes {start}-{end}/{contentLength}";
             Response.ContentType = "application/json";
             Response.StatusCode = StatusCodes.Status206PartialContent;
             return File(rangeBytes, "application/json");
         }
-        
+
         Response.Headers.ETag = etag;
         return Ok(new DocumentDto(e.Id, e.CollectionId, ToElement(e.Content), e.CreatedAt));
     } // End of Method Get
@@ -526,7 +651,7 @@ public sealed class DocumentsController(
     {
         await using var db = await _factory.CreateAsync(HttpContext, ct);
         var q = db.Documents.AsNoTracking().AsQueryable();
-        
+
         if (collectionId is Guid cid && cid != Guid.Empty)
             q = q.Where(d => d.CollectionId == cid);
         if (createdAfter.HasValue)
@@ -541,7 +666,8 @@ public sealed class DocumentsController(
         q = (sort) switch
         {
             "id" => desc ? q.OrderByDescending(d => d.Id) : q.OrderBy(d => d.Id),
-            "collectionid" => desc ? q.OrderByDescending(d => d.CollectionId) : q.OrderBy(d => d.CollectionId),
+            "collectionid"
+                => desc ? q.OrderByDescending(d => d.CollectionId) : q.OrderBy(d => d.CollectionId),
             _ => desc ? q.OrderByDescending(d => d.CreatedAt) : q.OrderBy(d => d.CreatedAt)
         };
 
@@ -694,7 +820,11 @@ public sealed class DocumentsController(
         try
         {
             _versions?.Increment(Tenant());
-            HybridCacheMetrics.RecordEviction("database", "documents.create", "tenant_version_increment");
+            HybridCacheMetrics.RecordEviction(
+                "database",
+                "documents.create",
+                "tenant_version_increment"
+            );
         }
         catch { }
         // Audit success
@@ -811,9 +941,11 @@ public sealed class DocumentsController(
             );
             return StatusCode(StatusCodes.Status412PreconditionFailed);
         }
-        if (input.content.HasValue)
+        if (input.Content != null)
         {
-            e.Content = JsonDocument.Parse(input.content.Value.GetRawText());
+            // Serialize Dictionary to JSON and parse into JsonDocument
+            var contentJson = JsonSerializer.Serialize(input.Content);
+            e.Content = JsonDocument.Parse(contentJson);
         }
         // outbox enqueue
         try
@@ -834,7 +966,11 @@ public sealed class DocumentsController(
         try
         {
             _versions?.Increment(Tenant());
-            HybridCacheMetrics.RecordEviction("database", "documents.update", "tenant_version_increment");
+            HybridCacheMetrics.RecordEviction(
+                "database",
+                "documents.update",
+                "tenant_version_increment"
+            );
         }
         catch { }
         // Audit success
@@ -849,17 +985,17 @@ public sealed class DocumentsController(
             new { e.Id, e.CollectionId },
             new[] { nameof(e.Id), nameof(e.CollectionId) }
         );
-        if (input.embedding is { Length: > 0 })
+        if (input.Embedding is { Length: > 0 })
         {
             try
             {
-                if (input.embedding.Length == 1536)
+                if (input.Embedding.Length == 1536)
                 {
                     var vec =
                         "["
                         + string.Join(
                             ',',
-                            input.embedding.Select(f =>
+                            input.Embedding.Select(f =>
                                 f.ToString("G9", CultureInfo.InvariantCulture)
                             )
                         )
@@ -872,7 +1008,7 @@ public sealed class DocumentsController(
                 {
                     _logger.LogInformation(
                         "Skipping embedding upsert due to dimension mismatch: provided={Provided}, expected=1536",
-                        input.embedding.Length
+                        input.Embedding.Length
                     );
                 }
             }
@@ -917,7 +1053,10 @@ public sealed class DocumentsController(
     )
     {
         if (patchDoc == null)
-            return Problem(title: "JSON Patch document is required", statusCode: StatusCodes.Status400BadRequest);
+            return Problem(
+                title: "JSON Patch document is required",
+                statusCode: StatusCodes.Status400BadRequest
+            );
 
         await using var db = await _factory.CreateAsync(HttpContext, ct);
         var e = await db.Documents.FirstOrDefaultAsync(x => x.Id == id, ct);
@@ -948,18 +1087,25 @@ public sealed class DocumentsController(
             return StatusCode(StatusCodes.Status412PreconditionFailed);
         }
 
-        // Create a DTO from current state
-        var dto = new UpdateDocumentDto(
-            ToElement(e.Content),
-            null // Don't expose embedding in patch operations for simplicity
-        );
+        // Create a DTO from current state - convert JsonDocument to Dictionary
+        var dto = new UpdateDocumentDto
+        {
+            Content = JsonElementToDictionary(ToElement(e.Content)),
+            Embedding = null // Don't expose embedding in patch operations for simplicity
+        };
 
         // Apply patch operations with error handling
-        patchDoc.ApplyTo(dto, error =>
-        {
-            ModelState.AddModelError(error.AffectedObject?.ToString() ?? "patch", error.ErrorMessage);
-        });
-        
+        patchDoc.ApplyTo(
+            dto,
+            error =>
+            {
+                ModelState.AddModelError(
+                    error.AffectedObject?.ToString() ?? "patch",
+                    error.ErrorMessage
+                );
+            }
+        );
+
         // Validate the model after patching
         if (!ModelState.IsValid)
         {
@@ -967,9 +1113,30 @@ public sealed class DocumentsController(
         }
 
         // Update entity with patched values
-        if (dto.content.HasValue)
+        Dictionary<string, object?>? responseContent = null;
+        if (dto.Content != null)
         {
-            e.Content = JsonDocument.Parse(dto.content.Value.GetRawText());
+            try
+            {
+                var normalizedContent = NormalizePatchedContent(dto.Content);
+                responseContent = normalizedContent; // Save for response
+                // Serialize Dictionary back to JSON and parse into JsonDocument
+                var contentJson = JsonSerializer.Serialize(
+                    normalizedContent,
+                    new JsonSerializerOptions { WriteIndented = false }
+                );
+                _logger.LogDebug("Normalized content JSON: {ContentJson}", contentJson);
+                e.Content = JsonDocument.Parse(contentJson);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Failed to normalize or serialize patched content");
+                return Problem(
+                    title: "Failed to process patched content",
+                    detail: ex.Message,
+                    statusCode: StatusCodes.Status500InternalServerError
+                );
+            }
         }
 
         // Outbox event
@@ -994,7 +1161,11 @@ public sealed class DocumentsController(
         try
         {
             _versions?.Increment(Tenant());
-            HybridCacheMetrics.RecordEviction("database", "documents.patch", "tenant_version_increment");
+            HybridCacheMetrics.RecordEviction(
+                "database",
+                "documents.patch",
+                "tenant_version_increment"
+            );
         }
         catch { }
 
@@ -1012,7 +1183,35 @@ public sealed class DocumentsController(
         );
 
         Response.Headers.ETag = currentEtag;
-        return Ok(new DocumentDto(e.Id, e.CollectionId, ToElement(e.Content), e.CreatedAt));
+
+        // OPTION 3: Return Dictionary<string, object?> captured before database save
+        // Add canary header to verify new code is running
+        Response.Headers.Append("X-Debug-Patch", "v3");
+
+        if (responseContent == null)
+        {
+            // Fallback if content wasn't patched
+            return Ok(
+                new
+                {
+                    id = e.Id,
+                    collectionId = e.CollectionId,
+                    content = e.Content?.RootElement,
+                    createdAt = e.CreatedAt
+                }
+            );
+        }
+
+        // Return the Dictionary directly - this should work with System.Text.Json
+        return Ok(
+            new
+            {
+                id = e.Id,
+                collectionId = e.CollectionId,
+                content = responseContent,
+                createdAt = e.CreatedAt
+            }
+        );
     } // End of Method Patch
 
     /// <summary>
@@ -1081,7 +1280,11 @@ public sealed class DocumentsController(
         try
         {
             _versions?.Increment(Tenant());
-            HybridCacheMetrics.RecordEviction("database", "documents.delete", "tenant_version_increment");
+            HybridCacheMetrics.RecordEviction(
+                "database",
+                "documents.delete",
+                "tenant_version_increment"
+            );
         }
         catch { }
         // Audit success

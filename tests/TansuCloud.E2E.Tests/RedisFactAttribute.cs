@@ -11,7 +11,8 @@ public sealed class RedisFactAttribute : FactAttribute
 {
     public RedisFactAttribute()
     {
-        var redisUrl = Environment.GetEnvironmentVariable("REDIS_URL");
+        // Default to localhost:6379 for E2E tests when Redis is exposed by docker-compose
+        var redisUrl = Environment.GetEnvironmentVariable("REDIS_URL") ?? "127.0.0.1:6379";
         if (string.IsNullOrWhiteSpace(redisUrl))
         {
             Skip = "REDIS_URL not set; Redis-dependent test skipped"; // xUnit will report as Skipped.

@@ -1,0 +1,510 @@
+@page "/tenant/{tenantId}/webhooks"
+@using MudBlazor
+@using TansuCloud.Dashboard.Services
+@using TansuCloud.Dashboard.Components.Layout
+@inject ITenantContextService TenantContext
+@inject ISnackbar Snackbar
+@inject IDialogService DialogService
+@layout TenantLayout
+
+<PageTitle>Webhooks - @TenantId</PageTitle>
+
+<MudContainer MaxWidth="MaxWidth.ExtraLarge" Class="pa-4">
+    <MudText Typo="Typo.h4" Class="mb-4">Webhook Management</MudText>
+    <MudText Typo="Typo.body2" Color="Color.Secondary" Class="mb-6">
+        Configure webhooks to receive real-time notifications about events in your tenant
+    </MudText>
+
+    @if (_isLoading)
+    {
+        <MudProgressCircular Indeterminate="true" Color="Color.Primary" Size="Size.Large" />
+    }
+    else
+    {
+        <!-- Webhook Overview Cards -->
+        <MudGrid Class="mb-6">
+            <MudItem xs="12" sm="6" md="3">
+                <MudCard Elevation="2">
+                    <MudCardContent>
+                        <MudText Typo="Typo.body2" Color="Color.Secondary">Total Webhooks</MudText>
+                        <MudText Typo="Typo.h4">@_webhooks.Count</MudText>
+                    </MudCardContent>
+                </MudCard>
+            </MudItem>
+            <MudItem xs="12" sm="6" md="3">
+                <MudCard Elevation="2">
+                    <MudCardContent>
+                        <MudText Typo="Typo.body2" Color="Color.Secondary">Active Webhooks</MudText>
+                        <MudText Typo="Typo.h4">@_webhooks.Count(w => w.IsActive)</MudText>
+                    </MudCardContent>
+                </MudCard>
+            </MudItem>
+            <MudItem xs="12" sm="6" md="3">
+                <MudCard Elevation="2">
+                    <MudCardContent>
+                        <MudText Typo="Typo.body2" Color="Color.Secondary">Deliveries (24h)</MudText>
+                        <MudText Typo="Typo.h4">@_deliveries24h</MudText>
+                    </MudCardContent>
+                </MudCard>
+            </MudItem>
+            <MudItem xs="12" sm="6" md="3">
+                <MudCard Elevation="2">
+                    <MudCardContent>
+                        <MudText Typo="Typo.body2" Color="Color.Secondary">Success Rate</MudText>
+                        <MudText Typo="Typo.h4">@_successRate.ToString("F1")%</MudText>
+                    </MudCardContent>
+                </MudCard>
+            </MudItem>
+        </MudGrid>
+
+        <!-- Webhooks Table -->
+        <MudCard Elevation="2" Class="mb-6">
+            <MudCardHeader>
+                <CardHeaderContent>
+                    <MudText Typo="Typo.h6">Configured Webhooks</MudText>
+                </CardHeaderContent>
+                <CardHeaderActions>
+                    <MudButton Variant="Variant.Filled"
+                               Color="Color.Primary"
+                               StartIcon="@Icons.Material.Filled.Add"
+                               OnClick="@OpenCreateWebhookDialog"
+                               data-testid="create-webhook-button">
+                        Create Webhook
+                    </MudButton>
+                </CardHeaderActions>
+            </MudCardHeader>
+            <MudCardContent>
+                <MudDataGrid T="WebhookModel"
+                             Items="@_webhooks"
+                             Filterable="true"
+                             SortMode="SortMode.Multiple"
+                             Hover="true"
+                             Dense="true">
+                    <Columns>
+                        <PropertyColumn Property="x => x.Name" Title="Webhook Name">
+                            <CellTemplate>
+                                <MudStack Row="true" AlignItems="AlignItems.Center">
+                                    <MudIcon Icon="@Icons.Material.Filled.Webhook" Size="Size.Small" Color="Color.Primary" />
+                                    <MudText Typo="Typo.body2">@context.Item.Name</MudText>
+                                </MudStack>
+                            </CellTemplate>
+                        </PropertyColumn>
+                        <PropertyColumn Property="x => x.Url" Title="URL">
+                            <CellTemplate>
+                                <MudText Typo="Typo.body2" Style="font-family: monospace; font-size: 0.875rem;">
+                                    @(context.Item.Url.Length > 50 ? context.Item.Url.Substring(0, 47) + "..." : context.Item.Url)
+                                </MudText>
+                            </CellTemplate>
+                        </PropertyColumn>
+                        <PropertyColumn Property="x => x.Events" Title="Events">
+                            <CellTemplate>
+                                <MudStack Row="true" Spacing="1">
+                                    @foreach (var evt in context.Item.Events.Take(2))
+                                    {
+                                        <MudChip T="string" Size="Size.Small" Color="Color.Info">@evt</MudChip>
+                                    }
+                                    @if (context.Item.Events.Count > 2)
+                                    {
+                                        <MudChip T="string" Size="Size.Small" Color="Color.Default">+@(context.Item.Events.Count - 2)</MudChip>
+                                    }
+                                </MudStack>
+                            </CellTemplate>
+                        </PropertyColumn>
+                        <PropertyColumn Property="x => x.IsActive" Title="Status">
+                            <CellTemplate>
+                                <MudChip T="string"
+                                         Size="Size.Small"
+                                         Color="@(context.Item.IsActive ? Color.Success : Color.Default)">
+                                    @(context.Item.IsActive ? "Active" : "Inactive")
+                                </MudChip>
+                            </CellTemplate>
+                        </PropertyColumn>
+                        <PropertyColumn Property="x => x.LastDeliveryAt" Title="Last Delivery">
+                            <CellTemplate>
+                                @if (context.Item.LastDeliveryAt.HasValue)
+                                {
+                                    <MudText Typo="Typo.body2">@context.Item.LastDeliveryAt.Value.ToString("yyyy-MM-dd HH:mm")</MudText>
+                                }
+                                else
+                                {
+                                    <MudText Typo="Typo.body2" Color="Color.Secondary">Never</MudText>
+                                }
+                            </CellTemplate>
+                        </PropertyColumn>
+                        <PropertyColumn Property="x => x.SuccessCount" Title="Success/Total">
+                            <CellTemplate>
+                                <MudText Typo="Typo.body2">@context.Item.SuccessCount / @context.Item.TotalDeliveries</MudText>
+                            </CellTemplate>
+                        </PropertyColumn>
+                        <TemplateColumn Title="Actions" Sortable="false">
+                            <CellTemplate>
+                                <MudStack Row="true" Spacing="1">
+                                    <MudIconButton Icon="@Icons.Material.Filled.Send"
+                                                   Size="Size.Small"
+                                                   Color="Color.Primary"
+                                                   OnClick="@(() => TestWebhook(context.Item))"
+                                                   Title="Test webhook"
+                                                   data-testid="@($"test-webhook-{context.Item.WebhookId}")" />
+                                    <MudMenu Icon="@Icons.Material.Filled.MoreVert" Size="Size.Small" Dense="true">
+                                        <MudMenuItem OnClick="@(() => EditWebhook(context.Item))"
+                                                     Icon="@Icons.Material.Filled.Edit">
+                                            Edit
+                                        </MudMenuItem>
+                                        <MudMenuItem OnClick="@(() => ViewDeliveryHistory(context.Item))"
+                                                     Icon="@Icons.Material.Filled.History">
+                                            Delivery History
+                                        </MudMenuItem>
+                                        <MudMenuItem OnClick="@(() => ToggleWebhook(context.Item))"
+                                                     Icon="@(context.Item.IsActive ? Icons.Material.Filled.PauseCircle : Icons.Material.Filled.PlayCircle)">
+                                            @(context.Item.IsActive ? "Disable" : "Enable")
+                                        </MudMenuItem>
+                                        <MudDivider />
+                                        <MudMenuItem OnClick="@(() => DeleteWebhook(context.Item))"
+                                                     Icon="@Icons.Material.Filled.Delete"
+                                                     IconColor="Color.Error">
+                                            Delete
+                                        </MudMenuItem>
+                                    </MudMenu>
+                                </MudStack>
+                            </CellTemplate>
+                        </TemplateColumn>
+                    </Columns>
+                </MudDataGrid>
+            </MudCardContent>
+        </MudCard>
+
+        <!-- Recent Delivery History -->
+        <MudCard Elevation="2">
+            <MudCardHeader>
+                <CardHeaderContent>
+                    <MudText Typo="Typo.h6">Recent Deliveries</MudText>
+                    <MudText Typo="Typo.body2" Color="Color.Secondary">
+                        Last 20 webhook delivery attempts
+                    </MudText>
+                </CardHeaderContent>
+                <CardHeaderActions>
+                    <MudButton Variant="Variant.Text"
+                               Color="Color.Primary"
+                               StartIcon="@Icons.Material.Filled.Refresh"
+                               OnClick="@LoadDeliveryHistoryAsync"
+                               data-testid="refresh-deliveries-button">
+                        Refresh
+                    </MudButton>
+                </CardHeaderActions>
+            </MudCardHeader>
+            <MudCardContent>
+                <MudDataGrid T="WebhookDeliveryModel"
+                             Items="@_recentDeliveries"
+                             Filterable="true"
+                             SortMode="SortMode.Multiple"
+                             Hover="true"
+                             Dense="true">
+                    <Columns>
+                        <PropertyColumn Property="x => x.WebhookName" Title="Webhook" />
+                        <PropertyColumn Property="x => x.Event" Title="Event">
+                            <CellTemplate>
+                                <MudChip T="string" Size="Size.Small" Color="Color.Info">@context.Item.Event</MudChip>
+                            </CellTemplate>
+                        </PropertyColumn>
+                        <PropertyColumn Property="x => x.DeliveredAt" Title="Timestamp">
+                            <CellTemplate>
+                                <MudText Typo="Typo.body2">@context.Item.DeliveredAt.ToString("yyyy-MM-dd HH:mm:ss")</MudText>
+                            </CellTemplate>
+                        </PropertyColumn>
+                        <PropertyColumn Property="x => x.StatusCode" Title="Status">
+                            <CellTemplate>
+                                <MudChip T="string"
+                                         Size="Size.Small"
+                                         Color="@GetStatusColor(context.Item.StatusCode)">
+                                    @context.Item.StatusCode @context.Item.StatusText
+                                </MudChip>
+                            </CellTemplate>
+                        </PropertyColumn>
+                        <PropertyColumn Property="x => x.ResponseTimeMs" Title="Response Time">
+                            <CellTemplate>
+                                <MudText Typo="Typo.body2">@context.Item.ResponseTimeMs ms</MudText>
+                            </CellTemplate>
+                        </PropertyColumn>
+                        <PropertyColumn Property="x => x.AttemptNumber" Title="Attempt">
+                            <CellTemplate>
+                                @if (context.Item.AttemptNumber > 1)
+                                {
+                                    <MudChip T="string" Size="Size.Small" Color="Color.Warning">Retry @context.Item.AttemptNumber</MudChip>
+                                }
+                                else
+                                {
+                                    <MudText Typo="Typo.body2">1</MudText>
+                                }
+                            </CellTemplate>
+                        </PropertyColumn>
+                        <TemplateColumn Title="Actions" Sortable="false">
+                            <CellTemplate>
+                                <MudIconButton Icon="@Icons.Material.Filled.Visibility"
+                                               Size="Size.Small"
+                                               OnClick="@(() => ViewDeliveryDetails(context.Item))"
+                                               Title="View details"
+                                               data-testid="@($"view-delivery-{context.Item.DeliveryId}")" />
+                            </CellTemplate>
+                        </TemplateColumn>
+                    </Columns>
+                </MudDataGrid>
+            </MudCardContent>
+        </MudCard>
+    }
+</MudContainer>
+
+@code {
+    [Parameter]
+    public string TenantId { get; set; } = string.Empty;
+
+    private bool _isLoading = true;
+    private List<WebhookModel> _webhooks = new();
+    private List<WebhookDeliveryModel> _recentDeliveries = new();
+    
+    // Webhook metrics (mock)
+    private int _deliveries24h = 1247;
+    private decimal _successRate = 94.8m;
+
+    protected override async Task OnInitializedAsync()
+    {
+        TenantContext.SetTenant(TenantId);
+        await LoadWebhooksDataAsync();
+    }
+
+    private async Task LoadWebhooksDataAsync()
+    {
+        _isLoading = true;
+        
+        // Simulate API call - TODO: Replace with actual Webhook service API calls
+        await Task.Delay(500);
+        
+        // Mock webhook data
+        _webhooks = new List<WebhookModel>
+        {
+            new WebhookModel
+            {
+                WebhookId = "wh-1",
+                Name = "Order Notifications",
+                Url = "https://api.example.com/webhooks/orders",
+                Events = new List<string> { "order.created", "order.updated", "order.completed" },
+                IsActive = true,
+                LastDeliveryAt = DateTime.UtcNow.AddMinutes(-15),
+                SuccessCount = 2847,
+                TotalDeliveries = 2950,
+                CreatedAt = DateTime.UtcNow.AddMonths(-6)
+            },
+            new WebhookModel
+            {
+                WebhookId = "wh-2",
+                Name = "User Events",
+                Url = "https://events.example.com/hook/users",
+                Events = new List<string> { "user.created", "user.updated", "user.deleted" },
+                IsActive = true,
+                LastDeliveryAt = DateTime.UtcNow.AddHours(-2),
+                SuccessCount = 1205,
+                TotalDeliveries = 1280,
+                CreatedAt = DateTime.UtcNow.AddMonths(-4)
+            },
+            new WebhookModel
+            {
+                WebhookId = "wh-3",
+                Name = "Payment Processing",
+                Url = "https://payments.example.com/webhook",
+                Events = new List<string> { "payment.received", "payment.failed", "refund.processed" },
+                IsActive = false,
+                LastDeliveryAt = DateTime.UtcNow.AddDays(-7),
+                SuccessCount = 542,
+                TotalDeliveries = 568,
+                CreatedAt = DateTime.UtcNow.AddMonths(-8)
+            },
+            new WebhookModel
+            {
+                WebhookId = "wh-4",
+                Name = "Inventory Updates",
+                Url = "https://inventory.example.com/api/webhook/stock",
+                Events = new List<string> { "inventory.low", "inventory.out", "inventory.restocked" },
+                IsActive = true,
+                LastDeliveryAt = DateTime.UtcNow.AddMinutes(-5),
+                SuccessCount = 3890,
+                TotalDeliveries = 4102,
+                CreatedAt = DateTime.UtcNow.AddMonths(-10)
+            }
+        };
+        
+        await LoadDeliveryHistoryAsync();
+        
+        _isLoading = false;
+    }
+
+    private async Task LoadDeliveryHistoryAsync()
+    {
+        // Simulate API call - TODO: Replace with actual Webhook service API calls
+        await Task.Delay(300);
+        
+        // Mock delivery history
+        _recentDeliveries = new List<WebhookDeliveryModel>
+        {
+            new WebhookDeliveryModel
+            {
+                DeliveryId = "del-1",
+                WebhookName = "Order Notifications",
+                Event = "order.completed",
+                DeliveredAt = DateTime.UtcNow.AddMinutes(-15),
+                StatusCode = 200,
+                StatusText = "OK",
+                ResponseTimeMs = 145,
+                AttemptNumber = 1
+            },
+            new WebhookDeliveryModel
+            {
+                DeliveryId = "del-2",
+                WebhookName = "Inventory Updates",
+                Event = "inventory.restocked",
+                DeliveredAt = DateTime.UtcNow.AddMinutes(-5),
+                StatusCode = 200,
+                StatusText = "OK",
+                ResponseTimeMs = 89,
+                AttemptNumber = 1
+            },
+            new WebhookDeliveryModel
+            {
+                DeliveryId = "del-3",
+                WebhookName = "User Events",
+                Event = "user.created",
+                DeliveredAt = DateTime.UtcNow.AddHours(-2),
+                StatusCode = 500,
+                StatusText = "Internal Server Error",
+                ResponseTimeMs = 2340,
+                AttemptNumber = 3
+            },
+            new WebhookDeliveryModel
+            {
+                DeliveryId = "del-4",
+                WebhookName = "Order Notifications",
+                Event = "order.created",
+                DeliveredAt = DateTime.UtcNow.AddHours(-3),
+                StatusCode = 200,
+                StatusText = "OK",
+                ResponseTimeMs = 123,
+                AttemptNumber = 1
+            },
+            new WebhookDeliveryModel
+            {
+                DeliveryId = "del-5",
+                WebhookName = "Inventory Updates",
+                Event = "inventory.low",
+                DeliveredAt = DateTime.UtcNow.AddHours(-4),
+                StatusCode = 404,
+                StatusText = "Not Found",
+                ResponseTimeMs = 56,
+                AttemptNumber = 2
+            }
+        };
+    }
+
+    private Color GetStatusColor(int statusCode)
+    {
+        return statusCode switch
+        {
+            >= 200 and < 300 => Color.Success,
+            >= 400 and < 500 => Color.Warning,
+            >= 500 => Color.Error,
+            _ => Color.Default
+        };
+    }
+
+    private async Task OpenCreateWebhookDialog()
+    {
+        // TODO: Create CreateWebhookDialog component
+        Snackbar.Add("Create webhook dialog - Coming soon", Severity.Info);
+    }
+
+    private async Task TestWebhook(WebhookModel webhook)
+    {
+        Snackbar.Add($"Sending test event to {webhook.Name}...", Severity.Info);
+        
+        // Simulate API call - TODO: Replace with actual Webhook service API call
+        await Task.Delay(1500);
+        
+        // Mock test result
+        Snackbar.Add($"Test event delivered successfully (200 OK, 142ms)", Severity.Success);
+        
+        // Refresh delivery history to show the test delivery
+        await LoadDeliveryHistoryAsync();
+    }
+
+    private async Task EditWebhook(WebhookModel webhook)
+    {
+        // TODO: Create EditWebhookDialog component
+        Snackbar.Add($"Edit webhook '{webhook.Name}' - Coming soon", Severity.Info);
+    }
+
+    private async Task ViewDeliveryHistory(WebhookModel webhook)
+    {
+        // TODO: Navigate to detailed delivery history page or show dialog
+        Snackbar.Add($"Viewing delivery history for {webhook.Name}...", Severity.Info);
+    }
+
+    private async Task ToggleWebhook(WebhookModel webhook)
+    {
+        var action = webhook.IsActive ? "disable" : "enable";
+        var result = await DialogService.ShowMessageBox(
+            $"{char.ToUpper(action[0])}{action.Substring(1)} Webhook",
+            $"Are you sure you want to {action} '{webhook.Name}'?",
+            yesText: "Confirm", cancelText: "Cancel");
+
+        if (result == true)
+        {
+            // TODO: Call Webhook API to toggle status
+            webhook.IsActive = !webhook.IsActive;
+            Snackbar.Add($"Webhook '{webhook.Name}' {action}d successfully", Severity.Success);
+        }
+    }
+
+    private async Task DeleteWebhook(WebhookModel webhook)
+    {
+        var result = await DialogService.ShowMessageBox(
+            "Delete Webhook",
+            $"Are you sure you want to delete webhook '{webhook.Name}'? This action cannot be undone.",
+            yesText: "Delete", cancelText: "Cancel");
+
+        if (result == true)
+        {
+            // TODO: Call Webhook API to delete webhook
+            _webhooks.Remove(webhook);
+            Snackbar.Add($"Webhook '{webhook.Name}' deleted successfully", Severity.Success);
+        }
+    }
+
+    private async Task ViewDeliveryDetails(WebhookDeliveryModel delivery)
+    {
+        // TODO: Create DeliveryDetailsDialog component showing request/response headers, body, etc.
+        Snackbar.Add($"Viewing details for delivery {delivery.DeliveryId} - Coming soon", Severity.Info);
+    }
+
+    // Model classes
+    public record WebhookModel
+    {
+        public string WebhookId { get; init; } = string.Empty;
+        public string Name { get; init; } = string.Empty;
+        public string Url { get; init; } = string.Empty;
+        public List<string> Events { get; init; } = new();
+        public bool IsActive { get; set; }
+        public DateTime? LastDeliveryAt { get; init; }
+        public int SuccessCount { get; init; }
+        public int TotalDeliveries { get; init; }
+        public DateTime CreatedAt { get; init; }
+    }
+
+    public record WebhookDeliveryModel
+    {
+        public string DeliveryId { get; init; } = string.Empty;
+        public string WebhookName { get; init; } = string.Empty;
+        public string Event { get; init; } = string.Empty;
+        public DateTime DeliveredAt { get; init; }
+        public int StatusCode { get; init; }
+        public string StatusText { get; init; } = string.Empty;
+        public int ResponseTimeMs { get; init; }
+        public int AttemptNumber { get; init; }
+    }
+}

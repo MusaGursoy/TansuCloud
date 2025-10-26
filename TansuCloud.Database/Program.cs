@@ -225,10 +225,23 @@ builder
 
 builder
     .Services.AddControllers()
+    .AddMvcOptions(options =>
+    {
+        // Register custom NDJSON output formatter for IAsyncEnumerable streaming
+        options.OutputFormatters.Add(new TansuCloud.Database.Formatters.NdjsonOutputFormatter());
+
+        // Register Newtonsoft.Json-based input formatter for JSON Patch requests ONLY
+        // This allows JSON Patch to work while keeping System.Text.Json for all responses
+        // See: https://learn.microsoft.com/en-us/aspnet/core/web-api/jsonpatch#add-support-for-json-patch-when-using-systemtextjson
+        options.InputFormatters.Insert(
+            0,
+            TansuCloud.Database.Helpers.JsonPatchInputFormatterHelper.GetJsonPatchInputFormatter()
+        );
+    })
     .AddJsonOptions(options =>
     {
-        // Configure JSON Patch support
-        options.JsonSerializerOptions.PropertyNamingPolicy = null; // Preserve property names for JSON Patch
+        // Configure System.Text.Json for all responses
+        options.JsonSerializerOptions.PropertyNamingPolicy = System.Text.Json.JsonNamingPolicy.CamelCase;
     });
 
 // Learn more about configuring OpenAPI at https://aka.ms/aspnet/openapi

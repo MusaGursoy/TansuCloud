@@ -1,0 +1,92 @@
+@page "/admin/provisioning"
+@layout AdminLayout
+@using MudBlazor
+
+<PageTitle>Tenant Provisioning</PageTitle>
+
+<MudText Typo="Typo.h4" Class="mb-4">Tenant Provisioning</MudText>
+<MudText Typo="Typo.body2" Color="Color.Secondary" Class="mb-6">
+    Create and configure new tenants
+</MudText>
+
+<MudGrid>
+    <MudItem xs="12" md="6">
+        <MudCard Elevation="2">
+            <MudCardHeader>
+                <CardHeaderContent>
+                    <MudText Typo="Typo.h6">Create New Tenant</MudText>
+                </CardHeaderContent>
+            </MudCardHeader>
+            <MudCardContent>
+                <MudTextField @bind-Value="_newTenantId" Label="Tenant ID" Required="true" 
+                              HelperText="Lowercase alphanumeric with hyphens" Class="mb-4" />
+                <MudTextField @bind-Value="_newTenantName" Label="Display Name" Required="true" Class="mb-4" />
+                <MudSwitch @bind-Value="_newTenantActive" Label="Active" Color="Color.Success" Class="mb-4" />
+            </MudCardContent>
+            <MudCardActions>
+                <MudButton Variant="Variant.Filled" Color="Color.Primary" StartIcon="@Icons.Material.Filled.Add">
+                    Provision Tenant
+                </MudButton>
+            </MudCardActions>
+        </MudCard>
+    </MudItem>
+
+    <MudItem xs="12" md="6">
+        <MudCard Elevation="2">
+            <MudCardHeader>
+                <CardHeaderContent>
+                    <MudText Typo="Typo.h6">Provisioning Options</MudText>
+                </CardHeaderContent>
+            </MudCardHeader>
+            <MudCardContent>
+                <MudCheckBox @bind-Value="_createDatabase" Label="Create Database" Color="Color.Primary" />
+                <MudCheckBox @bind-Value="_createStorageBucket" Label="Create Storage Bucket" Color="Color.Primary" />
+                <MudCheckBox @bind-Value="_enableObservability" Label="Enable Observability" Color="Color.Primary" />
+                <MudCheckBox @bind-Value="_sendWelcomeEmail" Label="Send Welcome Email" Color="Color.Primary" />
+            </MudCardContent>
+        </MudCard>
+    </MudItem>
+
+    <MudItem xs="12">
+        <MudCard Elevation="2">
+            <MudCardHeader>
+                <CardHeaderContent>
+                    <MudText Typo="Typo.h6">Recent Provisioning Activity</MudText>
+                </CardHeaderContent>
+            </MudCardHeader>
+            <MudCardContent>
+                <MudTimeline TimelinePosition="TimelinePosition.Start">
+                    @foreach (var activity in _recentActivity)
+                    {
+                        <MudTimelineItem Color="Color.Success" Size="Size.Small">
+                            <ItemContent>
+                                <MudText Typo="Typo.body2">@activity.Description</MudText>
+                                <MudText Typo="Typo.caption" Color="Color.Secondary">@activity.Timestamp.ToString("g")</MudText>
+                            </ItemContent>
+                        </MudTimelineItem>
+                    }
+                </MudTimeline>
+            </MudCardContent>
+        </MudCard>
+    </MudItem>
+</MudGrid>
+
+@code {
+    private string _newTenantId = string.Empty;
+    private string _newTenantName = string.Empty;
+    private bool _newTenantActive = true;
+
+    private bool _createDatabase = true;
+    private bool _createStorageBucket = true;
+    private bool _enableObservability = true;
+    private bool _sendWelcomeEmail = false;
+
+    private List<ActivityItem> _recentActivity = new()
+    {
+        new("Tenant 'acme-dev' provisioned successfully", DateTimeOffset.UtcNow.AddHours(-2)),
+        new("Tenant 'contoso-test' database created", DateTimeOffset.UtcNow.AddHours(-5)),
+        new("Tenant 'fabrikam-prod' storage bucket configured", DateTimeOffset.UtcNow.AddDays(-1)),
+    };
+
+    private record ActivityItem(string Description, DateTimeOffset Timestamp);
+}

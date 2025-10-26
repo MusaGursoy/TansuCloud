@@ -274,6 +274,8 @@ services:
           cpus: "1.0"
           memory: 2G
     command: ["/app/GarnetServer", "--port", "6379", "--checkpointdir", "/data", "--recover"]
+    ports:
+      - "6379:6379"  # Expose for E2E tests running on host
     healthcheck:
       test: ["CMD", "/app/GarnetServer", "--test-ping"]
       interval: 10s

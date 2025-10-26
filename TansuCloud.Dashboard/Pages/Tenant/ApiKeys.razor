@@ -1,0 +1,219 @@
+@page "/tenant/{TenantId}/api-keys"
+@layout TenantLayout
+@using TansuCloud.Dashboard.Services
+@using MudBlazor
+@inject ITenantContextService TenantContext
+
+<PageTitle>API Keys - @TenantId</PageTitle>
+
+<MudText Typo="Typo.h4" Class="mb-4">API Keys</MudText>
+
+<MudText Typo="Typo.body1" Color="Color.Secondary" Class="mb-4">
+    Manage API keys for programmatic access to Storage and Database services. Keys can be scoped to specific permissions.
+</MudText>
+
+<!-- Create New Key Button -->
+<MudButton Variant="Variant.Filled" Color="Color.Primary" StartIcon="@Icons.Material.Filled.Add" OnClick="@OpenCreateKeyDialog" Class="mb-4">
+    Create New API Key
+</MudButton>
+
+<!-- API Keys Table -->
+<MudCard>
+    <MudCardHeader>
+        <CardHeaderContent>
+            <MudText Typo="Typo.h6">Active Keys</MudText>
+        </CardHeaderContent>
+        <CardHeaderActions>
+            <MudTextField @bind-Value="_searchString" Placeholder="Search keys..." Adornment="Adornment.Start" AdornmentIcon="@Icons.Material.Filled.Search" IconSize="Size.Medium" Variant="Variant.Outlined" Margin="Margin.Dense" Clearable="true" />
+        </CardHeaderActions>
+    </MudCardHeader>
+    <MudCardContent Class="pa-0">
+        <MudTable Items="@_filteredKeys" Hover="true" Striped="true" Dense="true" Loading="@_isLoading" LoadingProgressColor="Color.Primary">
+            <HeaderContent>
+                <MudTh>Name</MudTh>
+                <MudTh>Key ID</MudTh>
+                <MudTh>Scopes</MudTh>
+                <MudTh>Last Used</MudTh>
+                <MudTh>Created</MudTh>
+                <MudTh>Status</MudTh>
+                <MudTh Style="text-align: right;">Actions</MudTh>
+            </HeaderContent>
+            <RowTemplate>
+                <MudTd DataLabel="Name">
+                    <MudText Typo="Typo.body2"><strong>@context.Name</strong></MudText>
+                </MudTd>
+                <MudTd DataLabel="Key ID">
+                    <MudChip T="string" Size="Size.Small" Variant="Variant.Text">@context.KeyId</MudChip>
+                </MudTd>
+                <MudTd DataLabel="Scopes">
+                    @foreach (var scope in context.Scopes)
+                    {
+                        <MudChip T="string" Size="Size.Small" Color="@GetScopeColor(scope)" Variant="Variant.Outlined" Class="mr-1">@scope</MudChip>
+                    }
+                </MudTd>
+                <MudTd DataLabel="Last Used">
+                    <MudText Typo="Typo.body2">@(context.LastUsedAt?.ToString("g") ?? "Never")</MudText>
+                </MudTd>
+                <MudTd DataLabel="Created">
+                    <MudText Typo="Typo.body2">@context.CreatedAt.ToString("d")</MudText>
+                </MudTd>
+                <MudTd DataLabel="Status">
+                    @if (context.IsActive)
+                    {
+                        <MudChip T="string" Size="Size.Small" Color="Color.Success" Icon="@Icons.Material.Filled.CheckCircle">Active</MudChip>
+                    }
+                    else
+                    {
+                        <MudChip T="string" Size="Size.Small" Color="Color.Error" Icon="@Icons.Material.Filled.Cancel">Disabled</MudChip>
+                    }
+                </MudTd>
+                <MudTd DataLabel="Actions" Style="text-align: right;">
+                    <MudMenu Icon="@Icons.Material.Filled.MoreVert" Size="Size.Small" Dense="true">
+                        <MudMenuItem Icon="@Icons.Material.Filled.Refresh" OnClick="@(() => RotateKey(context))">Rotate Key</MudMenuItem>
+                        <MudMenuItem Icon="@Icons.Material.Filled.Edit" OnClick="@(() => EditKey(context))">Edit Scopes</MudMenuItem>
+                        <MudDivider />
+                        @if (context.IsActive)
+                        {
+                            <MudMenuItem Icon="@Icons.Material.Filled.Block" OnClick="@(() => DisableKey(context))">Disable</MudMenuItem>
+                        }
+                        else
+                        {
+                            <MudMenuItem Icon="@Icons.Material.Filled.CheckCircle" OnClick="@(() => EnableKey(context))">Enable</MudMenuItem>
+                        }
+                        <MudDivider />
+                        <MudMenuItem Icon="@Icons.Material.Filled.Delete" OnClick="@(() => DeleteKey(context))" IconColor="Color.Error">Delete</MudMenuItem>
+                    </MudMenu>
+                </MudTd>
+            </RowTemplate>
+            <NoRecordsContent>
+                <MudText Typo="Typo.body2" Align="Align.Center" Class="pa-4">
+                    No API keys found. Create your first key to get started.
+                </MudText>
+            </NoRecordsContent>
+        </MudTable>
+    </MudCardContent>
+</MudCard>
+
+<!-- Info Card -->
+<MudCard Class="mt-4">
+    <MudCardHeader>
+        <CardHeaderContent>
+            <MudText Typo="Typo.h6">API Key Best Practices</MudText>
+        </CardHeaderContent>
+    </MudCardHeader>
+    <MudCardContent>
+        <MudList T="string" Dense="true">
+            <MudListItem T="string" Icon="@Icons.Material.Filled.Security" IconColor="Color.Info">
+                <MudText Typo="Typo.body2">Store API keys securely and never commit them to version control</MudText>
+            </MudListItem>
+            <MudListItem T="string" Icon="@Icons.Material.Filled.Refresh" IconColor="Color.Info">
+                <MudText Typo="Typo.body2">Rotate keys regularly (recommended: every 90 days)</MudText>
+            </MudListItem>
+            <MudListItem T="string" Icon="@Icons.Material.Filled.Lock" IconColor="Color.Info">
+                <MudText Typo="Typo.body2">Use minimum required scopes for each key (principle of least privilege)</MudText>
+            </MudListItem>
+            <MudListItem T="string" Icon="@Icons.Material.Filled.Warning" IconColor="Color.Info">
+                <MudText Typo="Typo.body2">Disable or delete keys immediately if compromised</MudText>
+            </MudListItem>
+        </MudList>
+    </MudCardContent>
+</MudCard>
+
+@code {
+    [Parameter]
+    public string TenantId { get; set; } = string.Empty;
+
+    private bool _isLoading = true;
+    private string _searchString = string.Empty;
+    private List<ApiKeyItem> _apiKeys = new();
+    
+    private IEnumerable<ApiKeyItem> _filteredKeys => string.IsNullOrWhiteSpace(_searchString)
+        ? _apiKeys
+        : _apiKeys.Where(k => k.Name.Contains(_searchString, StringComparison.OrdinalIgnoreCase) ||
+                               k.KeyId.Contains(_searchString, StringComparison.OrdinalIgnoreCase));
+
+    protected override async Task OnInitializedAsync()
+    {
+        await base.OnInitializedAsync();
+        await LoadApiKeysAsync();
+    }
+
+    private async Task LoadApiKeysAsync()
+    {
+        _isLoading = true;
+        try
+        {
+            // TODO: Fetch real API keys from backend
+            await Task.Delay(500); // Simulate API call
+            
+            _apiKeys = new List<ApiKeyItem>
+            {
+                new("storage-prod-key", "sk_live_***abc123", new[] { "storage.read", "storage.write" }, DateTimeOffset.UtcNow.AddDays(-15), DateTimeOffset.UtcNow.AddHours(-2), true),
+                new("db-readonly-key", "sk_live_***xyz789", new[] { "db.read" }, DateTimeOffset.UtcNow.AddDays(-30), DateTimeOffset.UtcNow.AddDays(-5), true),
+                new("legacy-api-key", "sk_live_***old456", new[] { "storage.read", "storage.write", "db.read", "db.write" }, DateTimeOffset.UtcNow.AddDays(-180), null, false)
+            };
+        }
+        finally
+        {
+            _isLoading = false;
+        }
+    }
+
+    private void OpenCreateKeyDialog()
+    {
+        // TODO: Implement create key dialog
+        Console.WriteLine("Open create key dialog");
+    }
+
+    private void RotateKey(ApiKeyItem key)
+    {
+        // TODO: Implement key rotation
+        Console.WriteLine($"Rotate key: {key.KeyId}");
+    }
+
+    private void EditKey(ApiKeyItem key)
+    {
+        // TODO: Implement edit key scopes
+        Console.WriteLine($"Edit key: {key.KeyId}");
+    }
+
+    private async Task DisableKey(ApiKeyItem key)
+    {
+        // TODO: Implement disable key
+        Console.WriteLine($"Disable key: {key.KeyId}");
+        key.IsActive = false;
+        StateHasChanged();
+    }
+
+    private async Task EnableKey(ApiKeyItem key)
+    {
+        // TODO: Implement enable key
+        Console.WriteLine($"Enable key: {key.KeyId}");
+        key.IsActive = true;
+        StateHasChanged();
+    }
+
+    private async Task DeleteKey(ApiKeyItem key)
+    {
+        // TODO: Implement delete key with confirmation
+        Console.WriteLine($"Delete key: {key.KeyId}");
+        _apiKeys.Remove(key);
+        StateHasChanged();
+    }
+
+    private Color GetScopeColor(string scope)
+    {
+        return scope.ToLowerInvariant() switch
+        {
+            var s when s.Contains("storage") => Color.Info,
+            var s when s.Contains("db") || s.Contains("database") => Color.Success,
+            var s when s.Contains("write") => Color.Warning,
+            _ => Color.Default
+        };
+    }
+
+    private record ApiKeyItem(string Name, string KeyId, string[] Scopes, DateTimeOffset CreatedAt, DateTimeOffset? LastUsedAt, bool IsActive)
+    {
+        public bool IsActive { get; set; } = IsActive;
+    }
+}

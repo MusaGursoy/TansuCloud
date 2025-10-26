@@ -41,29 +41,29 @@ public sealed class DatabaseAdvancedFeaturesE2E : IDisposable
             Encoding.UTF8,
             "application/x-www-form-urlencoded"
         );
-        
+
         var tokenResponse = await _client.SendAsync(tokenRequest);
         tokenResponse.EnsureSuccessStatusCode();
-        
+
         using var doc = JsonDocument.Parse(await tokenResponse.Content.ReadAsStringAsync());
         return doc.RootElement.GetProperty("access_token").GetString()!;
     } // End of Method GetAdminTokenAsync
 
-    [Fact(Skip = "JSON Patch endpoint implementation issue: UpdateDocumentDto has immutable JsonElement which cannot be patched. Needs controller refactor.")]
+    [Fact]
     public async Task JsonPatch_Replace_Operation_Works()
     {
         // Arrange: Get token, provision tenant and create collection
         var token = await GetAdminTokenAsync();
         await ProvisionTenantAsync(token);
         var collectionId = await CreateCollectionAsync("patch-test", token);
-        
+
         // Create a document
         var content = new { title = "Original Title", tags = new[] { "tag1", "tag2" } };
         var docId = await CreateDocumentAsync(collectionId, content, token);
 
         // Act: Apply JSON Patch to replace title (RFC 6902 format)
         var patchJson = """[{"op":"replace","path":"/content/title","value":"Updated Title"}]""";
-        
+
         var request = new HttpRequestMessage(HttpMethod.Patch, $"/db/api/documents/{docId}")
         {
             Content = new StringContent(patchJson, Encoding.UTF8, "application/json-patch+json")
@@ -73,27 +73,36 @@ public sealed class DatabaseAdvancedFeaturesE2E : IDisposable
 
         var patchResponse = await _client.SendAsync(request);
         patchResponse.EnsureSuccessStatusCode();
-        var patched = await patchResponse.Content.ReadFromJsonAsync<JsonElement>();
+        var rawBody = await patchResponse.Content.ReadAsStringAsync();
+        _output.WriteLine(
+            $"[PatchAdd] Status={patchResponse.StatusCode}, ContentLength={patchResponse.Content.Headers.ContentLength}, Raw='{rawBody}'"
+        );
+        Assert.False(string.IsNullOrWhiteSpace(rawBody), "Patch add response body empty");
+        using var docAdd = JsonDocument.Parse(rawBody);
+        var patched = docAdd.RootElement.Clone();
 
         // Assert
-        Assert.Equal("Updated Title", patched.GetProperty("content").GetProperty("title").GetString());
+        Assert.Equal(
+            "Updated Title",
+            patched.GetProperty("content").GetProperty("title").GetString()
+        );
         _output.WriteLine($"✅ JSON Patch replace operation successful for document {docId}");
     } // End of Method JsonPatch_Replace_Operation_Works
 
-    [Fact(Skip = "JSON Patch endpoint implementation issue: UpdateDocumentDto has immutable JsonElement which cannot be patched. Needs controller refactor.")]
+    [Fact]
     public async Task JsonPatch_Add_Operation_Works()
     {
         // Arrange
         var token = await GetAdminTokenAsync();
         await ProvisionTenantAsync(token);
         var collectionId = await CreateCollectionAsync("patch-add-test", token);
-        
+
         var createDoc = new
         {
             collectionId = collectionId,
             content = new { title = "Test", tags = new[] { "tag1" } }
         };
-        
+
         var createResponse = await _client.PostAsJsonAsync(
             "/db/api/documents",
             createDoc,
@@ -104,7 +113,7 @@ public sealed class DatabaseAdvancedFeaturesE2E : IDisposable
 
         // Act: Add a new tag (RFC 6902 format)
         var patchJson = """[{"op":"add","path":"/content/tags/-","value":"tag2"}]""";
-        
+
         var request = new HttpRequestMessage(HttpMethod.Patch, $"/db/api/documents/{docId}")
         {
             Content = new StringContent(patchJson, Encoding.UTF8, "application/json-patch+json")
@@ -113,29 +122,50 @@ public sealed class DatabaseAdvancedFeaturesE2E : IDisposable
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
 
         var patchResponse = await _client.SendAsync(request);
+        
+        // Check for debug header to verify new code is running
+        var debugHeader = patchResponse.Headers.Contains("X-Debug-Patch") 
+            ? patchResponse.Headers.GetValues("X-Debug-Patch").FirstOrDefault()
+            : "MISSING";
+        _output.WriteLine($"[DEBUG] X-Debug-Patch header: {debugHeader}");
+        _output.WriteLine($"[DEBUG] Status: {patchResponse.StatusCode}, ContentLength: {patchResponse.Content.Headers.ContentLength}");
+        
         patchResponse.EnsureSuccessStatusCode();
-        var patched = await patchResponse.Content.ReadFromJsonAsync<JsonElement>();
+        var rawBody = await patchResponse.Content.ReadAsStringAsync();
+        _output.WriteLine(
+            $"[PatchAdd] Status={patchResponse.StatusCode}, ContentLength={patchResponse.Content.Headers.ContentLength}, Raw='{rawBody}'"
+        );
+        Assert.False(string.IsNullOrWhiteSpace(rawBody), "Patch add response body empty");
+        using var docAdd = JsonDocument.Parse(rawBody);
+        var patched = docAdd.RootElement.Clone();
 
         // Assert
         var tags = patched.GetProperty("content").GetProperty("tags");
         Assert.Equal(2, tags.GetArrayLength());
-        _output.WriteLine($"✅ JSON Patch add operation successful, tags count: {tags.GetArrayLength()}");
+        _output.WriteLine(
+            $"✅ JSON Patch add operation successful, tags count: {tags.GetArrayLength()}"
+        );
     } // End of Method JsonPatch_Add_Operation_Works
 
-    [Fact(Skip = "JSON Patch endpoint implementation issue: UpdateDocumentDto has immutable JsonElement which cannot be patched. Needs controller refactor.")]
+    [Fact]
     public async Task JsonPatch_Remove_Operation_Works()
     {
         // Arrange
         var token = await GetAdminTokenAsync();
         await ProvisionTenantAsync(token);
         var collectionId = await CreateCollectionAsync("patch-remove-test", token);
-        
+
         var createDoc = new
         {
             collectionId = collectionId,
-            content = new { title = "Test", draft = true, tags = new[] { "tag1" } }
+            content = new
+            {
+                title = "Test",
+                draft = true,
+                tags = new[] { "tag1" }
+            }
         };
-        
+
         var createResponse = await _client.PostAsJsonAsync(
             "/db/api/documents",
             createDoc,
@@ -146,7 +176,7 @@ public sealed class DatabaseAdvancedFeaturesE2E : IDisposable
 
         // Act: Remove draft field (RFC 6902 format)
         var patchJson = """[{"op":"remove","path":"/content/draft"}]""";
-        
+
         var request = new HttpRequestMessage(HttpMethod.Patch, $"/db/api/documents/{docId}")
         {
             Content = new StringContent(patchJson, Encoding.UTF8, "application/json-patch+json")
@@ -171,7 +201,7 @@ public sealed class DatabaseAdvancedFeaturesE2E : IDisposable
         var token = await GetAdminTokenAsync();
         await ProvisionTenantAsync(token);
         var collectionId = await CreateCollectionAsync("range-test", token);
-        
+
         // Create a large document for range testing
         var docContent = new { data = new string('x', 1000) };
         var docId = await CreateDocumentAsync(collectionId, docContent, token);
@@ -188,14 +218,16 @@ public sealed class DatabaseAdvancedFeaturesE2E : IDisposable
         Assert.Equal(HttpStatusCode.PartialContent, response.StatusCode);
         Assert.True(response.Content.Headers.Contains("Content-Range"));
         Assert.True(response.Headers.Contains("Accept-Ranges"));
-        
+
         var contentRange = response.Content.Headers.GetValues("Content-Range").First();
         Assert.StartsWith("bytes 0-99/", contentRange);
-        
+
         var content = await response.Content.ReadAsByteArrayAsync();
         Assert.Equal(100, content.Length);
-        
-        _output.WriteLine($"✅ Range request successful: {contentRange}, received {content.Length} bytes");
+
+        _output.WriteLine(
+            $"✅ Range request successful: {contentRange}, received {content.Length} bytes"
+        );
     } // End of Method RangeRequest_Returns_206_PartialContent
 
     [Fact]
@@ -205,7 +237,7 @@ public sealed class DatabaseAdvancedFeaturesE2E : IDisposable
         var token = await GetAdminTokenAsync();
         await ProvisionTenantAsync(token);
         var collectionId = await CreateCollectionAsync("range-invalid-test", token);
-        
+
         // Create a small document
         var content = new { data = "small" };
         var docId = await CreateDocumentAsync(collectionId, content, token);
@@ -221,18 +253,18 @@ public sealed class DatabaseAdvancedFeaturesE2E : IDisposable
         // Assert
         Assert.Equal(HttpStatusCode.RequestedRangeNotSatisfiable, response.StatusCode);
         Assert.True(response.Content.Headers.Contains("Content-Range"));
-        
+
         _output.WriteLine($"✅ Invalid range request correctly returned 416");
     } // End of Method RangeRequest_InvalidRange_Returns_416
 
-    [Fact(Skip = "Streaming endpoints not yet implemented in Database API.")]
+    [Fact]
     public async Task DocumentStream_Returns_NDJSON()
     {
         // Arrange
         var token = await GetAdminTokenAsync();
         await ProvisionTenantAsync(token);
         var collectionId = await CreateCollectionAsync("stream-test", token);
-        
+
         // Create 5 documents
         for (int i = 0; i < 5; i++)
         {
@@ -241,35 +273,46 @@ public sealed class DatabaseAdvancedFeaturesE2E : IDisposable
                 collectionId = collectionId,
                 content = new { index = i, data = $"Document {i}" }
             };
-            
+
             var req = new HttpRequestMessage(HttpMethod.Post, "/db/api/documents")
             {
                 Content = JsonContent.Create(
                     doc,
-                    options: new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase }
+                    options: new JsonSerializerOptions
+                    {
+                        PropertyNamingPolicy = JsonNamingPolicy.CamelCase
+                    }
                 )
             };
             req.Headers.Add("X-Tansu-Tenant", _tenant);
             req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
-            
+
             await _client.SendAsync(req);
         }
 
         // Act: Stream documents
-        var streamRequest = new HttpRequestMessage(HttpMethod.Get, $"/db/api/documents/stream?collectionId={collectionId}");
+        var streamRequest = new HttpRequestMessage(
+            HttpMethod.Get,
+            $"/db/api/documents/stream?collectionId={collectionId}"
+        );
         streamRequest.Headers.Add("X-Tansu-Tenant", _tenant);
         streamRequest.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
+        // Accept any content type for streaming
+        streamRequest.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("*/*"));
 
-        var streamResponse = await _client.SendAsync(streamRequest, HttpCompletionOption.ResponseHeadersRead);
+        var streamResponse = await _client.SendAsync(
+            streamRequest,
+            HttpCompletionOption.ResponseHeadersRead
+        );
         streamResponse.EnsureSuccessStatusCode();
 
         // Assert
         Assert.Equal("application/x-ndjson", streamResponse.Content.Headers.ContentType?.MediaType);
-        
+
         var stream = await streamResponse.Content.ReadAsStreamAsync();
         using var reader = new StreamReader(stream);
         var lineCount = 0;
-        
+
         while (!reader.EndOfStream)
         {
             var line = await reader.ReadLineAsync();
@@ -286,13 +329,13 @@ public sealed class DatabaseAdvancedFeaturesE2E : IDisposable
         _output.WriteLine($"✅ Document streaming successful: {lineCount} documents streamed");
     } // End of Method DocumentStream_Returns_NDJSON
 
-    [Fact(Skip = "Streaming endpoints not yet implemented in Database API.")]
+    [Fact]
     public async Task CollectionStream_Returns_NDJSON()
     {
         // Arrange
         var token = await GetAdminTokenAsync();
         await ProvisionTenantAsync(token);
-        
+
         // Create multiple collections
         for (var i = 0; i < 3; i++)
         {
@@ -303,17 +346,22 @@ public sealed class DatabaseAdvancedFeaturesE2E : IDisposable
         var streamRequest = new HttpRequestMessage(HttpMethod.Get, "/db/api/collections/stream");
         streamRequest.Headers.Add("X-Tansu-Tenant", _tenant);
         streamRequest.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
+        // Accept any content type for streaming
+        streamRequest.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("*/*"));
 
-        var streamResponse = await _client.SendAsync(streamRequest, HttpCompletionOption.ResponseHeadersRead);
+        var streamResponse = await _client.SendAsync(
+            streamRequest,
+            HttpCompletionOption.ResponseHeadersRead
+        );
         streamResponse.EnsureSuccessStatusCode();
 
         // Assert
         Assert.Equal("application/x-ndjson", streamResponse.Content.Headers.ContentType?.MediaType);
-        
+
         var stream = await streamResponse.Content.ReadAsStreamAsync();
         using var reader = new StreamReader(stream);
         var lineCount = 0;
-        
+
         while (!reader.EndOfStream)
         {
             var line = await reader.ReadLineAsync();
@@ -335,14 +383,12 @@ public sealed class DatabaseAdvancedFeaturesE2E : IDisposable
     {
         var req = new HttpRequestMessage(HttpMethod.Post, "/db/api/provisioning/tenants")
         {
-            Content = JsonContent.Create(new
-            {
-                tenantId = _tenant,
-                displayName = "Advanced Features Test"
-            })
+            Content = JsonContent.Create(
+                new { tenantId = _tenant, displayName = "Advanced Features Test" }
+            )
         };
         req.Headers.Add("X-Provision-Key", "letmein");
-        
+
         var response = await _client.SendAsync(req);
         // Idempotent - 200 or 409 both OK
         Assert.True(
@@ -359,10 +405,10 @@ public sealed class DatabaseAdvancedFeaturesE2E : IDisposable
         };
         req.Headers.Add("X-Tansu-Tenant", _tenant);
         req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
-        
+
         var response = await _client.SendAsync(req);
         response.EnsureSuccessStatusCode();
-        
+
         var json = await response.Content.ReadFromJsonAsync<JsonElement>();
         return json.GetProperty("id").GetGuid();
     } // End of Method CreateCollectionAsync
@@ -373,17 +419,19 @@ public sealed class DatabaseAdvancedFeaturesE2E : IDisposable
         {
             Content = JsonContent.Create(
                 new { collectionId, content },
-                options: new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase }
+                options: new JsonSerializerOptions
+                {
+                    PropertyNamingPolicy = JsonNamingPolicy.CamelCase
+                }
             )
         };
         req.Headers.Add("X-Tansu-Tenant", _tenant);
         req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
-        
+
         var response = await _client.SendAsync(req);
         response.EnsureSuccessStatusCode();
-        
+
         var json = await response.Content.ReadFromJsonAsync<JsonElement>();
         return json.GetProperty("id").GetGuid();
     } // End of Method CreateDocumentAsync
 } // End of Class DatabaseAdvancedFeaturesE2E
-

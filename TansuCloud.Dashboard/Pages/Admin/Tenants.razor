@@ -1,0 +1,54 @@
+@page "/admin/tenants"
+@layout AdminLayout
+@using MudBlazor
+
+<PageTitle>Tenant Management</PageTitle>
+
+<MudText Typo="Typo.h4" Class="mb-4">Tenant Management</MudText>
+<MudText Typo="Typo.body2" Color="Color.Secondary" Class="mb-6">
+    View and manage all tenants in the system
+</MudText>
+
+<MudCard Elevation="2">
+    <MudCardContent>
+        <MudTable Items="@_tenants" Hover="true" Striped="true" Dense="true">
+            <HeaderContent>
+                <MudTh>Tenant ID</MudTh>
+                <MudTh>Display Name</MudTh>
+                <MudTh>Created</MudTh>
+                <MudTh>Status</MudTh>
+                <MudTh>Actions</MudTh>
+            </HeaderContent>
+            <RowTemplate>
+                <MudTd DataLabel="Tenant ID">@context.TenantId</MudTd>
+                <MudTd DataLabel="Display Name">@context.DisplayName</MudTd>
+                <MudTd DataLabel="Created">@context.CreatedAt.ToString("g")</MudTd>
+                <MudTd DataLabel="Status">
+                    @if (context.IsActive)
+                    {
+                        <MudChip T="string" Color="Color.Success" Size="Size.Small">Active</MudChip>
+                    }
+                    else
+                    {
+                        <MudChip T="string" Color="Color.Error" Size="Size.Small">Inactive</MudChip>
+                    }
+                </MudTd>
+                <MudTd DataLabel="Actions">
+                    <MudIconButton Icon="@Icons.Material.Filled.Edit" Size="Size.Small" Color="Color.Primary" />
+                    <MudIconButton Icon="@Icons.Material.Filled.Delete" Size="Size.Small" Color="Color.Error" />
+                </MudTd>
+            </RowTemplate>
+        </MudTable>
+    </MudCardContent>
+</MudCard>
+
+@code {
+    private List<TenantItem> _tenants = new()
+    {
+        new("acme-dev", "Acme Dev", DateTimeOffset.UtcNow.AddDays(-30), true),
+        new("acme-prod", "Acme Production", DateTimeOffset.UtcNow.AddDays(-60), true),
+        new("contoso-test", "Contoso Test", DateTimeOffset.UtcNow.AddDays(-15), true),
+    };
+
+    private record TenantItem(string TenantId, string DisplayName, DateTimeOffset CreatedAt, bool IsActive);
+}

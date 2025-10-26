@@ -1,0 +1,106 @@
+@using MudBlazor
+@using System.ComponentModel.DataAnnotations
+@inject ISnackbar Snackbar
+
+<MudDialog>
+    <DialogContent>
+        <MudText Typo="Typo.body1" Class="mb-4">
+            Send an invitation email to add a new user to this tenant.
+        </MudText>
+
+        <MudTextField @bind-Value="_email"
+                      Label="Email Address"
+                      Variant="Variant.Outlined"
+                      Required="true"
+                      RequiredError="Email is required"
+                      Validation="@(new EmailAddressAttribute())"
+                      Adornment="Adornment.Start"
+                      AdornmentIcon="@Icons.Material.Filled.Email"
+                      HelperText="User will receive an invitation email"
+                      Class="mb-4"
+                      data-testid="invite-email-input" />
+
+        <MudSelect T="string"
+                   @bind-Value="_selectedRole"
+                   Label="Initial Role"
+                   Variant="Variant.Outlined"
+                   Required="true"
+                   Adornment="Adornment.Start"
+                   AdornmentIcon="@Icons.Material.Filled.Security"
+                   HelperText="You can assign additional roles later"
+                   Class="mb-4"
+                   data-testid="invite-role-select">
+            <MudSelectItem Value="@("User")">User - Basic access</MudSelectItem>
+            <MudSelectItem Value="@("Developer")">Developer - Development access</MudSelectItem>
+            <MudSelectItem Value="@("TenantAdmin")">Tenant Admin - Full tenant management</MudSelectItem>
+        </MudSelect>
+
+        <MudTextField @bind-Value="_message"
+                      Label="Personal Message (Optional)"
+                      Variant="Variant.Outlined"
+                      Lines="3"
+                      MaxLength="500"
+                      Counter="500"
+                      HelperText="Add a personal message to the invitation email"
+                      data-testid="invite-message-input" />
+
+        @if (!string.IsNullOrWhiteSpace(_errorMessage))
+        {
+            <MudAlert Severity="Severity.Error" Class="mt-4">@_errorMessage</MudAlert>
+        }
+    </DialogContent>
+    <DialogActions>
+        <MudButton OnClick="Cancel" data-testid="cancel-button">Cancel</MudButton>
+        <MudButton Variant="Variant.Filled"
+                   Color="Color.Primary"
+                   OnClick="SendInvite"
+                   Disabled="@(!IsValid)"
+                   data-testid="send-invite-button">
+            Send Invitation
+        </MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code {
+    [CascadingParameter]
+    private MudBlazor.IDialogReference? MudDialog { get; set; }
+
+    [Parameter]
+    public string TenantId { get; set; } = string.Empty;
+
+    private string _email = string.Empty;
+    private string _selectedRole = "User";
+    private string _message = string.Empty;
+    private string? _errorMessage;
+
+    private bool IsValid => !string.IsNullOrWhiteSpace(_email) && 
+                           _email.Contains('@') && 
+                           !string.IsNullOrWhiteSpace(_selectedRole);
+
+    private async Task SendInvite()
+    {
+        _errorMessage = null;
+
+        try
+        {
+            // TODO: Call Identity service API to send invitation
+            // POST /identity/api/tenants/{tenantId}/invitations
+            // Body: { email, role, message }
+            await Task.Delay(500); // Simulate API call
+
+            // Close dialog with success
+            MudDialog?.Close(DialogResult.Ok(new InviteResult(_email, _selectedRole)));
+        }
+        catch (Exception ex)
+        {
+            _errorMessage = $"Failed to send invitation: {ex.Message}";
+        }
+    }
+
+    private void Cancel()
+    {
+        MudDialog?.Close(DialogResult.Cancel());
+    }
+
+    private record InviteResult(string Email, string Role);
+}

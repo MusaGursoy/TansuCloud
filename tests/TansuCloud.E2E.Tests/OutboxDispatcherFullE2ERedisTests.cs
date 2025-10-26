@@ -38,7 +38,8 @@ public class OutboxDispatcherFullE2ERedisTests
     [RedisFact(DisplayName = "Full dispatcher loop publishes to Redis and marks dispatched (E2E)")]
     public async Task Full_Dispatcher_Redis_Publish()
     {
-        var redisUrl = Environment.GetEnvironmentVariable("REDIS_URL")!; // guaranteed by RedisFactAttribute
+        // Default to localhost:6379 for E2E tests when Redis is exposed by docker-compose
+        var redisUrl = Environment.GetEnvironmentVariable("REDIS_URL") ?? "127.0.0.1:6379";
 
         // EF in-memory context seeded with two events. Use a shared root so multiple contexts see the same store.
         var dbName = Guid.NewGuid().ToString();
