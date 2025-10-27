@@ -66,6 +66,18 @@ public class AdminRoutesHealthE2E : IAsyncLifetime
         // Click the "Check health" button
         await checkHealthBtn.ClickAsync();
 
+        // Wait a moment for the API call to complete
+        await Task.Delay(2000);
+
+        // Check for any error messages first
+        var errorAlert = await _page.QuerySelectorAsync(".text-danger");
+        if (errorAlert is not null)
+        {
+            var errorText = await errorAlert.TextContentAsync();
+            await DumpPageAsync(_page, "pw-routes-health-error");
+            Assert.Fail($"Health check failed with error: {errorText}");
+        }
+
         // Wait for success message to appear using Playwright's built-in waiting
         var successAlert = _page.Locator(".text-success");
         await successAlert.WaitForAsync(

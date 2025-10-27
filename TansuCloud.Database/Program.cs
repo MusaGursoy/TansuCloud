@@ -229,14 +229,6 @@ builder
     {
         // Register custom NDJSON output formatter for IAsyncEnumerable streaming
         options.OutputFormatters.Add(new TansuCloud.Database.Formatters.NdjsonOutputFormatter());
-
-        // Register Newtonsoft.Json-based input formatter for JSON Patch requests ONLY
-        // This allows JSON Patch to work while keeping System.Text.Json for all responses
-        // See: https://learn.microsoft.com/en-us/aspnet/core/web-api/jsonpatch#add-support-for-json-patch-when-using-systemtextjson
-        options.InputFormatters.Insert(
-            0,
-            TansuCloud.Database.Helpers.JsonPatchInputFormatterHelper.GetJsonPatchInputFormatter()
-        );
     })
     .AddJsonOptions(options =>
     {

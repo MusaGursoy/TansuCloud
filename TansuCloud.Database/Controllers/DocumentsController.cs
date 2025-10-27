@@ -9,7 +9,6 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Caching.Hybrid;
 using Microsoft.Extensions.Primitives;
-using Newtonsoft.Json.Linq;
 using TansuCloud.Database.Caching;
 using TansuCloud.Database.EF;
 using TansuCloud.Database.Services;
@@ -170,15 +169,13 @@ public sealed class DocumentsController(
     public sealed class UpdateDocumentDto
     {
         /// <summary>
-        /// New JSON content (replaces existing content). Uses Dictionary for JSON Patch compatibility.
+        /// New JSON content (replaces existing content).
         /// </summary>
-        [Newtonsoft.Json.JsonProperty("content")]
         public Dictionary<string, object?>? Content { get; set; }
 
         /// <summary>
         /// Optional new vector embedding (replaces existing embedding).
         /// </summary>
-        [Newtonsoft.Json.JsonProperty("embedding")]
         public float[]? Embedding { get; set; }
     }
 
@@ -221,77 +218,6 @@ public sealed class DocumentsController(
             JsonValueKind.Object => JsonElementToDictionary(element),
             _ => element.GetRawText()
         };
-    }
-
-    private static Dictionary<string, object?>? NormalizePatchedContent(
-        Dictionary<string, object?>? content
-    )
-    {
-        if (content is null)
-            return null;
-
-        var normalized = new Dictionary<string, object?>(content.Count, StringComparer.Ordinal);
-        foreach (var kvp in content)
-        {
-            normalized[kvp.Key] = NormalizePatchedValue(kvp.Value);
-        }
-
-        return normalized;
-    }
-
-    private static object? NormalizePatchedValue(object? value)
-    {
-        switch (value)
-        {
-            case null:
-                return null;
-            case JValue jValue:
-                return jValue.Value;
-            case JObject jObject:
-                return jObject
-                    .Properties()
-                    .ToDictionary(
-                        p => p.Name,
-                        p => NormalizePatchedValue(p.Value),
-                        StringComparer.Ordinal
-                    );
-            case JArray jArray:
-                return jArray.Select(token => NormalizePatchedValue(token)).ToList();
-            case IDictionary<string, object?> dict:
-                return dict.ToDictionary(
-                    kvp => kvp.Key,
-                    kvp => NormalizePatchedValue(kvp.Value),
-                    StringComparer.Ordinal
-                );
-            case IDictionary dictionary:
-                var normalizedDict = new Dictionary<string, object?>(
-                    dictionary.Count,
-                    StringComparer.Ordinal
-                );
-                foreach (DictionaryEntry entry in dictionary)
-                {
-                    var key = entry.Key switch
-                    {
-                        null => string.Empty,
-                        string s => s,
-                        _
-                            => Convert.ToString(entry.Key, CultureInfo.InvariantCulture)
-                                ?? string.Empty
-                    };
-
-                    normalizedDict[key] = NormalizePatchedValue(entry.Value);
-                }
-                return normalizedDict;
-            case IList list:
-                var normalizedList = new List<object?>(list.Count);
-                foreach (var item in list)
-                {
-                    normalizedList.Add(NormalizePatchedValue(item));
-                }
-                return normalizedList;
-            default:
-                return value;
-        }
     }
 
     /// <summary>
@@ -1020,199 +946,6 @@ public sealed class DocumentsController(
         Response.Headers.ETag = currentEtag;
         return Ok(new DocumentDto(e.Id, e.CollectionId, ToElement(e.Content), e.CreatedAt));
     } // End of Method Update
-
-    /// <summary>
-    /// Partially updates a document using JSON Patch (RFC 6902) operations.
-    /// </summary>
-    /// <param name="id">Document ID.</param>
-    /// <param name="patchDoc">JSON Patch document with operations (add, remove, replace, move, copy, test).</param>
-    /// <param name="ct">Cancellation token.</param>
-    /// <returns>The updated document.</returns>
-    /// <response code="200">Document successfully patched.</response>
-    /// <response code="400">Invalid JSON Patch document.</response>
-    /// <response code="404">Document not found.</response>
-    /// <response code="412">Precondition failed (If-Match mismatch).</response>
-    /// <remarks>
-    /// JSON Patch allows efficient partial updates. Example:
-    /// [
-    ///   { "op": "replace", "path": "/content/title", "value": "New Title" },
-    ///   { "op": "add", "path": "/content/tags/-", "value": "new-tag" }
-    /// ]
-    /// </remarks>
-    [HttpPatch("{id:guid}")]
-    [Authorize(Policy = "db.write")]
-    [Consumes("application/json-patch+json")]
-    [ProducesResponseType(typeof(DocumentDto), StatusCodes.Status200OK)]
-    [ProducesResponseType(StatusCodes.Status400BadRequest)]
-    [ProducesResponseType(StatusCodes.Status404NotFound)]
-    [ProducesResponseType(StatusCodes.Status412PreconditionFailed)]
-    public async Task<ActionResult<DocumentDto>> Patch(
-        [FromRoute] Guid id,
-        [FromBody] Microsoft.AspNetCore.JsonPatch.JsonPatchDocument<UpdateDocumentDto> patchDoc,
-        CancellationToken ct
-    )
-    {
-        if (patchDoc == null)
-            return Problem(
-                title: "JSON Patch document is required",
-                statusCode: StatusCodes.Status400BadRequest
-            );
-
-        await using var db = await _factory.CreateAsync(HttpContext, ct);
-        var e = await db.Documents.FirstOrDefaultAsync(x => x.Id == id, ct);
-        if (e is null)
-            return NotFound();
-
-        // If-Match precondition
-        var currentEtag = ETagHelper.ComputeWeakETag(
-            e.Id.ToString(),
-            e.CreatedAt.ToUnixTimeMilliseconds().ToString()
-        );
-        var ifm = Request.Headers.IfMatch;
-        if (!StringValues.IsNullOrEmpty(ifm) && !AnyIfMatchMatches(ifm, currentEtag))
-        {
-            Response.Headers.ETag = currentEtag;
-            _audit?.TryEnqueueRedacted(
-                new AuditEvent
-                {
-                    Category = "Database",
-                    Action = "DocumentPatch",
-                    Outcome = "Failure",
-                    ReasonCode = "PreconditionFailed",
-                    Subject = HttpContext.User?.Identity?.Name ?? "system"
-                },
-                new { id },
-                new[] { nameof(id) }
-            );
-            return StatusCode(StatusCodes.Status412PreconditionFailed);
-        }
-
-        // Create a DTO from current state - convert JsonDocument to Dictionary
-        var dto = new UpdateDocumentDto
-        {
-            Content = JsonElementToDictionary(ToElement(e.Content)),
-            Embedding = null // Don't expose embedding in patch operations for simplicity
-        };
-
-        // Apply patch operations with error handling
-        patchDoc.ApplyTo(
-            dto,
-            error =>
-            {
-                ModelState.AddModelError(
-                    error.AffectedObject?.ToString() ?? "patch",
-                    error.ErrorMessage
-                );
-            }
-        );
-
-        // Validate the model after patching
-        if (!ModelState.IsValid)
-        {
-            return ValidationProblem(ModelState);
-        }
-
-        // Update entity with patched values
-        Dictionary<string, object?>? responseContent = null;
-        if (dto.Content != null)
-        {
-            try
-            {
-                var normalizedContent = NormalizePatchedContent(dto.Content);
-                responseContent = normalizedContent; // Save for response
-                // Serialize Dictionary back to JSON and parse into JsonDocument
-                var contentJson = JsonSerializer.Serialize(
-                    normalizedContent,
-                    new JsonSerializerOptions { WriteIndented = false }
-                );
-                _logger.LogDebug("Normalized content JSON: {ContentJson}", contentJson);
-                e.Content = JsonDocument.Parse(contentJson);
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "Failed to normalize or serialize patched content");
-                return Problem(
-                    title: "Failed to process patched content",
-                    detail: ex.Message,
-                    statusCode: StatusCodes.Status500InternalServerError
-                );
-            }
-        }
-
-        // Outbox event
-        try
-        {
-            var tenant = Request.Headers["X-Tansu-Tenant"].ToString();
-            var payloadObj = new
-            {
-                tenant,
-                collectionId = e.CollectionId,
-                documentId = e.Id,
-                op = "document.patched"
-            };
-            var payloadDoc = JsonDocument.Parse(JsonSerializer.Serialize(payloadObj));
-            _outbox.Enqueue(db, "document.patched", payloadDoc);
-        }
-        catch { }
-
-        await db.SaveChangesAsync(ct);
-
-        // Cache invalidation
-        try
-        {
-            _versions?.Increment(Tenant());
-            HybridCacheMetrics.RecordEviction(
-                "database",
-                "documents.patch",
-                "tenant_version_increment"
-            );
-        }
-        catch { }
-
-        // Audit success
-        _audit?.TryEnqueueRedacted(
-            new AuditEvent
-            {
-                Category = "Database",
-                Action = "DocumentPatch",
-                Outcome = "Success",
-                Subject = HttpContext.User?.Identity?.Name ?? "system"
-            },
-            new { e.Id, e.CollectionId },
-            new[] { nameof(e.Id), nameof(e.CollectionId) }
-        );
-
-        Response.Headers.ETag = currentEtag;
-
-        // OPTION 3: Return Dictionary<string, object?> captured before database save
-        // Add canary header to verify new code is running
-        Response.Headers.Append("X-Debug-Patch", "v3");
-
-        if (responseContent == null)
-        {
-            // Fallback if content wasn't patched
-            return Ok(
-                new
-                {
-                    id = e.Id,
-                    collectionId = e.CollectionId,
-                    content = e.Content?.RootElement,
-                    createdAt = e.CreatedAt
-                }
-            );
-        }
-
-        // Return the Dictionary directly - this should work with System.Text.Json
-        return Ok(
-            new
-            {
-                id = e.Id,
-                collectionId = e.CollectionId,
-                content = responseContent,
-                createdAt = e.CreatedAt
-            }
-        );
-    } // End of Method Patch
 
     /// <summary>
     /// Deletes a document by ID.
