@@ -15,6 +15,7 @@
 # postgresql-common package is already included as a dependency of the base PostgreSQL installation.
 # postgresql-contrib package is included to provide additional useful extensions like pg_trgm.
 # Careful! After citus starts using postgesql 18 base image, make sure pgvector and contrib packages are available for postgesql 18.
+# Whenever citusdata/citus base image is updated, ask Copilot to "build the local tansu/citus-pgvector image since the upstream citusdata/citus:latest was recently updated".
 
 FROM citusdata/citus:latest
 

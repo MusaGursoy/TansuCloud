@@ -31,7 +31,7 @@
                           data-testid="tenant-search-input" />
 
             <!-- Tenant List -->
-            <MudList T="string" Clickable="true" Dense="true" Class="tenant-list">
+            <MudList T="string" clickable="true" Dense="true" Class="tenant-list">
                 @foreach (var tenant in FilteredTenants)
                 {
                     var isCurrent = tenant.TenantId.Equals(TenantContext.CurrentTenantId, StringComparison.OrdinalIgnoreCase);

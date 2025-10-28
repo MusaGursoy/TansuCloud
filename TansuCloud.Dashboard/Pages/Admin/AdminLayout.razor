@@ -1,43 +1,115 @@
 @inherits LayoutComponentBase
+@inject NavigationManager Navigation
+@inject ThemeService ThemeService
 @using Microsoft.AspNetCore.Authorization
 @using Microsoft.AspNetCore.Components.Routing
+@using MudBlazor
+@using TansuCloud.Dashboard.Services
 @attribute [Authorize(Policy="AdminOnly")]
 
-<div class="container-fluid">
-    <div class="row">
-        <nav class="col-md-2 d-none d-md-block bg-light sidebar" style="min-height:100vh; border-right: 1px solid #eee;">
-            <div class="position-sticky pt-3">
-                <ul class="nav flex-column">
-                    <li class="nav-item"><NavLink class="nav-link" data-testid="nav-overview" href="admin" Match="NavLinkMatch.Prefix">Overview</NavLink></li>
-                    <li class="nav-item"><strong class="ms-2 text-muted">Networking</strong></li>
-                    <li class="nav-item"><NavLink class="nav-link" data-testid="nav-domains" href="admin/domains" Match="NavLinkMatch.Prefix">Domains & TLS</NavLink></li>
-                    <li class="nav-item"><NavLink class="nav-link" data-testid="nav-providers" href="admin/providers" Match="NavLinkMatch.Prefix">Providers</NavLink></li>
-                    <li class="nav-item"><strong class="ms-2 text-muted">Routing</strong></li>
-                    <li class="nav-item"><NavLink class="nav-link" data-testid="nav-routes" href="admin/routes" Match="NavLinkMatch.Prefix">YARP Routes</NavLink></li>
-                    <li class="nav-item"><strong class="ms-2 text-muted">Caching</strong></li>
-                    <li class="nav-item"><NavLink class="nav-link" data-testid="nav-cache-rate-policies" href="admin/cache-rate-policies" Match="NavLinkMatch.Prefix">Cache & Rate Limits</NavLink></li>
-                    <li class="nav-item"><NavLink class="nav-link" data-testid="nav-rate-limits" href="admin/rate-limits" Match="NavLinkMatch.Prefix">Rate Limits</NavLink></li>
-                    <li class="nav-item"><NavLink class="nav-link" data-testid="nav-output-cache" href="admin/output-cache" Match="NavLinkMatch.Prefix">Output Cache</NavLink></li>
-                    <li class="nav-item"><strong class="ms-2 text-muted">Identity</strong></li>
-                    <li class="nav-item"><NavLink class="nav-link" data-testid="nav-identity-policies" href="admin/identity-policies" Match="NavLinkMatch.Prefix">Identity Policies</NavLink></li>
-                    <li class="nav-item"><NavLink class="nav-link" data-testid="nav-security" href="admin/security" Match="NavLinkMatch.Prefix">Security Events</NavLink></li>
-                    <li class="nav-item"><strong class="ms-2 text-muted">Observability</strong></li>
-                    <li class="nav-item"><NavLink class="nav-link" data-testid="nav-observability-config" href="admin/observability-config" Match="NavLinkMatch.Prefix">Observability Config</NavLink></li>
-                    <li class="nav-item"><NavLink class="nav-link" data-testid="nav-metrics" href="admin/metrics" Match="NavLinkMatch.Prefix">Metrics (SigNoz)</NavLink></li>
-                    <li class="nav-item"><NavLink class="nav-link" data-testid="nav-logs" href="admin/logs" Match="NavLinkMatch.Prefix">Logs</NavLink></li>
-                    <li class="nav-item"><NavLink class="nav-link" data-testid="nav-audit" href="admin/audit" Match="NavLinkMatch.Prefix">Audit</NavLink></li>
-                    <li class="nav-item"><strong class="ms-2 text-muted">Policies</strong></li>
-                    <li class="nav-item"><NavLink class="nav-link" data-testid="nav-policy-center" href="admin/policy-center" Match="NavLinkMatch.Prefix">Policy Center</NavLink></li>
-                    <li class="nav-item"><strong class="ms-2 text-muted">Storage/DB</strong></li>
-                    <li class="nav-item"><NavLink class="nav-link" data-testid="nav-storage" href="admin/storage" Match="NavLinkMatch.Prefix">Storage</NavLink></li>
-                    <li class="nav-item"><strong class="ms-2 text-muted">ML</strong></li>
-                    <li class="nav-item"><NavLink class="nav-link" data-testid="nav-ml" href="admin/ml" Match="NavLinkMatch.Prefix">ML Management</NavLink></li>
-                </ul>
-            </div>
-        </nav>
-        <main class="col-md-10 ms-sm-auto px-4 py-3">
-            @Body
-        </main>
-    </div>
-    </div>
+<MudThemeProvider Theme="@ThemeService.TansuCloudTheme" />
+<MudPopoverProvider />
+<MudDialogProvider />
+<MudSnackbarProvider />
 
+<MudLayout>
+    <!-- App Bar (Top Navigation) -->
+    <MudAppBar Elevation="1" Dense="false">
+        <MudIconButton Icon="@Icons.Material.Filled.Menu" Color="Color.Inherit" Edge="Edge.Start" OnClick="@ToggleDrawer" />
+        <MudText Typo="Typo.h5" Class="ml-3">TansuCloud</MudText>
+        <MudSpacer />
+        <MudIconButton Icon="@Icons.Material.Filled.Notifications" Color="Color.Inherit" />
+        <MudMenu Icon="@Icons.Material.Filled.AccountCircle" Color="Color.Inherit" AnchorOrigin="Origin.BottomRight" TransformOrigin="Origin.TopRight">
+            <MudMenuItem Icon="@Icons.Material.Filled.Person">Profile</MudMenuItem>
+            <MudMenuItem Icon="@Icons.Material.Filled.Settings">Settings</MudMenuItem>
+            <MudDivider />
+            <MudMenuItem Icon="@Icons.Material.Filled.Logout">Logout</MudMenuItem>
+        </MudMenu>
+    </MudAppBar>
+
+    <!-- Sidebar Drawer (Left Navigation) -->
+    <MudDrawer @bind-Open="@_drawerOpen" Elevation="2" Variant="@DrawerVariant.Mini" OpenMiniOnHover="true" Width="240px" MiniWidth="64px" ClipMode="DrawerClipMode.Always">
+        <MudDrawerHeader Class="d-flex align-center justify-center pa-4">
+            <MudIcon Icon="@Icons.Material.Filled.Cloud" Color="Color.Primary" Size="Size.Large" />
+        </MudDrawerHeader>
+        <MudNavMenu>
+            <!-- Overview -->
+            <MudNavGroup Title="Dashboard" Icon="@Icons.Material.Filled.Dashboard" Expanded="true">
+                <MudNavLink Href="/admin" Match="NavLinkMatch.All" Icon="@Icons.Material.Filled.Home" data-testid="nav-overview">Overview</MudNavLink>
+            </MudNavGroup>
+
+            <!-- Networking -->
+            <MudNavGroup Title="Networking" Icon="@Icons.Material.Filled.NetworkCheck">
+                <MudNavLink Href="/admin/domains" Icon="@Icons.Material.Filled.Domain" data-testid="nav-domains">Domains & TLS</MudNavLink>
+                <MudNavLink Href="/admin/providers" Icon="@Icons.Material.Filled.Extension" data-testid="nav-providers">Providers</MudNavLink>
+            </MudNavGroup>
+
+            <!-- Routing -->
+            <MudNavGroup Title="Routing" Icon="@Icons.Material.Filled.Route">
+                <MudNavLink Href="/admin/routes" Icon="@Icons.Material.Filled.AltRoute" data-testid="nav-routes">YARP Routes</MudNavLink>
+            </MudNavGroup>
+
+            <!-- Caching -->
+            <MudNavGroup Title="Caching" Icon="@Icons.Material.Filled.Storage">
+                <MudNavLink Href="/admin/cache-rate-policies" Icon="@Icons.Material.Filled.Policy" data-testid="nav-cache-rate-policies">Cache & Rate Limits</MudNavLink>
+                <MudNavLink Href="/admin/rate-limits" Icon="@Icons.Material.Filled.Speed" data-testid="nav-rate-limits">Rate Limits</MudNavLink>
+                <MudNavLink Href="/admin/output-cache" Icon="@Icons.Material.Filled.Cached" data-testid="nav-output-cache">Output Cache</MudNavLink>
+            </MudNavGroup>
+
+            <!-- Identity -->
+            <MudNavGroup Title="Identity" Icon="@Icons.Material.Filled.People">
+                <MudNavLink Href="/admin/identity-policies" Icon="@Icons.Material.Filled.Password" data-testid="nav-identity-policies">Identity Policies</MudNavLink>
+                <MudNavLink Href="/admin/security" Icon="@Icons.Material.Filled.Security" data-testid="nav-security">Security Events</MudNavLink>
+            </MudNavGroup>
+
+            <!-- Observability -->
+            <MudNavGroup Title="Observability" Icon="@Icons.Material.Filled.Visibility">
+                <MudNavLink Href="/admin/observability" Icon="@Icons.Material.Filled.Dashboard" data-testid="nav-observability">Observability Dashboard</MudNavLink>
+                <MudNavLink Href="/admin/observability-config" Icon="@Icons.Material.Filled.Settings" data-testid="nav-observability-config">Observability Config</MudNavLink>
+                <MudNavLink Href="/admin/metrics" Icon="@Icons.Material.Filled.ShowChart" data-testid="nav-metrics">Metrics (SigNoz)</MudNavLink>
+                <MudNavLink Href="/admin/logs" Icon="@Icons.Material.Filled.Article" data-testid="nav-logs">Logs</MudNavLink>
+                <MudNavLink Href="/admin/audit" Icon="@Icons.Material.Filled.History" data-testid="nav-audit">Audit</MudNavLink>
+            </MudNavGroup>
+
+            <!-- Policies -->
+            <MudNavGroup Title="Policy Center" Icon="@Icons.Material.Filled.Security">
+                <MudNavLink Href="/admin/policy-center" Icon="@Icons.Material.Filled.ListAlt" data-testid="nav-policy-center">Policy Center</MudNavLink>
+            </MudNavGroup>
+
+            <!-- Storage & Database -->
+            <MudNavGroup Title="Storage & Database" Icon="@Icons.Material.Filled.Storage">
+                <MudNavLink Href="/admin/storage" Icon="@Icons.Material.Filled.Folder" data-testid="nav-storage">Storage</MudNavLink>
+            </MudNavGroup>
+
+            <!-- ML -->
+            <MudNavGroup Title="Machine Learning" Icon="@Icons.Material.Filled.Memory">
+                <MudNavLink Href="/admin/ml" Icon="@Icons.Material.Filled.Psychology" data-testid="nav-ml">ML Management</MudNavLink>
+            </MudNavGroup>
+        </MudNavMenu>
+    </MudDrawer>
+
+    <!-- Main Content -->
+    <MudMainContent>
+        <MudContainer MaxWidth="MaxWidth.False" Class="pa-4">
+            @Body
+        </MudContainer>
+    </MudMainContent>
+</MudLayout>
+
+<!-- Blazor Error UI -->
+<div id="blazor-error-ui" data-nosnippet>
+    <MudAlert Severity="Severity.Error" Variant="Variant.Filled">
+        An unhandled error has occurred.
+        <MudButton Color="Color.Error" Variant="Variant.Text" Href="" Class="ml-2">Reload</MudButton>
+        <MudIconButton Icon="@Icons.Material.Filled.Close" Color="Color.Inherit" Size="Size.Small" OnClick="@(() => { })" Class="ml-2" />
+    </MudAlert>
+</div>
+
+@code {
+    private bool _drawerOpen = true;
+
+    private void ToggleDrawer()
+    {
+        _drawerOpen = !_drawerOpen;
+    }
+}

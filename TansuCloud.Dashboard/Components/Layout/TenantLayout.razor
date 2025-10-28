@@ -6,12 +6,6 @@
 @using TansuCloud.Dashboard.Components.Tenant
 @using MudBlazor
 
-<!-- MudBlazor Providers -->
-<MudThemeProvider Theme="@_customTheme" />
-<MudPopoverProvider />
-<MudDialogProvider />
-<MudSnackbarProvider />
-
 <MudLayout>
     <!-- App Bar (Top Navigation) -->
     <MudAppBar Elevation="1" Dense="false">
@@ -25,7 +19,7 @@
             <MudChip T="string" Icon="@Icons.Material.Filled.Business" Color="Color.Primary" Variant="Variant.Outlined" Size="Size.Medium" Class="mr-4">
                 @_currentTenantName
             </MudChip>
-            <MudIconButton Icon="@Icons.Material.Filled.SwapHoriz" Color="Color.Inherit" OnClick="@OpenTenantSwitcher" Title="Switch Tenant" />
+            <MudIconButton Icon="@Icons.Material.Filled.SwapHoriz" Color="Color.Inherit" OnClick="@OpenTenantSwitcher" title="Switch Tenant" />
         }
         
         <MudIconButton Icon="@Icons.Material.Filled.Notifications" Color="Color.Inherit" />
@@ -247,32 +241,4 @@
             StateHasChanged();
         }
     }
-
-    private MudTheme _customTheme = new()
-    {
-        PaletteLight = new PaletteLight
-        {
-            Primary = "#594AE2",           // TansuCloud brand purple
-            Secondary = "#26C6DA",         // Cyan accent
-            AppbarBackground = "#594AE2",  // Match primary
-            Background = "#F5F5F7",        // Light gray background
-            Surface = "#FFFFFF",
-            DrawerBackground = "#FFFFFF",
-            DrawerText = "rgba(0,0,0,0.87)",
-            Success = "#4CAF50",
-            Error = "#F44336",
-            Warning = "#FF9800",
-            Info = "#2196F3"
-        },
-        PaletteDark = new PaletteDark
-        {
-            Primary = "#7C6FE8",
-            Secondary = "#26C6DA",
-            AppbarBackground = "#1E1E2E",
-            Background = "#121218",
-            Surface = "#1E1E2E",
-            DrawerBackground = "#1E1E2E",
-            DrawerText = "rgba(255,255,255,0.87)"
-        }
-    };
 } // End of Code TenantLayout

@@ -50,7 +50,6 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
     volumes:
       - tansu-pgdata:/var/lib/postgresql/data
-      # Init scripts (01-init.sql) are baked into the Docker image (see dev/Dockerfile.citus-pgvector)
       # No bind mount needed - databases are created automatically on first start
       # - ./dev/db-init:/docker-entrypoint-initdb.d:ro
     # In production, keep Postgres internal-only by default. If you need external access for E2E tests or direct admin ops,

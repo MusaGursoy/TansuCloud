@@ -123,6 +123,8 @@ builder
         metrics.AddMeter("TansuCloud.Audit");
         // Export OTLP diagnostics/gauges
         metrics.AddMeter("tansu.otel.exporter");
+        // SigNoz query service metrics (Task 19 Phase 6 - self-monitoring)
+        metrics.AddMeter("TansuCloud.Dashboard.SigNoz");
         metrics.AddTansuOtlpExporter(builder.Configuration, builder.Environment);
     });
 
@@ -134,8 +136,42 @@ builder.Services.Configure<SigNozOptions>(
 );
 builder.Services.AddSingleton<SigNozMetricsCatalog>();
 
+// SigNoz query service for Observability pages (Task 19)
+builder.Services.Configure<SigNozQueryOptions>(
+    builder.Configuration.GetSection(SigNozQueryOptions.SectionName)
+);
+
+// Circuit breaker for SigNoz API (Task 19 Phase 6 - graceful degradation)
+builder.Services.AddSingleton<SigNozCircuitBreaker>();
+
+builder.Services.AddHttpClient<ISigNozQueryService, SigNozQueryService>();
+
+// HttpClient for SigNoz health checks (Task 19 Phase 6)
+builder.Services.AddHttpClient(
+    "SigNozHealthCheck",
+    (sp, client) =>
+    {
+        var opts =
+            sp.GetRequiredService<Microsoft.Extensions.Options.IOptionsMonitor<SigNozQueryOptions>>().CurrentValue;
+        client.BaseAddress = new Uri(opts.ApiBaseUrl.TrimEnd('/') + "/");
+        client.Timeout = TimeSpan.FromSeconds(15); // Health check timeout
+        // Note: Health check uses /api/v1/version which typically doesn't require auth
+        // If your SigNoz instance requires API key for version endpoint, uncomment:
+        // if (!string.IsNullOrWhiteSpace(opts.ApiKey))
+        // {
+        //     client.DefaultRequestHeaders.Authorization =
+        //         new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", opts.ApiKey);
+        // }
+    }
+);
+
+builder.Services.AddHybridCache(); // For caching SigNoz query results
+
 // MudBlazor services (MIT License - no keys required!)
 builder.Services.AddMudServices();
+
+// Centralized theme service for consistent branding
+builder.Services.AddSingleton<TansuCloud.Dashboard.Services.ThemeService>();
 
 builder.Logging.AddOpenTelemetry(o =>
 {
@@ -158,7 +194,8 @@ builder
 // Readiness: verify OTLP exporter reachability and W3C Activity id format
 builder
     .Services.AddHealthChecks()
-    .AddCheck<OtlpConnectivityHealthCheck>("otlp", tags: new[] { "ready", "otlp" });
+    .AddCheck<OtlpConnectivityHealthCheck>("otlp", tags: new[] { "ready", "otlp" })
+    .AddCheck<SigNozConnectivityHealthCheck>("signoz", tags: new[] { "ready", "signoz" });
 
 // Phase 0: publish health transitions
 builder.Services.AddSingleton<IHealthCheckPublisher, HealthTransitionPublisher>();
@@ -2776,6 +2813,297 @@ app.MapPost(
     )
     .RequireAuthorization("AdminOnly")
     .WithDisplayName("Admin: Update observability governance (not implemented)");
+
+// Admin API: SigNoz Query Service endpoints (Task 19 - Observability pages)
+app.MapGet(
+        "/api/admin/observability/service-status",
+        async (
+            ISigNozQueryService sigNoz,
+            string? serviceName,
+            int timeRangeMinutes,
+            HttpContext http,
+            IAuditLogger audit,
+            CancellationToken ct
+        ) =>
+        {
+            try
+            {
+                var result = await sigNoz.GetServiceStatusAsync(serviceName, timeRangeMinutes, ct);
+
+                // Audit read
+                var ev = new TansuCloud.Observability.Auditing.AuditEvent
+                {
+                    Category = "Admin",
+                    Action = "ObservabilityServiceStatusRead",
+                    Outcome = "Success",
+                    Subject = http.User?.Identity?.Name ?? "anonymous",
+                    CorrelationId = http.TraceIdentifier
+                };
+                audit.TryEnqueueRedacted(
+                    ev,
+                    new { ServiceName = serviceName ?? "all", TimeRangeMinutes = timeRangeMinutes },
+                    new[] { "ServiceName", "TimeRangeMinutes" }
+                );
+
+                return Results.Ok(result);
+            }
+            catch (Exception ex)
+            {
+                return Results.Problem(
+                    title: "Failed to query service status",
+                    detail: ex.Message,
+                    statusCode: StatusCodes.Status503ServiceUnavailable
+                );
+            }
+        }
+    )
+    .RequireAuthorization("AdminOnly")
+    .WithDisplayName("Admin: Get service status from SigNoz");
+
+app.MapGet(
+        "/api/admin/observability/topology",
+        async (
+            ISigNozQueryService sigNoz,
+            HttpContext http,
+            IAuditLogger audit,
+            CancellationToken ct
+        ) =>
+        {
+            try
+            {
+                var result = await sigNoz.GetServiceTopologyAsync(ct);
+
+                // Audit read
+                var ev = new TansuCloud.Observability.Auditing.AuditEvent
+                {
+                    Category = "Admin",
+                    Action = "ObservabilityTopologyRead",
+                    Outcome = "Success",
+                    Subject = http.User?.Identity?.Name ?? "anonymous",
+                    CorrelationId = http.TraceIdentifier
+                };
+                audit.TryEnqueueRedacted(
+                    ev,
+                    new { NodeCount = result.Nodes.Count, EdgeCount = result.Edges.Count },
+                    new[] { "NodeCount", "EdgeCount" }
+                );
+
+                return Results.Ok(result);
+            }
+            catch (Exception ex)
+            {
+                return Results.Problem(
+                    title: "Failed to query service topology",
+                    detail: ex.Message,
+                    statusCode: StatusCodes.Status503ServiceUnavailable
+                );
+            }
+        }
+    )
+    .RequireAuthorization("AdminOnly")
+    .WithDisplayName("Admin: Get service topology from SigNoz");
+
+app.MapGet(
+        "/api/admin/observability/services",
+        async (
+            ISigNozQueryService sigNoz,
+            HttpContext http,
+            IAuditLogger audit,
+            CancellationToken ct
+        ) =>
+        {
+            try
+            {
+                var result = await sigNoz.GetServiceListAsync(ct);
+
+                // Audit read
+                var ev = new TansuCloud.Observability.Auditing.AuditEvent
+                {
+                    Category = "Admin",
+                    Action = "ObservabilityServiceListRead",
+                    Outcome = "Success",
+                    Subject = http.User?.Identity?.Name ?? "anonymous",
+                    CorrelationId = http.TraceIdentifier
+                };
+                audit.TryEnqueueRedacted(
+                    ev,
+                    new { ServiceCount = result.Services.Count },
+                    new[] { "ServiceCount" }
+                );
+
+                return Results.Ok(result);
+            }
+            catch (Exception ex)
+            {
+                return Results.Problem(
+                    title: "Failed to query service list",
+                    detail: ex.Message,
+                    statusCode: StatusCodes.Status503ServiceUnavailable
+                );
+            }
+        }
+    )
+    .RequireAuthorization("AdminOnly")
+    .WithDisplayName("Admin: Get service list from SigNoz");
+
+app.MapGet(
+        "/api/admin/observability/correlated-logs",
+        async (
+            string traceId,
+            string? spanId,
+            int limit,
+            ISigNozQueryService sigNoz,
+            HttpContext http,
+            IAuditLogger audit,
+            CancellationToken ct
+        ) =>
+        {
+            if (string.IsNullOrWhiteSpace(traceId))
+            {
+                return Results.BadRequest(new { error = "traceId parameter is required" });
+            }
+
+            try
+            {
+                var result = await sigNoz.GetCorrelatedLogsAsync(traceId, spanId, limit, ct);
+
+                // Audit read
+                var ev = new TansuCloud.Observability.Auditing.AuditEvent
+                {
+                    Category = "Admin",
+                    Action = "ObservabilityCorrelatedLogsRead",
+                    Outcome = "Success",
+                    Subject = http.User?.Identity?.Name ?? "anonymous",
+                    CorrelationId = http.TraceIdentifier
+                };
+                audit.TryEnqueueRedacted(
+                    ev,
+                    new
+                    {
+                        TraceId = traceId,
+                        SpanId = spanId ?? "all",
+                        LogCount = result.Logs.Count
+                    },
+                    new[] { "TraceId", "SpanId", "LogCount" }
+                );
+
+                return Results.Ok(result);
+            }
+            catch (Exception ex)
+            {
+                return Results.Problem(
+                    title: "Failed to query correlated logs",
+                    detail: ex.Message,
+                    statusCode: StatusCodes.Status503ServiceUnavailable
+                );
+            }
+        }
+    )
+    .RequireAuthorization("AdminOnly")
+    .WithDisplayName("Admin: Get correlated logs from SigNoz");
+
+app.MapGet(
+        "/api/admin/observability/otlp-health",
+        async (
+            ISigNozQueryService sigNoz,
+            HttpContext http,
+            IAuditLogger audit,
+            CancellationToken ct
+        ) =>
+        {
+            try
+            {
+                var result = await sigNoz.GetOtlpHealthAsync(ct);
+
+                // Audit read
+                var ev = new TansuCloud.Observability.Auditing.AuditEvent
+                {
+                    Category = "Admin",
+                    Action = "ObservabilityOtlpHealthRead",
+                    Outcome = "Success",
+                    Subject = http.User?.Identity?.Name ?? "anonymous",
+                    CorrelationId = http.TraceIdentifier
+                };
+                audit.TryEnqueueRedacted(
+                    ev,
+                    new
+                    {
+                        ExporterCount = result.Exporters.Count,
+                        HealthyCount = result.Exporters.Count(e => e.IsHealthy)
+                    },
+                    new[] { "ExporterCount", "HealthyCount" }
+                );
+
+                return Results.Ok(result);
+            }
+            catch (Exception ex)
+            {
+                return Results.Problem(
+                    title: "Failed to query OTLP health",
+                    detail: ex.Message,
+                    statusCode: StatusCodes.Status503ServiceUnavailable
+                );
+            }
+        }
+    )
+    .RequireAuthorization("AdminOnly")
+    .WithDisplayName("Admin: Get OTLP exporter health from SigNoz");
+
+app.MapGet(
+        "/api/admin/observability/recent-errors",
+        async (
+            string? serviceName,
+            int timeRangeMinutes,
+            int limit,
+            ISigNozQueryService sigNoz,
+            HttpContext http,
+            IAuditLogger audit,
+            CancellationToken ct
+        ) =>
+        {
+            try
+            {
+                var result = await sigNoz.GetRecentErrorsAsync(
+                    serviceName,
+                    timeRangeMinutes,
+                    limit,
+                    ct
+                );
+
+                // Audit read
+                var ev = new TansuCloud.Observability.Auditing.AuditEvent
+                {
+                    Category = "Admin",
+                    Action = "ObservabilityRecentErrorsRead",
+                    Outcome = "Success",
+                    Subject = http.User?.Identity?.Name ?? "anonymous",
+                    CorrelationId = http.TraceIdentifier
+                };
+                audit.TryEnqueueRedacted(
+                    ev,
+                    new
+                    {
+                        ServiceName = serviceName ?? "all",
+                        TimeRangeMinutes = timeRangeMinutes,
+                        ErrorCount = result.Errors.Count
+                    },
+                    new[] { "ServiceName", "TimeRangeMinutes", "ErrorCount" }
+                );
+
+                return Results.Ok(result);
+            }
+            catch (Exception ex)
+            {
+                return Results.Problem(
+                    title: "Failed to query recent errors",
+                    detail: ex.Message,
+                    statusCode: StatusCodes.Status503ServiceUnavailable
+                );
+            }
+        }
+    )
+    .RequireAuthorization("AdminOnly")
+    .WithDisplayName("Admin: Get recent errors from SigNoz");
 
 // Admin-only log reporting status/toggle API
 app.MapGet(

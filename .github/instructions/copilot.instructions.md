@@ -200,7 +200,7 @@ docker compose restart gateway
    ```bash
    docker compose up -d --build
    ```
-   - Use the direct `docker compose` command (NOT PowerShell wrappers)
+   - **CRITICAL**: Use the direct `docker compose` command (NOT PowerShell wrappers like `Invoke-TansuCompose`)
    - Build ALL services to ensure consistency
    - Wait for all services to become healthy
 
@@ -210,6 +210,27 @@ docker compose restart gateway
    ```
 
 **Why this matters:** Running tests against stale containers produces false failures. The code you just fixed may not be running in the container. Always rebuild first to ensure you're testing the current codebase, not yesterday's version.
+
+### Docker Compose Command Standard (MANDATORY)
+
+**ALWAYS use the direct `docker compose` command without wrappers when working with Docker Compose:**
+
+```bash
+# Correct - Direct command
+docker compose up -d --build
+
+# Incorrect - Do NOT use PowerShell wrappers
+Invoke-TansuCompose up -d --build
+```
+
+**Why this matters:**
+- Direct commands are consistent across platforms and environments
+- No hidden logic, environment manipulation, or side effects
+- Easier to debug and understand what's happening
+- Standard Docker Compose behavior is preserved
+- Reduces complexity and potential points of failure
+
+**Exception:** Only use `Invoke-TansuCompose` or other wrappers when explicitly required for environment-specific setup that MUST manipulate `.env` files or perform multi-step orchestration that cannot be expressed in a single `docker compose` command.
 
 By following these rules, contributors and AI assistants will produce modern, maintainable, and well-documented .NET code for TansuCloud.
 
@@ -913,9 +934,131 @@ When updating an existing page to use MudBlazor components:
 - **Theming**: Changes to `MudTheme` require page refresh (design-time only)
 - **Color Prop**: Use `Color.Primary`, `Color.Secondary`, `Color.Error`, etc. (not CSS classes)
 
+### Shared Theme for New Pages (REQUIRED)
+
+**All new Dashboard pages MUST use the centralized MudBlazor theme defined in the Dashboard project.** Do not create page-specific themes or override theme settings on individual pages.
+
+#### Theme Location
+The shared theme is defined in:
+- **File**: `TansuCloud.Dashboard/Shared/MainLayout.razor`
+- **Component**: `<MudThemeProvider Theme="@_theme" />`
+
+#### Theme Definition
+```csharp
+private readonly MudTheme _theme = new()
+{
+    Palette = new PaletteLight
+    {
+        Primary = "#594AE2",           // TansuCloud brand purple
+        Secondary = "#FF4081",         // Accent pink
+        AppbarBackground = "#594AE2",  // Top bar background
+        Background = "#F5F5F5",        // Page background
+        Surface = "#FFFFFF",           // Card/paper surfaces
+        DrawerBackground = "#FFFFFF",  // Sidebar background
+        DrawerText = "rgba(0,0,0,0.87)",
+        DrawerIcon = "rgba(0,0,0,0.54)"
+    },
+    PaletteDark = new PaletteDark
+    {
+        Primary = "#7B68EE",
+        Secondary = "#FF4081",
+        AppbarBackground = "#27272f",
+        Background = "#1a1a27",
+        Surface = "#27272f",
+        DrawerBackground = "#27272f",
+        DrawerText = "rgba(255,255,255,0.87)",
+        DrawerIcon = "rgba(255,255,255,0.54)"
+    },
+    Typography = new Typography
+    {
+        Default = new Default
+        {
+            FontFamily = new[] { "Roboto", "Helvetica", "Arial", "sans-serif" }
+        }
+    }
+};
+```
+
+#### Usage Rules for New Pages
+
+1. **Do NOT create page-specific themes**
+   - Never instantiate `new MudTheme()` in individual pages
+   - Do NOT add `<MudThemeProvider>` to child components/pages
+
+2. **Theme is automatically inherited**
+   - All pages inside `MainLayout.razor` automatically inherit the shared theme
+   - Colors, typography, spacing, and elevation are globally consistent
+
+3. **Use theme colors via `Color` enum**
+   - Primary actions: `Color.Primary` (brand purple)
+   - Secondary actions: `Color.Secondary` (accent pink)
+   - Destructive actions: `Color.Error`
+   - Success feedback: `Color.Success`
+   - Warnings: `Color.Warning`
+   - Neutral/info: `Color.Info`, `Color.Default`
+
+   ```razor
+   <MudButton Color="Color.Primary">Save</MudButton>
+   <MudButton Color="Color.Secondary">Export</MudButton>
+   <MudButton Color="Color.Error">Delete</MudButton>
+   ```
+
+4. **Use consistent component variants**
+   - Buttons: `Variant.Filled` for primary, `Variant.Outlined` for secondary, `Variant.Text` for tertiary
+   - Text fields: `Variant.Outlined` by default (matches Material Design 3)
+   - Cards: `Elevation="2"` for standard cards, `Elevation="4"` for emphasized content
+
+5. **Respect Material Design spacing**
+   - Use MudBlazor spacing classes: `ma-*`, `pa-*`, `mt-*`, `pt-*` (0-16)
+   - Standard padding for cards: `pa-4` (16px)
+   - Standard margin between sections: `mt-6` (24px)
+
+6. **Dark mode support**
+   - Theme includes both `PaletteLight` and `PaletteDark`
+   - Dark mode toggle available in user menu (future enhancement)
+   - Do NOT hardcode colors (use theme palette references)
+
+#### Example: Creating a New Page
+
+```razor
+@page "/admin/new-feature"
+@using MudBlazor
+
+<MudContainer MaxWidth="MaxWidth.Large" Class="mt-4">
+    <MudText Typo="Typo.h4" Class="mb-4">New Feature</MudText>
+    
+    <MudCard Elevation="2">
+        <MudCardContent>
+            <MudText Typo="Typo.h6">Feature Details</MudText>
+            <MudTextField T="string" Label="Name" Variant="Variant.Outlined" Class="mt-2" />
+        </MudCardContent>
+        <MudCardActions>
+            <MudButton Color="Color.Primary" Variant="Variant.Filled">Save</MudButton>
+            <MudButton Color="Color.Default" Variant="Variant.Outlined">Cancel</MudButton>
+        </MudCardActions>
+    </MudCard>
+</MudContainer>
+
+@code {
+    // NO theme definition here - inherited from MainLayout
+}
+```
+
+#### Modifying the Shared Theme
+
+If you need to adjust the global theme (rare):
+1. Edit `MainLayout.razor` only
+2. Update both `PaletteLight` and `PaletteDark` for consistency
+3. Test in both light and dark modes
+4. Document the change reason in PR description
+5. Update this section if adding new theme conventions
+
+**Rationale**: Centralizing the theme ensures visual consistency across all Dashboard pages, simplifies maintenance, and enables future theme switching (light/dark mode, custom branding per tenant) without touching individual pages.
+
 ### Future Design Updates
 When creating new Dashboard pages or updating existing ones:
 - Always consult this guide first
+- **Use the shared MudBlazor theme** (see "Shared Theme for New Pages" above)
 - Use MudBlazor components exclusively (avoid mixing with Bootstrap or other UI libraries)
 - Maintain consistency with existing navigation structure and styling
 - Add new menu items to appropriate `MudNavGroup` sections

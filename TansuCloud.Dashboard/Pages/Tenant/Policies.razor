@@ -152,22 +152,22 @@
                                                Color="Color.Success"
                                                OnClick="@(() => TestPolicy(context.Item))"
                                                data-testid="@($"test-policy-{context.Item.Id}")"
-                                               Title="Test Policy" />
+                                               title="Test Policy" />
                                 <MudIconButton Icon="@Icons.Material.Filled.Edit" 
                                                Size="Size.Small" 
                                                Color="Color.Primary"
                                                OnClick="@(() => EditPolicy(context.Item))"
-                                               Title="Edit" />
+                                               title="Edit" />
                                 <MudIconButton Icon="@(context.Item.IsActive ? Icons.Material.Filled.ToggleOn : Icons.Material.Filled.ToggleOff)" 
                                                Size="Size.Small" 
                                                Color="@(context.Item.IsActive ? Color.Success : Color.Default)"
                                                OnClick="@(() => TogglePolicyStatus(context.Item))"
-                                               Title="@(context.Item.IsActive ? "Deactivate" : "Activate")" />
+                                               title="@(context.Item.IsActive ? "Deactivate" : "Activate")" />
                                 <MudIconButton Icon="@Icons.Material.Filled.Delete" 
                                                Size="Size.Small" 
                                                Color="Color.Error"
                                                OnClick="@(() => DeletePolicy(context.Item))"
-                                               Title="Delete" />
+                                               title="Delete" />
                             </MudStack>
                         </CellTemplate>
                     </TemplateColumn>
@@ -229,22 +229,22 @@
                                                Color="Color.Success"
                                                OnClick="@(() => TestPolicy(context.Item))"
                                                data-testid="@($"test-policy-{context.Item.Id}")"
-                                               Title="Test Policy" />
+                                               title="Test Policy" />
                                 <MudIconButton Icon="@Icons.Material.Filled.Edit" 
                                                Size="Size.Small" 
                                                Color="Color.Primary"
                                                OnClick="@(() => EditPolicy(context.Item))"
-                                               Title="Edit" />
+                                               title="Edit" />
                                 <MudIconButton Icon="@(context.Item.IsActive ? Icons.Material.Filled.ToggleOn : Icons.Material.Filled.ToggleOff)" 
                                                Size="Size.Small" 
                                                Color="@(context.Item.IsActive ? Color.Success : Color.Default)"
                                                OnClick="@(() => TogglePolicyStatus(context.Item))"
-                                               Title="@(context.Item.IsActive ? "Deactivate" : "Activate")" />
+                                               title="@(context.Item.IsActive ? "Deactivate" : "Activate")" />
                                 <MudIconButton Icon="@Icons.Material.Filled.Delete" 
                                                Size="Size.Small" 
                                                Color="Color.Error"
                                                OnClick="@(() => DeletePolicy(context.Item))"
-                                               Title="Delete" />
+                                               title="Delete" />
                             </MudStack>
                         </CellTemplate>
                     </TemplateColumn>

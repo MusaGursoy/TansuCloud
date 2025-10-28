@@ -61,6 +61,7 @@ TansuCloud offers **two complementary ways** for tenants to access their databas
 **Endpoint**: `https://apps.example.com/db/*` (via Gateway on port 8080 in dev, 443 in prod)
 
 **How it works**:
+
 - Requests flow through Gateway → Database API service
 - Responses cached by HybridCache/Garnet (default 30s TTL)
 - Automatic cache invalidation on writes via outbox events
@@ -68,17 +69,20 @@ TansuCloud offers **two complementary ways** for tenants to access their databas
 - Request validation, ETags, pagination, filtering
 
 **Best for**:
+
 - Frequent reads with high cache hit potential (user profiles, catalogs, configuration)
 - Mobile and web apps requiring JSON responses
 - Use cases benefiting from automatic invalidation and consistency
 - Scenarios where REST semantics (CRUD, pagination, ETags) are sufficient
 
 **Caching behavior**:
+
 - ✅ **Cached**: List/get operations return cached responses when available (30s TTL)
 - ✅ **Automatic invalidation**: Writes (POST/PUT/PATCH/DELETE) trigger tenant-wide cache version bump
 - ✅ **Metrics**: Cache hit/miss rates visible in Dashboard observability pages
 
 **Example** (curl):
+
 ```bash
 curl -H "Authorization: Bearer $TOKEN" \
      -H "X-Tansu-Tenant: acme-prod" \
@@ -92,6 +96,7 @@ curl -H "Authorization: Bearer $TOKEN" \
 **Endpoint**: `pgcat:6432` (internal) or `apps.example.com:6432` (if exposed with proper firewall rules)
 
 **How it works**:
+
 - Clients connect directly to PgCat connection pooler (port 6432)
 - PgCat routes to tenant-specific PostgreSQL database (`tansu_tenant_<tenant_id>`)
 - **No automatic caching**: Every query hits the database
@@ -99,6 +104,7 @@ curl -H "Authorization: Bearer $TOKEN" \
 - Any language/ORM supported (Python/psycopg2, Node.js/pg, Go/pgx, Rust/tokio-postgres, etc.)
 
 **Best for**:
+
 - Complex analytics and reporting queries
 - Bulk operations and ETL pipelines
 - BI tools (Metabase, Grafana, Tableau) requiring direct SQL access
@@ -106,16 +112,19 @@ curl -H "Authorization: Bearer $TOKEN" \
 - Scenarios where REST API abstractions are too limiting
 
 **Caching behavior**:
+
 - ❌ **NOT cached**: PgCat is a connection pooler, not a query cache
 - ❌ **No automatic invalidation**: Client applications must implement their own caching strategies if needed
 - ✅ **Connection pooling**: PgCat efficiently manages connections across tenants
 
 **Connection limits**:
+
 - Per-tenant quotas enforced via PostgreSQL `CONNECTION LIMIT` on tenant role
 - PgCat pool configuration provides additional per-tenant connection caps
 - Dashboard UI allows admins to view/edit limits and monitor active connections
 
 **Example** (psycopg2 in Python):
+
 ```python
 import psycopg2
 
@@ -144,6 +153,7 @@ for row in cursor.fetchall():
 ```
 
 **Example** (Node.js with pg):
+
 ```javascript
 const { Client } = require('pg');
 
@@ -189,6 +199,7 @@ For most applications, **combine both access patterns**:
    - Custom queries with JOINs, aggregations, and window functions
 
 **Example hybrid architecture**:
+
 ```
 ┌─────────────────┐
 │   Web/Mobile    │
@@ -210,6 +221,7 @@ For most applications, **combine both access patterns**:
 Since direct PostgreSQL connections bypass HybridCache, applications using direct access should implement their own caching:
 
 **1. Application-level cache** (Redis, Memcached):
+
 ```python
 import redis
 cache = redis.Redis(host='localhost', port=6379)
@@ -230,6 +242,7 @@ def get_user(user_id):
 ```
 
 **2. Materialized views** (PostgreSQL):
+
 ```sql
 -- Create materialized view for expensive analytics
 CREATE MATERIALIZED VIEW daily_user_stats AS
@@ -245,6 +258,7 @@ REFRESH MATERIALIZED VIEW CONCURRENTLY daily_user_stats;
 ```
 
 **3. HTTP caching proxies** (nginx, Varnish):
+
 - Cache GET responses from custom REST endpoints built on direct SQL access
 - Invalidate via explicit purge requests or TTL expiry
 
@@ -253,12 +267,14 @@ REFRESH MATERIALIZED VIEW CONCURRENTLY daily_user_stats;
 ### Security and Access Control
 
 **REST API**:
+
 - JWT bearer tokens with `db.read`/`db.write` scopes
 - Tenant context via `X-Tansu-Tenant` header
 - Gateway enforces rate limits and request size limits
 - Automatic ProblemDetails responses for validation errors
 
 **Direct PostgreSQL**:
+
 - PostgreSQL role-based access control (RBAC)
 - Per-tenant database isolation (`tansu_tenant_<tenant_id>`)
 - Connection limits enforced at PostgreSQL and PgCat levels
@@ -270,12 +286,14 @@ REFRESH MATERIALIZED VIEW CONCURRENTLY daily_user_stats;
 ### Dashboard Management
 
 **Admin Dashboard** (`/dashboard/admin/database`):
+
 - View per-tenant connection limits and active connections
 - Edit connection quotas with audit logging
 - Monitor query performance and slow queries
 - View cache hit/miss rates for REST API
 
 **Tenant Self-Service** (`/dashboard/tenant/database`):
+
 - View own connection limits and current usage
 - Connection usage charts (current vs limit over time)
 - Direct SQL credentials management (rotate passwords, generate read-only tokens)
@@ -664,16 +682,19 @@ The Dashboard uses **MudBlazor** (MIT License) - a 100% open-source Material Des
 #### Setup (One-Time)
 
 **1. Add NuGet Package** (in `TansuCloud.Dashboard` directory):
+
 ```bash
 dotnet add package MudBlazor
 ```
 
 **2. Configure Services** (in `Program.cs` before `builder.Build()`):
+
 ```csharp
 builder.Services.AddMudServices();
 ```
 
 **3. Add References** (in `App.razor` or `_Host.cshtml` `<head>` section):
+
 ```html
 <link href="https://fonts.googleapis.com/css?family=Roboto:300,400,500,700&display=swap" rel="stylesheet" />
 <link href="_content/MudBlazor/MudBlazor.min.css" rel="stylesheet" />
@@ -681,6 +702,7 @@ builder.Services.AddMudServices();
 ```
 
 **4. Add Providers** (in `App.razor` or `MainLayout.razor`):
+
 ```razor
 <MudThemeProvider />
 <MudDialogProvider />
@@ -691,14 +713,15 @@ That's it! No keys, no registration. All contributors and deployments use the sa
 
 #### Resources
 
-- **Documentation**: https://mudblazor.com/
-- **GitHub**: https://github.com/MudBlazor/MudBlazor
-- **Discord Community**: https://discord.gg/mudblazor
+- **Documentation**: <https://mudblazor.com/>
+- **GitHub**: <https://github.com/MudBlazor/MudBlazor>
+- **Discord Community**: <https://discord.gg/mudblazor>
 - **Design Guidelines**: See `.github/copilot-instructions.md` section "Dashboard Design Guidelines (MudBlazor Components)"
 
 #### Customization (Optional)
 
 **Custom Theme** (in `App.razor`):
+
 ```razor
 <MudThemeProvider Theme="@_customTheme" />
 
@@ -716,6 +739,7 @@ That's it! No keys, no registration. All contributors and deployments use the sa
 ```
 
 **Dark Mode** (toggle):
+
 ```razor
 <MudThemeProvider @bind-IsDarkMode="@_isDarkMode" />
 <MudIconButton Icon="@Icons.Material.Filled.Brightness4" OnClick="@(() => _isDarkMode = !_isDarkMode)" />
@@ -728,14 +752,17 @@ That's it! No keys, no registration. All contributors and deployments use the sa
 #### Troubleshooting
 
 **Components not styled:**
+
 - Ensure `MudBlazor.min.css` is loaded in `<head>`
 - Check browser console for 404 errors on CSS file
 
 **Dialogs/Snackbars not working:**
+
 - Add `<MudDialogProvider />` and `<MudSnackbarProvider />` in `App.razor`
 - Inject `IDialogService` or `ISnackbar` in components
 
 **Icons not showing:**
+
 - Material Design icons are built-in, no extra packages needed
 - Use `@Icons.Material.Filled.*` or `@Icons.Material.Outlined.*`
 
@@ -753,7 +780,7 @@ Telemetry service OTLP configuration (production resilience)
 - The [`TansuCloud.Telemetry`](TansuCloud.Telemetry ) service can optionally disable OTLP export in production to avoid circular dependencies (Telemetry ingests logs from other services; we don't want it trying to send its own logs to SigNoz if SigNoz is unavailable).
 - Configuration keys:
   - `OpenTelemetry:Otlp:Enabled` (bool, default true in dev, can be set to false in production)
-  - `OpenTelemetry:Otlp:Endpoint` (string, default http://signoz-otel-collector:4317)
+  - `OpenTelemetry:Otlp:Endpoint` (string, default <http://signoz-otel-collector:4317>)
 - If `Enabled=false`, the Telemetry service will skip OTLP export entirely and continue operating normally, storing ingested logs in its local database without attempting to send telemetry to SigNoz.
 - This ensures graceful degradation: if SigNoz is down or unreachable, Telemetry continues to accept and store logs from other services without blocking or failing.
 - Environment variable override: `OpenTelemetry__Otlp__Enabled=false`
@@ -1101,6 +1128,683 @@ Security notes
 - ClickHouse credentials (if required) should be stored securely via environment variables or Azure Key Vault, not hardcoded in scripts.
 - Audit logging captures all reads of observability governance configuration with user context.
 
+### 6.5.1 Observability Dashboard (Real-Time Service Health)
+
+Access real-time service health metrics and traces from the Dashboard admin UI powered by SigNoz.
+
+Admin UI
+
+- Navigate to `/dashboard/admin/observability`.
+- The page provides five main sections:
+  - **Time Range Filter**: Select observation window (1h, 6h, 24h, or 7 days) to control metric aggregation
+  - **Service Filter**: Filter view by specific service or view all services
+  - **Service Status Cards**: Grid view of all services with error rate, P95 latency, and request count
+  - **Service Topology Table**: Service dependencies showing source→target relationships with call counts and error rates
+  - **Saved Searches**: Quick links to common SigNoz queries (Recent Errors, High Latency, OIDC Issues, Database Timeouts, etc.)
+  - **Correlated Logs**: Search logs by Trace ID and optional Span ID for debugging
+
+Service Status Cards
+
+Each card displays:
+
+- **Service name**: Auto-classified as gateway/database/storage/collector/service based on name patterns
+- **Error rate %**: Color-coded indicator (red >5%, orange >1%, green ≤1%)
+- **P95 latency**: 95th percentile response time in milliseconds
+- **P99 latency**: 99th percentile response time in milliseconds  
+- **Request count**: Total requests in the selected time range
+- **Refresh button**: Reload individual service metrics without full page refresh
+
+Service Topology
+
+Table view showing:
+
+- **Source service**: Upstream caller
+- **Target service**: Downstream dependency
+- **Call count**: Total calls between services
+- **Error rate**: Percentage of failed calls (color-coded chip)
+
+Edges are inferred from service relationships - gateway typically connects to all downstream services (identity, database, storage, telemetry).
+
+Saved Searches
+
+Predefined shortcuts link directly to SigNoz UI with filtered queries:
+
+- **Recent Errors**: Traces with status=error across all services
+- **High Latency**: Traces exceeding P99 latency thresholds
+- **OIDC Issues**: Authentication/authorization failures in Identity service
+- **Database Timeouts**: Slow or timed-out database queries
+- **Redis Failures**: Cache operation errors
+- **Gateway 5xx Errors**: Internal server errors from Gateway
+
+Each link opens in a new tab with pre-constructed filters, preserving current time range selection.
+
+Correlated Logs Search
+
+Search logs associated with a specific trace:
+
+1. Enter **Trace ID** (required) - obtain from SigNoz traces UI or error logs
+2. Optionally enter **Span ID** to narrow results to a specific operation
+3. Click "Fetch Logs"
+4. Results display timestamp, log level (color-coded), service name, and message
+5. Use results to correlate distributed trace events across services
+
+Configuration
+
+SigNoz integration is configured via `appsettings.json` with environment-specific overrides in `appsettings.Development.json`, `appsettings.Staging.json`, and `appsettings.Production.json`:
+
+**Base Configuration (`appsettings.json`)**
+
+```json
+{
+  "SigNozQuery": {
+    "ApiBaseUrl": "http://signoz:3301",
+    "ApiKey": "",
+    "TimeoutSeconds": 30,
+    "MaxRetries": 2,
+    "EnableQueryAllowlist": true,
+    "SigNozUiBaseUrl": "http://127.0.0.1:3301"
+  }
+}
+```
+
+**Development** (`appsettings.Development.json`):
+
+- SigNoz API: `http://signoz:3301` (internal Docker network)
+- SigNoz UI: `http://127.0.0.1:3301` (localhost browser access)
+- Timeout: 30 seconds
+- Max Retries: 2
+- OIDC cert validation: Disabled (`AcceptAnyServerCert: true`) for self-signed certs
+- Logging: Warning level for Microsoft namespaces
+
+**Staging** (`appsettings.Staging.json`):
+
+- SigNoz API: `http://signoz:3301` (internal Docker network)
+- SigNoz UI: `https://signoz-staging.example.com` (public staging URL)
+- Timeout: 45 seconds (moderate production-like load)
+- Max Retries: 2
+- OIDC cert validation: Enabled (`AcceptAnyServerCert: false`)
+- Logging: Information level for Microsoft namespaces
+- Log reporting: Warning threshold, 45-minute intervals
+- Audit: 30000 channel capacity, never drop events
+
+**Production** (`appsettings.Production.json`):
+
+- SigNoz API: `http://signoz:3301` (internal Docker network)
+- SigNoz UI: `https://signoz.example.com` (public production URL)
+- Timeout: 60 seconds (higher for production load)
+- Max Retries: 3 (more aggressive retry for reliability)
+- OIDC cert validation: Enabled (`AcceptAnyServerCert: false`)
+- Logging: Information level default, Error threshold for reports
+- Log reporting: Error threshold, 30-minute intervals
+- Audit: 50000 channel capacity, never drop events
+
+**Configuration Loading Order**:
+
+1. `appsettings.json` (base defaults)
+2. `appsettings.{Environment}.json` (environment-specific overrides)
+3. Environment variables (highest priority, format: `SigNozQuery__ApiKey`)
+4. User secrets (Development only, via `dotnet user-secrets set SigNozQuery:ApiKey <key>`)
+
+**Hot Reload**: The Dashboard service uses `IOptionsMonitor<SigNozQueryOptions>` which automatically reloads configuration when `appsettings.json` or environment-specific files change (no restart required). Note: Changes to environment variables require restart.
+
+#### API Key Rotation (Zero-Downtime)
+
+SigNoz API keys should be rotated regularly for security (recommended: every 90 days). The Dashboard service supports hot-reload of API keys without restart or downtime.
+
+**Rotation Procedure (Kubernetes/Docker)**:
+
+1. **Generate new API key** in SigNoz:
+   - Navigate to SigNoz UI → Settings → API Keys
+   - Create new key with appropriate permissions (read-only for query service)
+   - Copy the generated key immediately (it won't be shown again)
+
+2. **Update configuration** (choose method based on deployment):
+
+   **Kubernetes ConfigMap/Secret** (recommended for production):
+
+   ```bash
+   # Update secret with new API key
+   kubectl create secret generic dashboard-secrets \
+     --from-literal=signoz-api-key='<new-key>' \
+     --dry-run=client -o yaml | kubectl apply -f -
+   
+   # Verify update
+   kubectl get secret dashboard-secrets -o jsonpath='{.data.signoz-api-key}' | base64 -d
+   ```
+
+   **Docker Compose** (for development/staging):
+
+   ```yaml
+   # Update .env file
+   SIGNOZ_API_KEY=<new-key>
+   
+   # Restart Dashboard service only (not entire stack)
+   docker compose restart dashboard
+   ```
+
+   **Direct file edit** (development only):
+
+   ```bash
+   # Edit appsettings.Production.json
+   nano TansuCloud.Dashboard/appsettings.Production.json
+   # Update "ApiKey": "<new-key>"
+   # Save file (IOptionsMonitor detects change within 60s)
+   ```
+
+3. **Verify hot-reload** (file-based configuration only):
+   - Dashboard logs will show: `[Information] SigNozQueryOptions reloaded with new configuration`
+   - Make test request to `/api/admin/observability/service-status`
+   - Check response status: 200 OK indicates new key is working
+   - Check Dashboard logs: No `401 Unauthorized` errors from SigNoz
+
+4. **Monitor for errors** (5-minute grace period):
+   - Watch Dashboard logs: `docker logs -f tansu-dashboard` or `kubectl logs -f deployment/dashboard`
+   - Look for `SigNoz API call failed` errors with `401` status codes
+   - If errors persist beyond 60 seconds, IOptionsMonitor may not have detected change (see Troubleshooting below)
+
+5. **Revoke old API key** in SigNoz (after verifying new key works):
+   - Wait at least 5 minutes after rotation to ensure all in-flight requests complete
+   - Navigate to SigNoz UI → Settings → API Keys
+   - Revoke/delete the old key
+   - Verify Dashboard continues to work (should use new key exclusively)
+
+**Overlap Strategy (High-Availability Production)**:
+
+For mission-critical deployments, use a temporary overlap period where both old and new keys are valid:
+
+1. Generate new API key in SigNoz (keep old key active)
+2. Deploy new key to Dashboard configuration
+3. Verify Dashboard successfully uses new key (check logs, test endpoints)
+4. Wait 24 hours to ensure all replicas/pods have reloaded configuration
+5. Revoke old key in SigNoz after confidence period
+
+This approach eliminates any risk of service disruption during rotation.
+
+**Automation (Scheduled Rotation)**:
+
+For environments with automated secret rotation (e.g., Azure Key Vault, AWS Secrets Manager, HashiCorp Vault):
+
+```yaml
+# Kubernetes CronJob example (runs every 90 days)
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: rotate-signoz-keys
+spec:
+  schedule: "0 2 1 */3 *"  # 2 AM on 1st day of every 3rd month
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          containers:
+          - name: rotate-keys
+            image: custom/key-rotator:latest
+            env:
+            - name: SIGNOZ_URL
+              value: "http://signoz:3301"
+            - name: VAULT_ADDR
+              value: "https://vault.example.com"
+            command:
+            - /bin/sh
+            - -c
+            - |
+              # Generate new key via SigNoz API
+              NEW_KEY=$(curl -X POST $SIGNOZ_URL/api/v1/keys -H "Authorization: Bearer $ADMIN_TOKEN" | jq -r .key)
+              
+              # Store in secrets manager
+              vault kv put secret/dashboard signoz-api-key=$NEW_KEY
+              
+              # Wait for Dashboard to reload (60s)
+              sleep 60
+              
+              # Verify new key works
+              curl -f http://dashboard/api/admin/observability/service-status -H "Authorization: Bearer $DASHBOARD_TOKEN"
+              
+              # Revoke old key if verification passed
+              curl -X DELETE $SIGNOZ_URL/api/v1/keys/$OLD_KEY_ID -H "Authorization: Bearer $ADMIN_TOKEN"
+          restartPolicy: OnFailure
+```
+
+**Troubleshooting API Key Rotation**:
+
+- **IOptionsMonitor not detecting file changes**:
+  - Verify file write completed successfully (check file timestamp: `ls -l appsettings.Production.json`)
+  - Ensure Dashboard process has file read permissions
+  - Check Dashboard logs for `FileSystemWatcher` errors
+  - Workaround: Restart Dashboard service (`docker compose restart dashboard` or `kubectl rollout restart deployment/dashboard`)
+
+- **401 Unauthorized errors persist after rotation**:
+  - Verify new key was copied correctly (no extra spaces/newlines)
+  - Check SigNoz logs for key validation errors: `docker logs signoz`
+  - Confirm new key has correct permissions (read access to query API)
+  - Test key directly: `curl -H "Authorization: Bearer <new-key>" http://signoz:3301/api/v1/services`
+
+- **Old key still being used after 60+ seconds**:
+  - IOptionsMonitor reload interval is not configurable; 60s is typical but not guaranteed
+  - Check Dashboard memory: high memory pressure can delay FileSystemWatcher events
+  - Force reload: Restart Dashboard service (brief downtime acceptable if rotation is urgent)
+
+- **Environment variable changes require restart**:
+  - If using `SIGNOZ_API_KEY` environment variable (format: `SigNozQuery__ApiKey`), restart is mandatory
+  - Prefer file-based or secrets manager configuration for zero-downtime rotation
+  - Kubernetes: Rolling restart with readiness probes ensures zero downtime even with env var changes
+
+- **Multiple Dashboard replicas using different keys**:
+  - In Kubernetes with multiple replicas, ensure ConfigMap/Secret update propagates to all pods
+  - Default propagation delay: up to 60 seconds + IOptionsMonitor reload time
+  - Monitor all pod logs: `kubectl logs -l app=dashboard --tail=100 -f`
+  - Use overlap strategy (keep old key active for 5 minutes) to avoid transient errors
+
+Admin API endpoints
+
+- `GET /api/admin/observability/service-status`: Retrieve service status summary with error rates and latency metrics
+  - Query params: `serviceName` (optional), `timeRangeMinutes` (default 60)
+  - Returns JSON with services array containing metrics for each service
+  - Cached for 1 minute via HybridCache
+
+- `GET /api/admin/observability/topology`: Get service dependency graph
+  - Query params: `timeRangeMinutes` (default 60)
+  - Returns JSON with nodes and edges arrays representing service topology
+  - Cached for 3 minutes via HybridCache
+
+- `GET /api/admin/observability/services`: List all services reporting to SigNoz
+  - Query params: `serviceName` (optional), `timeRangeMinutes` (default 60)
+  - Returns JSON with services array containing service names, last seen timestamps, and tags
+  - Cached for 2 minutes via HybridCache
+
+- `GET /api/admin/observability/correlated-logs`: Search logs by trace/span ID
+  - Query params: `traceId` (required), `spanId` (optional), `limit` (default 100)
+  - Returns JSON with logs array containing timestamp, level, message, service, attributes
+  - Cached for 5 minutes via HybridCache
+
+- `GET /api/admin/observability/otlp-health`: Check OTLP exporter health status
+  - Returns JSON with exporters array showing health status for each service
+  - Services with LastSeen < 5 minutes ago are considered healthy
+  - Cached for 1 minute via HybridCache
+
+- `GET /api/admin/observability/recent-errors`: Get recent error traces
+  - Query params: `limit` (default 50), `timeRangeMinutes` (default 60)
+  - Returns JSON with errors array containing trace ID, service, timestamp, error message
+  - Cached for 2 minutes via HybridCache
+
+All endpoints require `AdminOnly` authorization policy and emit audit logs with user context.
+
+#### Health Check Integration
+
+The Dashboard service includes a dedicated SigNoz connectivity health check that verifies the observability backend is reachable before marking the service as ready. This ensures the Observability pages will function correctly when users access them.
+
+**Health Check Endpoint**: `GET /dashboard/health/ready`
+
+The readiness response includes a `signoz` entry with connectivity status:
+
+```json
+{
+  "status": "Healthy",
+  "totalDurationMs": 42.5,
+  "entries": {
+    "self": {
+      "status": "Healthy",
+      "description": "Dashboard self-check",
+      "durationMs": 0.1
+    },
+    "otlp": {
+      "status": "Healthy",
+      "description": "OTLP reachable",
+      "durationMs": 15.3,
+      "data": {
+        "activity.defaultIdFormat": "W3C",
+        "otlp.endpoint": "http://signoz-otel-collector:4317",
+        "otlp.tcpReachable": true
+      }
+    },
+    "signoz": {
+      "status": "Healthy",
+      "description": "SigNoz API reachable (127ms)",
+      "durationMs": 127.1,
+      "data": {
+        "signoz.api_base_url": "http://signoz:3301",
+        "signoz.version_endpoint": "http://signoz:3301/api/v1/version",
+        "signoz.response_time_ms": 127,
+        "signoz.status_code": 200,
+        "signoz.reachable": true
+      }
+    }
+  }
+}
+```
+
+**Health Status Thresholds**:
+
+- **Healthy** (`200 OK`): SigNoz API responds in < 5 seconds
+  - Dashboard Observability pages will function normally
+  - All SigNoz query features available
+  - Response time included in description (e.g., "SigNoz API reachable (127ms)")
+
+- **Degraded** (`200 OK`): SigNoz API responds in 5-15 seconds
+  - Dashboard remains operational but SigNoz queries will be slow
+  - Users may experience delays loading metrics/logs
+  - Consider scaling SigNoz or reducing query load
+  - Log warning: "SigNoz API responded but is slow: {elapsed}ms (threshold: 5000ms)"
+
+- **Unhealthy** (`503 Service Unavailable`): SigNoz API timeout > 15 seconds or connection failed
+  - Dashboard service still starts but Observability pages will show errors
+  - In production: Health check fails, load balancer removes instance from rotation
+  - In development: Health check downgrades to Degraded to allow local iteration
+  - Common causes:
+    * SigNoz container not running (`docker ps | grep signoz`)
+    * Network connectivity issues between Dashboard and SigNoz
+    * SigNoz overloaded or restarting
+    * Incorrect `SigNozQuery.ApiBaseUrl` configuration
+
+**Health Check Implementation Details**:
+
+- Endpoint: Pings `GET {ApiBaseUrl}/api/v1/version` (lightweight, no auth required)
+- Timeout: 15 seconds absolute maximum
+- Frequency: Kubernetes/Docker typically polls every 10 seconds
+- Retry: Health checks are independent per request; no automatic retry
+- Logging: Warnings logged for slow responses (> 5s) and failures
+- Data exposed: Response time, status code, reachability flag, configured URL
+
+**Operational Use Cases**:
+
+1. **Pre-deployment validation**: Verify SigNoz is reachable before rolling out Dashboard updates
+   ```bash
+   curl http://127.0.0.1:8080/dashboard/health/ready | jq .entries.signoz
+   # Expect status: "Healthy" before promoting to production
+   ```
+
+2. **Load balancer readiness**: Kubernetes/Docker uses `/health/ready` to determine if pod should receive traffic
+   - If SigNoz health check fails in production, pod is marked not ready
+   - Traffic routes only to healthy pods with working SigNoz connectivity
+
+3. **Monitoring/alerting**: Track `signoz.response_time_ms` metric over time
+   - Alert if response time exceeds 3 seconds consistently
+   - Indicates SigNoz performance degradation requiring investigation
+
+4. **Troubleshooting**: Check health endpoint when Observability pages show errors
+   ```bash
+   curl http://127.0.0.1:8080/dashboard/health/ready | jq '.entries.signoz.data'
+   # Shows: reachable status, response time, status code, configured URL
+   # If reachable=false, verify SigNoz is running and accessible
+   ```
+
+5. **Development vs Production behavior**:
+   - **Development**: SigNoz failures downgrade to Degraded (HTTP 200) to allow local iteration without SigNoz running
+   - **Production**: SigNoz failures return Unhealthy (HTTP 503) to prevent serving broken Observability pages
+
+**Configuration**: Health check uses the same `SigNozQuery.ApiBaseUrl` setting as the main query service. No separate configuration required.
+
+Troubleshooting
+
+- **"SigNoz unavailable"**: Verify SigNoz is running and accessible at configured `ApiBaseUrl`. Check container logs: `docker logs signoz`
+- **Empty metrics**: Ensure OpenTelemetry exporters are configured correctly in all services. Verify OTLP collector is receiving data: `docker logs signoz-otel-collector`
+- **Stale data**: HybridCache TTLs range from 1-5 minutes. Click per-service refresh buttons or reload page to fetch latest metrics
+- **Saved search links broken**: Verify `SigNozUiBaseUrl` is correctly set to the browser-accessible SigNoz UI endpoint
+- **Authentication errors**: If `ApiKey` is set in config, ensure SigNoz is configured to accept Bearer token authentication
+- **Slow queries**: Default timeout is 30s. Increase `TimeoutSeconds` if SigNoz is under heavy load or querying large datasets
+- **Missing services**: Check service is emitting OTLP traces/metrics. Verify `service.name` resource attribute is set correctly in OpenTelemetry configuration
+
+Performance notes
+
+- Query results are cached with appropriate TTLs (1-5 minutes) to reduce load on SigNoz/ClickHouse
+- Cache keys are scoped by service name and time range to maximize hit rates
+- Individual service refresh bypasses cache for that specific service only
+- Full page reload refreshes all cached data
+- HybridCache uses both in-memory (L1) and distributed Redis (L2) tiers for scalability
+
+Security notes
+
+- All observability endpoints require `Admin` role or `admin.full` scope
+- Query allowlist restricts permitted query types to prevent arbitrary ClickHouse queries
+- API key (if configured) is transmitted via Bearer token in Authorization header
+- Audit logging captures all observability data access with user identity and IP address
+- Correlated logs may contain sensitive data - ensure appropriate RBAC is enforced
+
+#### Self-Monitoring: Dashboard Observability Metrics
+
+The Dashboard service exports OpenTelemetry metrics about its own SigNoz API calls, enabling self-monitoring and performance tracking. These metrics are sent to SigNoz itself, creating a feedback loop where SigNoz monitors the Dashboard's observability integration.
+
+**Available Metrics**:
+
+1. **`tansu.dashboard.signoz.api_calls_total`** (Counter)
+   - Description: Total number of SigNoz API calls made by the Dashboard
+   - Tags:
+     * `endpoint`: The SigNoz API endpoint called (e.g., `service_list`, `service_status`, `correlated_logs`)
+     * `status_code`: HTTP status code returned (e.g., `200`, `404`, `500`, `timeout`)
+     * `service_name`: Always `TansuCloud.Dashboard` (identifies this service in multi-service deployments)
+   - Example query in SigNoz:
+     ```promql
+     sum(rate(tansu_dashboard_signoz_api_calls_total[5m])) by (endpoint, status_code)
+     ```
+   - Use cases:
+     * Track API call volume per endpoint
+     * Detect elevated error rates (status_code != 200)
+     * Monitor timeout frequency
+
+2. **`tansu.dashboard.signoz.api_duration_ms`** (Histogram)
+   - Description: Duration of SigNoz API calls in milliseconds
+   - Tags: `endpoint`, `service_name`
+   - Buckets: 10ms, 50ms, 100ms, 250ms, 500ms, 1000ms, 2500ms, 5000ms, 10000ms, 30000ms
+   - Example query in SigNoz:
+     ```promql
+     histogram_quantile(0.95, sum(rate(tansu_dashboard_signoz_api_duration_ms_bucket[5m])) by (endpoint, le))
+     ```
+   - Use cases:
+     * P95/P99 latency tracking per endpoint
+     * Identify slow queries requiring optimization
+     * Alert on latency degradation
+
+3. **`tansu.dashboard.signoz.cache_misses_total`** (Counter)
+   - Description: Number of cache misses (API calls made because data not in cache)
+   - Tags: `endpoint`, `service_name`
+   - Note: Cache hits are implicit (total requests - cache misses = cache hits)
+   - Example query in SigNoz:
+     ```promql
+     sum(rate(tansu_dashboard_signoz_cache_misses_total[5m])) by (endpoint)
+     ```
+   - Use cases:
+     * Track cache effectiveness
+     * Identify endpoints with poor cache hit rates
+     * Correlate cache misses with increased latency
+
+**Querying Dashboard Metrics in SigNoz**:
+
+1. **Navigate to SigNoz Metrics Explorer**:
+   - Open SigNoz UI (configured via `SigNozQuery.SigNozUiBaseUrl`)
+   - Go to **Metrics** → **Query Builder**
+
+2. **Filter by service**:
+   - Add filter: `service.name = TansuCloud.Dashboard`
+   - This isolates Dashboard metrics from other services
+
+3. **Select metric** from dropdown:
+   - Choose one of: `tansu_dashboard_signoz_api_calls_total`, `tansu_dashboard_signoz_api_duration_ms_bucket`, `tansu_dashboard_signoz_cache_misses_total`
+
+4. **Group by tags**:
+   - Common groupings: `endpoint`, `status_code`
+   - Example: "Show me API call rate by endpoint and status code"
+
+5. **Apply aggregation**:
+   - **For counters**: Use `rate()` to convert cumulative counts to per-second rates
+   - **For histograms**: Use `histogram_quantile()` for percentiles (P50, P95, P99)
+
+**Example SigNoz Queries**:
+
+```promql
+# API call rate by endpoint (requests per second)
+sum(rate(tansu_dashboard_signoz_api_calls_total[5m])) by (endpoint)
+
+# Error rate percentage (4xx/5xx responses)
+(
+  sum(rate(tansu_dashboard_signoz_api_calls_total{status_code!~"2.."}[5m]))
+  /
+  sum(rate(tansu_dashboard_signoz_api_calls_total[5m]))
+) * 100
+
+# P95 latency by endpoint
+histogram_quantile(
+  0.95,
+  sum(rate(tansu_dashboard_signoz_api_duration_ms_bucket[5m])) by (endpoint, le)
+)
+
+# Cache hit rate (percentage)
+(
+  1 - (
+    sum(rate(tansu_dashboard_signoz_cache_misses_total[5m]))
+    /
+    sum(rate(tansu_dashboard_signoz_api_calls_total[5m]))
+  )
+) * 100
+
+# Slow queries (> 5 seconds)
+sum(rate(tansu_dashboard_signoz_api_duration_ms_bucket{le="5000"}[5m])) by (endpoint)
+- sum(rate(tansu_dashboard_signoz_api_duration_ms_bucket{le="10000"}[5m])) by (endpoint)
+```
+
+**Setting Up Alerts**:
+
+Create SigNoz alerts for proactive monitoring:
+
+1. **High Error Rate Alert**:
+   - Condition: `(sum(rate(tansu_dashboard_signoz_api_calls_total{status_code!~"2.."}[5m])) / sum(rate(tansu_dashboard_signoz_api_calls_total[5m]))) * 100 > 5`
+   - Threshold: > 5% errors for 5 minutes
+   - Action: Notify ops team via Slack/PagerDuty
+
+2. **High Latency Alert**:
+   - Condition: `histogram_quantile(0.95, sum(rate(tansu_dashboard_signoz_api_duration_ms_bucket[5m])) by (le)) > 5000`
+   - Threshold: P95 latency > 5 seconds
+   - Action: Investigate slow queries, consider SigNoz scaling
+
+3. **Low Cache Hit Rate Alert**:
+   - Condition: `(1 - (sum(rate(tansu_dashboard_signoz_cache_misses_total[5m])) / sum(rate(tansu_dashboard_signoz_api_calls_total[5m])))) * 100 < 50`
+   - Threshold: Cache hit rate < 50%
+   - Action: Review cache configuration, increase TTLs if appropriate
+
+**Metrics Export Configuration**:
+
+The Dashboard automatically exports these metrics via the OTLP exporter configured in `appsettings.json`:
+
+```json
+{
+  "OpenTelemetry": {
+    "Otlp": {
+      "Endpoint": "http://signoz-otel-collector:4317"
+    }
+  }
+}
+```
+
+Metrics are exported alongside traces and logs, providing a complete observability picture.
+
+**Troubleshooting Metrics**:
+
+- **Metrics not appearing in SigNoz**:
+  - Verify OTLP exporter is healthy: Check `/dashboard/health/ready` for `otlp` entry
+  - Confirm SigNoz collector is receiving data: `docker logs signoz-otel-collector | grep metrics`
+  - Check Dashboard logs for export errors: `docker logs tansu-dashboard | grep "OTLP"`
+
+- **Metrics delayed or missing**:
+  - OpenTelemetry batches metrics before export (default: every 60 seconds)
+  - Wait 1-2 minutes after Dashboard startup for first metrics to appear
+  - Increase export frequency in `appsettings.json` if needed (not recommended for production)
+
+- **Unexpected metric values**:
+  - `api_calls_total` is cumulative (always increasing); use `rate()` to see per-second rates
+  - `api_duration_ms` is a histogram; use `histogram_quantile()` for percentiles
+  - `cache_misses_total` only counts misses; calculate hit rate as `1 - (misses/calls)`
+
+**Performance Impact**:
+
+- Metrics instrumentation adds < 1ms overhead per API call (negligible)
+- Metrics are stored in memory and batched for export (minimal CPU/memory impact)
+- SigNoz ingests and stores metrics with similar resource cost to traces
+
+#### Graceful Degradation: Circuit Breaker
+
+The Dashboard implements a circuit breaker pattern to handle SigNoz unavailability gracefully, preventing cascading failures and providing a degraded but functional experience when SigNoz is down.
+
+**Circuit Breaker Behavior**:
+
+1. **Closed (Normal Operation)**:
+   - All SigNoz API calls proceed as usual
+   - Failures are tracked but do not block requests
+   - Circuit breaker monitors consecutive failure count
+
+2. **Open (Circuit Tripped)**:
+   - After **3 consecutive failures**, circuit breaker opens
+   - All SigNoz API calls are blocked for **1 minute** (cooldown period)
+   - Dashboard returns cached data if available
+   - UI displays warning banner: "SigNoz Unavailable - Using Cached Data"
+   - Refresh buttons and filter actions are disabled during cooldown
+
+3. **Half-Open (Cooldown Elapsed)**:
+   - After 1 minute, circuit automatically closes
+   - Next SigNoz API call is attempted
+   - If successful, failure counter resets to 0
+   - If failed, circuit reopens for another 1-minute cooldown
+
+**What Triggers Circuit Breaker**:
+
+- HTTP timeouts (> 30 seconds)
+- Connection errors (SigNoz unreachable)
+- HTTP 5xx errors from SigNoz API
+- Unexpected exceptions during API calls
+
+**User Experience During Circuit Open**:
+
+1. **Warning Banner Displayed**:
+   - Yellow alert at top of Observability page
+   - Message: "SigNoz Unavailable - Using Cached Data"
+   - Countdown timer: "Circuit will retry in: 45 seconds"
+
+2. **Cached Data Served**:
+   - Service status, topology, and correlated logs served from cache
+   - Data may be stale (1-5 minutes old depending on cache TTL)
+   - No additional load on failing SigNoz instance
+
+3. **UI Actions Disabled**:
+   - "Apply Filters" button disabled
+   - "Refresh" buttons on service cards disabled
+   - Users cannot trigger new API calls during cooldown
+
+4. **Automatic Recovery**:
+   - After 1 minute, circuit closes automatically
+   - Next user action (refresh, filter change) triggers SigNoz API call
+   - If successful, normal operation resumes with snackbar: "SigNoz connectivity restored"
+
+**Monitoring Circuit Breaker State**:
+
+Admins can view circuit breaker diagnostics via the SigNoz query service:
+
+```csharp
+var state = SigNozQuery.GetCircuitBreakerState();
+// state.IsOpen: bool - whether circuit is currently open
+// state.ConsecutiveFailures: int - number of consecutive failures (0-3)
+// state.OpenedAt: DateTime? - when circuit opened (null if closed)
+// state.RemainingCooldownSeconds: double - seconds until circuit closes (0 if closed)
+```
+
+**Operational Guidelines**:
+
+- **Short Outages (< 1 minute)**: Circuit breaker provides seamless failover; users see cached data with staleness warning
+- **Extended Outages (> 5 minutes)**: Cache expires; users see empty data or "No data available" messages; circuit breaker prevents API call storms
+- **Recovery**: Once SigNoz is restored, circuit closes on first successful call; full observability restored immediately
+
+**Benefits**:
+
+1. **Prevents Cascading Failures**: Stops Dashboard from repeatedly calling failing SigNoz instance
+2. **Reduces Latency**: Users get instant cached responses instead of waiting for timeouts
+3. **Graceful Degradation**: Dashboard remains functional for tenant management even when observability is unavailable
+4. **Automatic Recovery**: No manual intervention required; circuit self-heals when SigNoz recovers
+
+**Configuration** (hardcoded in `SigNozCircuitBreaker.cs`):
+
+- Failure threshold: 3 consecutive failures
+- Cooldown duration: 60 seconds
+- Applies to all SigNoz API calls (service status, topology, logs, errors)
+
+**Note**: Circuit breaker state is shared across all Dashboard users (singleton scope). If one user triggers circuit open, all users will see degraded mode until cooldown elapses.
+
 ### 6.6 Policy Center (Admin)
 
 Manage CORS and IP access policies with staged rollout capabilities from the Dashboard admin UI.
@@ -1129,6 +1833,7 @@ Policy types
     - `allowCredentials`: Boolean - whether to allow cookies/auth headers
     - `maxAgeSeconds`: Cache duration for preflight responses (default 3600)
   - Example config:
+
     ```json
     {
       "origins": ["https://app.example.com", "https://admin.example.com"],
@@ -1145,6 +1850,7 @@ Policy types
     - `cidrs`: Array of IP addresses or CIDR blocks (e.g., `["203.0.113.0/24", "198.51.100.42"]`)
     - `description`: Optional explanation of the IP list
   - Example config:
+
     ```json
     {
       "cidrs": ["203.0.113.0/24", "198.51.100.42"],
@@ -1158,6 +1864,7 @@ Policy types
     - `cidrs`: Array of IP addresses or CIDR blocks to deny
     - `description`: Optional explanation of the IP list
   - Example config:
+
     ```json
     {
       "cidrs": ["192.0.2.0/24"],
@@ -1302,6 +2009,7 @@ As of 2025-10-15, policies are stored in PostgreSQL and survive Gateway restarts
 - **Cache behavior**: Each Gateway instance maintains an in-memory cache for read performance. Write operations (create/update/delete) update the database immediately and invalidate the local cache.
 
 Example connection string (Docker Compose):
+
 ```
 ConnectionStrings__GatewayDb=Host=pgcat;Port=6432;Database=tansu_identity;Username=postgres;Password=postgres
 ```
@@ -1452,6 +2160,7 @@ Cache Policies
 Cache policies control Gateway-level HTTP response caching via ASP.NET Core OutputCache middleware with Garnet (Redis-compatible) as the backing store.
 
 Configuration fields:
+
 - `name`: Policy name (e.g., "API Product List Cache")
 - `routePattern`: URL pattern to match (e.g., `/api/products`)
 - `enforcementMode`: 0=Shadow, 1=AuditOnly, 2=Enforce
@@ -1464,6 +2173,7 @@ Configuration fields:
 - `useDefaultVaryByRules`: Boolean - apply ASP.NET Core default VaryBy rules
 
 Example cache policy:
+
 ```json
 {
   "name": "Product List Cache",
@@ -1488,6 +2198,7 @@ Rate Limit Policies
 Rate limit policies define request throttling rules with flexible partition strategies. Note: These are currently used for simulation and documentation; actual rate limiting uses ASP.NET Core's built-in RateLimiter middleware.
 
 Configuration fields:
+
 - `name`: Policy name (e.g., "API Rate Limit")
 - `routePattern`: URL pattern to match (e.g., `/api/*`)
 - `enforcementMode`: 0=Shadow, 1=AuditOnly, 2=Enforce
@@ -1504,6 +2215,7 @@ Configuration fields:
 - `retryAfterSeconds`: Optional Retry-After header value
 
 Example rate limit policy:
+
 ```json
 {
   "name": "API Rate Limit (Per IP)",
@@ -1528,6 +2240,7 @@ Interactive Simulator
 The simulator allows you to test policies before deployment without affecting production traffic.
 
 Using the simulator:
+
 1. Click the **"Test"** button on any policy
 2. The simulator widget appears with request configuration inputs:
    - **URL Path**: The request path (e.g., `/api/products?page=1`)
@@ -1570,6 +2283,7 @@ Two-Layer Caching Architecture
 TansuCloud uses a two-layer caching architecture with Garnet as the backing store for all layers:
 
 **Gateway Layer (Cache Policies - This Section):**
+
 - ASP.NET Core OutputCache middleware
 - Policy-based configuration via Dashboard UI
 - Caches entire HTTP responses
@@ -1578,6 +2292,7 @@ TansuCloud uses a two-layer caching architecture with Garnet as the backing stor
 - Metrics: `tansu.gateway.cache.hits`, `tansu.gateway.cache.misses`, `tansu.gateway.cache.evictions`
 
 **Service Layer (Task 15 - HybridCache):**
+
 - ASP.NET Core HybridCache (L1 in-process + L2 distributed)
 - L1: In-process memory (per service instance) - 95% hit rate, 0μs latency
 - L2: Garnet distributed cache (shared across instances) - 4% hit rate, 0.4ms latency
@@ -1586,6 +2301,7 @@ TansuCloud uses a two-layer caching architecture with Garnet as the backing stor
 - Database queries: 1% miss rate, 10-50ms latency
 
 **Cache Hit Sequence (Typical Request):**
+
 1. Request arrives at Gateway
 2. Gateway OutputCache checks L1 (Garnet) - 0.4ms if hit
 3. If miss, request forwarded to service
@@ -1596,6 +2312,7 @@ TansuCloud uses a two-layer caching architecture with Garnet as the backing stor
 8. Gateway stores in OutputCache, returns to client
 
 **Why Garnet for Everything:**
+
 - Feature completeness: Pub/Sub, atomic ops, locks, data structures, persistence
 - Operational simplicity: One system to manage instead of multiple
 - HybridCache design: L1 in-process + L2 distributed built-in (no need for Memcached)
@@ -1614,6 +2331,7 @@ Cache policies emit the following metrics (accessible via SigNoz or other OTLP-c
   - Tags: `policy.id`, `policy.type=3`, `policy.mode`
 
 Rate limit policies (when fully implemented) will emit:
+
 - `tansu.gateway.ratelimit.allowed` (counter): Requests allowed
 - `tansu.gateway.ratelimit.denied` (counter): Requests denied
 
@@ -1627,6 +2345,7 @@ Policy Persistence
 Production Considerations
 
 Cache Policies:
+
 - Start with shorter TTL values (60-120s), increase based on metrics
 - Use `varyByQuery=null` carefully - it varies by ALL query parameters, which can fragment cache
 - For multi-tenant systems, always set `varyByHost=true` or include tenant identifier in `varyByHeaders`
@@ -1634,6 +2353,7 @@ Cache Policies:
 - Use Shadow mode first to ensure cache keys are correct before Enforce mode
 
 Rate Limit Policies:
+
 - Choose appropriate windows: 10-60s for burst protection, 1hr+ for quota enforcement
 - Use `PerIp` for anonymous APIs, `PerUser` for authenticated endpoints
 - Set `queueLimit=0` initially; increase if you need request buffering (adds latency)
@@ -1641,6 +2361,7 @@ Rate Limit Policies:
 - Combine policies: Use Global (baseline) + PerIp (burst protection) together
 
 General:
+
 - Keep high-confidence policies (e.g., cache for static content) in Enforce mode
 - Keep experimental policies in Audit Only until validated via metrics
 - Use simulator extensively - it prevents production issues by catching misconfiguration early
@@ -2977,6 +3698,7 @@ for line in response.iter_lines():
 ```
 
 Use streaming endpoints when:
+
 - Result sets are very large (>1000 items)
 - Memory constraints are critical
 - Processing can be done incrementally (e.g., ETL, bulk operations)
@@ -3156,12 +3878,14 @@ TansuCloud uses Docker named volumes to persist critical application data across
 ### Required Named Volumes
 
 #### 1. PostgreSQL Data (`tansu-pgdata`)
+
 - **Purpose:** Stores all relational database data (identity, tenants, policies, audit logs)
 - **Mount Point:** `/var/lib/postgresql/data` in postgres container
 - **Backup:** Critical - contains all application state
 - **Lifecycle:** Persistent across container updates; delete only to reset database completely
 
 #### 2. Garnet/Redis Data (`tansu-garnetdata`)
+
 - **Purpose:** Stores cached data, rate limit counters, and session affinity keys
 - **Mount Point:** `/data` in redis/garnet container
 - **Configuration:** Enabled with `--checkpointdir /data --recover` flags
@@ -3169,12 +3893,14 @@ TansuCloud uses Docker named volumes to persist critical application data across
 - **Lifecycle:** Persistent; policies loaded from PostgreSQL on Gateway startup but cached here
 
 #### 3. Storage Service Data (`tansu-storagedata`)
+
 - **Purpose:** Stores bucket files and object metadata
 - **Mount Point:** `/data` in storage container
 - **Backup:** Critical - contains user-uploaded files and documents
 - **Lifecycle:** Persistent; delete only to reset all storage buckets
 
 #### 4. Gateway Data Protection Keys (`tansu-gateway-keys`)
+
 - **Purpose:** Stores ASP.NET Core Data Protection encryption keys for session affinity cookies
 - **Mount Point:** `/keys` in gateway container
 - **Backup:** Recommended - losing these keys invalidates existing session cookies
@@ -3183,24 +3909,28 @@ TansuCloud uses Docker named volumes to persist critical application data across
 
 **Why This Matters:**
 Without the `/keys` volume, the Gateway cannot persist Data Protection encryption keys, causing:
+
 - `System.UnauthorizedAccessException: Access to the path '/keys' is denied` errors
 - Gateway unable to proxy Dashboard responses (all requests fail)
 - Session affinity cookies cannot be encrypted/decrypted correctly
 - Users forced to re-authenticate on every Gateway restart
 
 #### 5. Dashboard Data Protection Keys (`tansu-dashboard-keys`)
+
 - **Purpose:** Stores Dashboard-specific encryption keys for authentication cookies
 - **Mount Point:** `/keys` in dashboard container  
 - **Backup:** Recommended - losing these invalidates active sessions
 - **Lifecycle:** Persistent; regenerated automatically if missing
 
 #### 6. SigNoz Data (`signoz-data`, `signoz-clickhouse-data`, `signoz-zookeeper-data`)
+
 - **Purpose:** Stores observability metrics, traces, and logs (optional observability profile)
 - **Mount Points:** Various in SigNoz containers
 - **Backup:** Optional - can be rebuilt from live telemetry
 - **Lifecycle:** Can be deleted to reset observability history
 
 #### 7. Telemetry SQLite (`tansu-telemetrydata`)
+
 - **Purpose:** Local telemetry buffer when SigNoz is unavailable
 - **Mount Point:** `/data` in telemetry container
 - **Backup:** Optional - temporary buffer only
@@ -3258,6 +3988,7 @@ services:
 ### Backup and Disaster Recovery
 
 **Critical Volumes (Must Backup):**
+
 1. `tansu-pgdata` - All database state
 2. `tansu-storagedata` - User files and documents
 
@@ -3289,33 +4020,38 @@ docker volume inspect tansu-pgdata
 ### Troubleshooting Volume Issues
 
 **Issue: Gateway logs "Access to the path '/keys' is denied"**
+
 - **Cause:** Missing `tansu-gateway-keys` volume mount
 - **Solution:** Add volume to `docker-compose.yml` and `docker-compose.prod.yml`, restart Gateway
 - **Impact:** Gateway cannot proxy Dashboard responses; all Dashboard requests fail with 403/500 errors
 
 **Issue: Policies persist after deletion**
+
 - **Cause:** Garnet volume retains policy cache even after PostgreSQL deletion
 - **Solution:** Delete from PostgreSQL AND restart Gateway to reload cache
 - **Full Reset:** `docker volume rm tansucloud_tansu-garnetdata` + restart
 
 **Issue: Storage files missing after restart**
+
 - **Cause:** Volume not mounted or container recreated without volume
 - **Solution:** Verify `tansu-storagedata` volume exists and is mounted correctly
 
 **Issue: Users forced to re-authenticate frequently**
+
 - **Cause:** Dashboard or Gateway keys volumes missing; keys regenerated on restart
 - **Solution:** Add keys volumes to both services, verify persistence across restarts
 
 ### Volume Lifecycle Management
 
 **Development:**
+
 - Keep volumes across `docker compose down` (don't use `-v` flag)
 - Delete volumes intentionally to reset state: `docker compose down -v`
 - Volumes are prefixed with project name (e.g., `tansucloud_tansu-pgdata`)
 
 **Production:**
+
 - Never use `docker compose down -v` in production
 - Backup before any volume operations
 - Test restore procedures regularly
 - Monitor volume disk usage with alerts
-
