@@ -144,6 +144,9 @@ builder.Services.Configure<SigNozQueryOptions>(
 // Circuit breaker for SigNoz API (Task 19 Phase 6 - graceful degradation)
 builder.Services.AddSingleton<SigNozCircuitBreaker>();
 
+// SigNoz JWT authentication service
+builder.Services.AddHttpClient<ISigNozAuthenticationService, SigNozAuthenticationService>();
+
 builder.Services.AddHttpClient<ISigNozQueryService, SigNozQueryService>();
 
 // HttpClient for SigNoz health checks (Task 19 Phase 6)

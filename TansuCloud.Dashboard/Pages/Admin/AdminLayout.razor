@@ -7,10 +7,8 @@
 @using TansuCloud.Dashboard.Services
 @attribute [Authorize(Policy="AdminOnly")]
 
+<!-- Theme provider in layout to access ThemeService; other providers are in Routes.razor -->
 <MudThemeProvider Theme="@ThemeService.TansuCloudTheme" />
-<MudPopoverProvider />
-<MudDialogProvider />
-<MudSnackbarProvider />
 
 <MudLayout>
     <!-- App Bar (Top Navigation) -->
@@ -65,6 +63,7 @@
             <!-- Observability -->
             <MudNavGroup Title="Observability" Icon="@Icons.Material.Filled.Visibility">
                 <MudNavLink Href="/admin/observability" Icon="@Icons.Material.Filled.Dashboard" data-testid="nav-observability">Observability Dashboard</MudNavLink>
+                <MudNavLink Href="/admin/observability/traces" Icon="@Icons.Material.Filled.Timeline" data-testid="nav-traces">Trace Viewer</MudNavLink>
                 <MudNavLink Href="/admin/observability-config" Icon="@Icons.Material.Filled.Settings" data-testid="nav-observability-config">Observability Config</MudNavLink>
                 <MudNavLink Href="/admin/metrics" Icon="@Icons.Material.Filled.ShowChart" data-testid="nav-metrics">Metrics (SigNoz)</MudNavLink>
                 <MudNavLink Href="/admin/logs" Icon="@Icons.Material.Filled.Article" data-testid="nav-logs">Logs</MudNavLink>

@@ -1491,10 +1491,10 @@ The readiness response includes a `signoz` entry with connectivity status:
   - In production: Health check fails, load balancer removes instance from rotation
   - In development: Health check downgrades to Degraded to allow local iteration
   - Common causes:
-    * SigNoz container not running (`docker ps | grep signoz`)
-    * Network connectivity issues between Dashboard and SigNoz
-    * SigNoz overloaded or restarting
-    * Incorrect `SigNozQuery.ApiBaseUrl` configuration
+    - SigNoz container not running (`docker ps | grep signoz`)
+    - Network connectivity issues between Dashboard and SigNoz
+    - SigNoz overloaded or restarting
+    - Incorrect `SigNozQuery.ApiBaseUrl` configuration
 
 **Health Check Implementation Details**:
 
@@ -1508,6 +1508,7 @@ The readiness response includes a `signoz` entry with connectivity status:
 **Operational Use Cases**:
 
 1. **Pre-deployment validation**: Verify SigNoz is reachable before rolling out Dashboard updates
+
    ```bash
    curl http://127.0.0.1:8080/dashboard/health/ready | jq .entries.signoz
    # Expect status: "Healthy" before promoting to production
@@ -1522,6 +1523,7 @@ The readiness response includes a `signoz` entry with connectivity status:
    - Indicates SigNoz performance degradation requiring investigation
 
 4. **Troubleshooting**: Check health endpoint when Observability pages show errors
+
    ```bash
    curl http://127.0.0.1:8080/dashboard/health/ready | jq '.entries.signoz.data'
    # Shows: reachable status, response time, status code, configured URL
@@ -1569,43 +1571,49 @@ The Dashboard service exports OpenTelemetry metrics about its own SigNoz API cal
 1. **`tansu.dashboard.signoz.api_calls_total`** (Counter)
    - Description: Total number of SigNoz API calls made by the Dashboard
    - Tags:
-     * `endpoint`: The SigNoz API endpoint called (e.g., `service_list`, `service_status`, `correlated_logs`)
-     * `status_code`: HTTP status code returned (e.g., `200`, `404`, `500`, `timeout`)
-     * `service_name`: Always `TansuCloud.Dashboard` (identifies this service in multi-service deployments)
+     - `endpoint`: The SigNoz API endpoint called (e.g., `service_list`, `service_status`, `correlated_logs`)
+     - `status_code`: HTTP status code returned (e.g., `200`, `404`, `500`, `timeout`)
+     - `service_name`: Always `TansuCloud.Dashboard` (identifies this service in multi-service deployments)
    - Example query in SigNoz:
+
      ```promql
      sum(rate(tansu_dashboard_signoz_api_calls_total[5m])) by (endpoint, status_code)
      ```
+
    - Use cases:
-     * Track API call volume per endpoint
-     * Detect elevated error rates (status_code != 200)
-     * Monitor timeout frequency
+     - Track API call volume per endpoint
+     - Detect elevated error rates (status_code != 200)
+     - Monitor timeout frequency
 
 2. **`tansu.dashboard.signoz.api_duration_ms`** (Histogram)
    - Description: Duration of SigNoz API calls in milliseconds
    - Tags: `endpoint`, `service_name`
    - Buckets: 10ms, 50ms, 100ms, 250ms, 500ms, 1000ms, 2500ms, 5000ms, 10000ms, 30000ms
    - Example query in SigNoz:
+
      ```promql
      histogram_quantile(0.95, sum(rate(tansu_dashboard_signoz_api_duration_ms_bucket[5m])) by (endpoint, le))
      ```
+
    - Use cases:
-     * P95/P99 latency tracking per endpoint
-     * Identify slow queries requiring optimization
-     * Alert on latency degradation
+     - P95/P99 latency tracking per endpoint
+     - Identify slow queries requiring optimization
+     - Alert on latency degradation
 
 3. **`tansu.dashboard.signoz.cache_misses_total`** (Counter)
    - Description: Number of cache misses (API calls made because data not in cache)
    - Tags: `endpoint`, `service_name`
    - Note: Cache hits are implicit (total requests - cache misses = cache hits)
    - Example query in SigNoz:
+
      ```promql
      sum(rate(tansu_dashboard_signoz_cache_misses_total[5m])) by (endpoint)
      ```
+
    - Use cases:
-     * Track cache effectiveness
-     * Identify endpoints with poor cache hit rates
-     * Correlate cache misses with increased latency
+     - Track cache effectiveness
+     - Identify endpoints with poor cache hit rates
+     - Correlate cache misses with increased latency
 
 **Querying Dashboard Metrics in SigNoz**:
 

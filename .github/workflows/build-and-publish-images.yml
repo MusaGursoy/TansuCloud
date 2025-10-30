@@ -1,0 +1,151 @@
+name: Build and Publish Docker Images
+
+on:
+  push:
+    branches:
+      - master
+    tags:
+      - 'v*.*.*'
+  pull_request:
+    branches:
+      - master
+  workflow_dispatch:
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_PREFIX: ghcr.io/${{ github.repository_owner }}
+
+jobs:
+  build-postgres:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata for PostgreSQL
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE_PREFIX }}/tansucloud-postgres
+          tags: |
+            type=ref,event=branch
+            type=ref,event=pr
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: Build and push PostgreSQL image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./dev/Dockerfile.citus-pgvector
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          platforms: linux/amd64
+
+  build-services:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    
+    strategy:
+      matrix:
+        service:
+          - name: gateway
+            dockerfile: TansuCloud.Gateway/Dockerfile
+          - name: identity
+            dockerfile: TansuCloud.Identity/Dockerfile
+          - name: dashboard
+            dockerfile: TansuCloud.Dashboard/Dockerfile
+          - name: db
+            dockerfile: TansuCloud.Database/Dockerfile
+          - name: storage
+            dockerfile: TansuCloud.Storage/Dockerfile
+          - name: telemetry
+            dockerfile: TansuCloud.Telemetry/Dockerfile
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata for ${{ matrix.service.name }}
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE_PREFIX }}/tansucloud-${{ matrix.service.name }}
+          tags: |
+            type=ref,event=branch
+            type=ref,event=pr
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: Build and push ${{ matrix.service.name }}
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./${{ matrix.service.dockerfile }}
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          platforms: linux/amd64
+
+  summary:
+    runs-on: ubuntu-latest
+    needs: [build-postgres, build-services]
+    if: always()
+    
+    steps:
+      - name: Build Summary
+        run: |
+          echo "## Docker Images Build Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Build Status" >> $GITHUB_STEP_SUMMARY
+          echo "- PostgreSQL: ${{ needs.build-postgres.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Services: ${{ needs.build-services.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Published Images" >> $GITHUB_STEP_SUMMARY
+          if [ "${{ needs.build-postgres.result }}" == "success" ] && [ "${{ needs.build-services.result }}" == "success" ]; then
+            echo "✅ All images built and published successfully!" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "Images available at:" >> $GITHUB_STEP_SUMMARY
+            echo "- ghcr.io/${{ github.repository_owner }}/tansucloud-postgres:latest" >> $GITHUB_STEP_SUMMARY
+            echo "- ghcr.io/${{ github.repository_owner }}/tansucloud-gateway:latest" >> $GITHUB_STEP_SUMMARY
+            echo "- ghcr.io/${{ github.repository_owner }}/tansucloud-identity:latest" >> $GITHUB_STEP_SUMMARY
+            echo "- ghcr.io/${{ github.repository_owner }}/tansucloud-dashboard:latest" >> $GITHUB_STEP_SUMMARY
+            echo "- ghcr.io/${{ github.repository_owner }}/tansucloud-db:latest" >> $GITHUB_STEP_SUMMARY
+            echo "- ghcr.io/${{ github.repository_owner }}/tansucloud-storage:latest" >> $GITHUB_STEP_SUMMARY
+            echo "- ghcr.io/${{ github.repository_owner }}/tansucloud-telemetry:latest" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "❌ Some images failed to build. Check the logs above." >> $GITHUB_STEP_SUMMARY
+          fi

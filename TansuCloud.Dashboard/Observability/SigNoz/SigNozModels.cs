@@ -158,6 +158,78 @@ public sealed record ErrorTrace(
 ); // End of Record ErrorTrace
 
 /// <summary>
+/// Full trace details with all spans.
+/// </summary>
+public sealed record TraceDetailsResult(
+    string TraceId,
+    DateTime StartTime,
+    DateTime EndTime,
+    double DurationMs,
+    string RootServiceName,
+    int TotalSpans,
+    int ErrorSpans,
+    IReadOnlyList<TraceSpan> Spans
+); // End of Record TraceDetailsResult
+
+/// <summary>
+/// Individual span within a trace.
+/// </summary>
+public sealed record TraceSpan(
+    string SpanId,
+    string? ParentSpanId,
+    string SpanName,
+    string ServiceName,
+    string SpanKind,
+    DateTime StartTime,
+    DateTime EndTime,
+    double DurationMs,
+    string StatusCode,
+    string? StatusMessage,
+    IReadOnlyDictionary<string, string> Attributes,
+    IReadOnlyList<SpanEvent> Events,
+    IReadOnlyList<SpanLink> Links
+); // End of Record TraceSpan
+
+/// <summary>
+/// Event within a span (e.g., exception, log).
+/// </summary>
+public sealed record SpanEvent(
+    string Name,
+    DateTime Timestamp,
+    IReadOnlyDictionary<string, string> Attributes
+); // End of Record SpanEvent
+
+/// <summary>
+/// Link to another span (for distributed traces).
+/// </summary>
+public sealed record SpanLink(
+    string TraceId,
+    string SpanId,
+    string TraceState
+); // End of Record SpanLink
+
+/// <summary>
+/// Result from searching for traces.
+/// </summary>
+public sealed record TracesSearchResult(
+    IReadOnlyList<TraceListItem> Traces,
+    int TotalCount
+); // End of Record TracesSearchResult
+
+/// <summary>
+/// Summary information for a trace in search results.
+/// </summary>
+public sealed record TraceListItem(
+    string TraceId,
+    string RootServiceName,
+    string RootOperationName,
+    DateTime StartTime,
+    double DurationMs,
+    int SpanCount,
+    int ErrorCount
+); // End of Record TraceListItem
+
+/// <summary>
 /// Configuration options for SigNoz query service.
 /// </summary>
 public sealed class SigNozQueryOptions
@@ -175,6 +247,18 @@ public sealed class SigNozQueryOptions
     /// Should be stored securely (environment variable, Key Vault).
     /// </summary>
     public string? ApiKey { get; set; }
+
+    /// <summary>
+    /// Email for SigNoz authentication (used to obtain JWT token).
+    /// Should be stored securely (environment variable, Key Vault).
+    /// </summary>
+    public string? Email { get; set; }
+
+    /// <summary>
+    /// Password for SigNoz authentication (used to obtain JWT token).
+    /// Should be stored securely (environment variable, Key Vault).
+    /// </summary>
+    public string? Password { get; set; }
 
     /// <summary>
     /// HTTP client timeout in seconds. Default 30.
@@ -245,3 +329,74 @@ internal sealed record SigNozLogDto(
     Dictionary<string, string>? Attributes,
     Dictionary<string, string>? Resources
 ); // End of Record SigNozLogDto
+
+/// <summary>
+/// Response from SigNoz /api/v1/traces/{traceId} endpoint.
+/// </summary>
+internal sealed record SigNozTraceResponse(
+    string? Status,
+    List<SigNozSpanDto>? Data
+); // End of Record SigNozTraceResponse
+
+/// <summary>
+/// Span DTO from SigNoz traces API.
+/// </summary>
+internal sealed record SigNozSpanDto(
+    string? SpanId,
+    string? ParentSpanId,
+    string? Name,
+    string? ServiceName,
+    string? Kind,
+    long? StartTimeUnixNano,
+    long? EndTimeUnixNano,
+    long? DurationNano,
+    Dictionary<string, object>? Attributes,
+    List<SigNozSpanEventDto>? Events,
+    SigNozSpanStatusDto? Status
+); // End of Record SigNozSpanDto
+
+/// <summary>
+/// Span event DTO from SigNoz API.
+/// </summary>
+internal sealed record SigNozSpanEventDto(
+    string? Name,
+    long? TimeUnixNano,
+    Dictionary<string, object>? Attributes
+); // End of Record SigNozSpanEventDto
+
+/// <summary>
+/// Span status DTO from SigNoz API.
+/// </summary>
+internal sealed record SigNozSpanStatusDto(
+    string? Code,
+    string? Message
+); // End of Record SigNozSpanStatusDto
+
+/// <summary>
+/// Response from SigNoz POST /api/v1/traces (traces search).
+/// </summary>
+internal sealed record SigNozTracesSearchResponse(
+    string? Status,
+    SigNozTracesSearchData? Data
+); // End of Record SigNozTracesSearchResponse
+
+/// <summary>
+/// Data payload for traces search response.
+/// </summary>
+internal sealed record SigNozTracesSearchData(
+    List<SigNozTraceItemDto>? Traces,
+    int? Total
+); // End of Record SigNozTracesSearchData
+
+/// <summary>
+/// Trace item summary from search results.
+/// </summary>
+internal sealed record SigNozTraceItemDto(
+    string? TraceId,
+    string? RootServiceName,
+    string? RootTraceName,
+    long? StartTimeUnixNano,
+    long? DurationNano,
+    int? SpanCount,
+    int? ErrorCount
+); // End of Record SigNozTraceItemDto

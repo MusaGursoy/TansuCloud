@@ -1,10 +1,12 @@
 @page "/admin/observability"
+@layout AdminLayout
 @using TansuCloud.Dashboard.Observability.SigNoz
 @using MudBlazor
 @using Microsoft.Extensions.Options
 @inject ISigNozQueryService SigNozQuery
 @inject ISnackbar Snackbar
 @inject IOptionsMonitor<SigNozQueryOptions> SigNozOptions
+@inject NavigationManager Navigation
 @attribute [Authorize(Policy="AdminOnly")]
 
 <PageTitle>Observability - TansuCloud Admin</PageTitle>
@@ -191,12 +193,12 @@
     <MudDivider Class="my-6" />
     <MudGrid>
         <MudItem xs="12">
-            <MudText Typo="Typo.h5" Class="mb-3">Quick Links to SigNoz</MudText>
+            <MudText Typo="Typo.h5" Class="mb-3">Saved Searches</MudText>
         </MudItem>
         @foreach (var shortcut in _savedSearches)
         {
             <MudItem xs="12" sm="6" md="4">
-                <MudCard Elevation="2" Style="cursor: pointer;" @onclick="@(() => OpenSigNozUrl(shortcut.Url))">
+                <MudCard Elevation="2" Style="cursor: pointer;" @onclick="@(() => ApplySavedSearch(shortcut.Url))">
                     <MudCardContent>
                         <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="2">
                             <MudIcon Icon="@shortcut.Icon" Color="Color.Primary" />
@@ -423,21 +425,33 @@
         Snackbar.Add($"Service details for {serviceName} - Coming soon", Severity.Info);
     }
 
-    private void OpenSigNozUrl(string searchType)
+    private void ApplySavedSearch(string searchType)
     {
-        var baseUrl = SigNozOptions.CurrentValue.SigNozUiBaseUrl?.TrimEnd('/') ?? "http://127.0.0.1:3301";
-        
-        // Construct SigNoz URL based on search type
-        var url = searchType switch
+        // Apply filters based on saved search type
+        // Navigate to appropriate specialized page for detailed views
+        switch (searchType)
         {
-            "traces" => $"{baseUrl}/traces?service=all&status=error",
-            "logs" => $"{baseUrl}/logs",
-            _ => baseUrl
-        };
-
-        // Open in new tab (requires JavaScript interop in production)
-        Snackbar.Add($"Opening SigNoz: {url}", Severity.Info);
-        // TODO: Use NavigationManager or JS interop to open URL in new tab
+            case "traces":
+                // Navigate to Trace Viewer for error traces
+                Navigation.NavigateTo("/admin/observability/traces");
+                break;
+            
+            case "logs":
+                // Future: Navigate to Logs Explorer
+                // For now, apply log filter on current page
+                _selectedTimeRange = 60; // 1 hour
+                _selectedService = "all";
+                Snackbar.Add("Logs Explorer coming soon. Applied recent logs filter.", Severity.Info);
+                _ = LoadDashboardData();
+                break;
+            
+            default:
+                _selectedTimeRange = 60; // 1 hour
+                _selectedService = "all";
+                Snackbar.Add($"Filter applied: {searchType}", Severity.Info);
+                _ = LoadDashboardData();
+                break;
+        }
     }
 
     private Color GetErrorColor(double errorRatePercent)

@@ -74,6 +74,32 @@ public interface ISigNozQueryService
     ); // End of Method GetRecentErrorsAsync
 
     /// <summary>
+    /// Get detailed trace information including all spans.
+    /// </summary>
+    /// <param name="traceId">Trace ID to retrieve details for.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>Full trace details with span hierarchy and timing.</returns>
+    Task<TraceDetailsResult?> GetTraceDetailsAsync(
+        string traceId,
+        CancellationToken cancellationToken = default
+    ); // End of Method GetTraceDetailsAsync
+
+    /// <summary>
+    /// Search for traces with filters.
+    /// </summary>
+    /// <param name="serviceName">Optional service name filter.</param>
+    /// <param name="timeRangeMinutes">Time range in minutes from now. Default 60 minutes.</param>
+    /// <param name="limit">Maximum number of traces to return. Default 20.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>Search results with trace summaries.</returns>
+    Task<TracesSearchResult> SearchTracesAsync(
+        string? serviceName = null,
+        int timeRangeMinutes = 60,
+        int limit = 20,
+        CancellationToken cancellationToken = default
+    ); // End of Method SearchTracesAsync
+
+    /// <summary>
     /// Get circuit breaker state for diagnostics and UI display.
     /// </summary>
     /// <returns>Current circuit breaker state.</returns>

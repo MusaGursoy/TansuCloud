@@ -1,4 +1,8 @@
 ﻿<CascadingAuthenticationState>
+    <!-- MudBlazor providers at root level for prerendering compatibility -->
+    <MudPopoverProvider />
+    <MudDialogProvider />
+    <MudSnackbarProvider />
     <Router AppAssembly="@typeof(Program).Assembly">
         <Found Context="routeData">
             <AuthorizeRouteView RouteData="routeData" DefaultLayout="typeof(Layout.AdminLayout)">

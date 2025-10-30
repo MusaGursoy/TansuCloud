@@ -17,6 +17,7 @@ public sealed class SigNozQueryService : ISigNozQueryService
     private readonly HybridCache _cache;
     private readonly ILogger<SigNozQueryService> _logger;
     private readonly SigNozCircuitBreaker _circuitBreaker;
+    private readonly ISigNozAuthenticationService _authService;
     private readonly HashSet<string> _allowedQueryTypes;
 
     private static readonly JsonSerializerOptions s_jsonOptions =
@@ -27,7 +28,8 @@ public sealed class SigNozQueryService : ISigNozQueryService
         IOptionsMonitor<SigNozQueryOptions> options,
         HybridCache cache,
         ILogger<SigNozQueryService> logger,
-        SigNozCircuitBreaker circuitBreaker
+        SigNozCircuitBreaker circuitBreaker,
+        ISigNozAuthenticationService authService
     )
     {
         _httpClient = httpClient ?? throw new ArgumentNullException(nameof(httpClient));
@@ -35,6 +37,7 @@ public sealed class SigNozQueryService : ISigNozQueryService
         _cache = cache ?? throw new ArgumentNullException(nameof(cache));
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
         _circuitBreaker = circuitBreaker ?? throw new ArgumentNullException(nameof(circuitBreaker));
+        _authService = authService ?? throw new ArgumentNullException(nameof(authService));
 
         // Query allowlist for security
         _allowedQueryTypes = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
@@ -44,7 +47,8 @@ public sealed class SigNozQueryService : ISigNozQueryService
             "service_list",
             "correlated_logs",
             "otlp_health",
-            "recent_errors"
+            "recent_errors",
+            "traces"
         };
 
         ConfigureHttpClient();
@@ -64,6 +68,27 @@ public sealed class SigNozQueryService : ISigNozQueryService
             );
         }
     } // End of Method ConfigureHttpClient
+
+    /// <summary>
+    /// Helper method to add JWT authentication to HTTP request messages.
+    /// If authentication is configured, fetches and adds Bearer token.
+    /// </summary>
+    private async Task<HttpRequestMessage> CreateAuthenticatedRequestAsync(
+        HttpMethod method,
+        string url,
+        CancellationToken cancellationToken = default)
+    {
+        var request = new HttpRequestMessage(method, url);
+        
+        // Try to get JWT token if authentication is configured
+        var token = await _authService.GetAccessTokenAsync(cancellationToken);
+        if (!string.IsNullOrWhiteSpace(token))
+        {
+            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
+        }
+        
+        return request;
+    } // End of Method CreateAuthenticatedRequestAsync
 
     public async Task<ServiceStatusResult> GetServiceStatusAsync(
         string? serviceName = null,
@@ -776,6 +801,224 @@ public sealed class SigNozQueryService : ISigNozQueryService
             cancellationToken: cancellationToken
         );
     } // End of Method GetRecentErrorsAsync
+
+    public async Task<TraceDetailsResult?> GetTraceDetailsAsync(
+        string traceId,
+        CancellationToken cancellationToken = default
+    )
+    {
+        ValidateQueryType("traces");
+
+        var cacheKey = $"signoz:trace_details:{traceId}";
+
+        return await _cache.GetOrCreateAsync(
+            cacheKey,
+            async _ =>
+            {
+                try
+                {
+                    // SigNoz uses /traces/{traceId} endpoint (not /api/v1/traces/{traceId})
+                    var url = $"{_options.CurrentValue.ApiBaseUrl}/traces/{traceId}";
+                    var request = await CreateAuthenticatedRequestAsync(HttpMethod.Get, url, cancellationToken);
+                    var response = await _httpClient.SendAsync(request, cancellationToken);
+
+                    if (!response.IsSuccessStatusCode)
+                    {
+                        _logger.LogWarning(
+                            "SigNoz trace details query failed: {StatusCode} {ReasonPhrase}",
+                            response.StatusCode,
+                            response.ReasonPhrase
+                        );
+                        return null;
+                    }
+
+                    var json = await response.Content.ReadAsStringAsync(cancellationToken);
+                    var apiResponse = JsonSerializer.Deserialize<SigNozTraceResponse>(
+                        json,
+                        s_jsonOptions
+                    );
+
+                    if (apiResponse?.Data == null || !apiResponse.Data.Any())
+                    {
+                        _logger.LogInformation("No spans found for trace {TraceId}", traceId);
+                        return null;
+                    }
+
+                    // Convert spans
+                    var spans = apiResponse.Data.Select(s => ConvertSpan(s)).ToList();
+
+                    // Calculate trace-level metrics
+                    var rootSpan = spans.FirstOrDefault(s => s.ParentSpanId == null);
+                    var startTime = spans.Min(s => s.StartTime);
+                    var endTime = spans.Max(s => s.EndTime);
+                    var durationMs = (endTime - startTime).TotalMilliseconds;
+                    var errorSpans = spans.Count(s => s.StatusCode == "ERROR");
+
+                    _logger.LogInformation(
+                        "Retrieved trace {TraceId} with {SpanCount} spans, duration {DurationMs}ms",
+                        traceId,
+                        spans.Count,
+                        durationMs
+                    );
+
+                    return new TraceDetailsResult(
+                        TraceId: traceId,
+                        StartTime: startTime,
+                        EndTime: endTime,
+                        DurationMs: durationMs,
+                        RootServiceName: rootSpan?.ServiceName ?? "unknown",
+                        TotalSpans: spans.Count,
+                        ErrorSpans: errorSpans,
+                        Spans: spans
+                    );
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(
+                        ex,
+                        "Failed to retrieve trace details for {TraceId}",
+                        traceId
+                    );
+                    return null;
+                }
+            },
+            new HybridCacheEntryOptions { Expiration = TimeSpan.FromMinutes(5) },
+            cancellationToken: cancellationToken
+        );
+    } // End of Method GetTraceDetailsAsync
+
+    private TraceSpan ConvertSpan(SigNozSpanDto dto)
+    {
+        var startTime = DateTimeOffset
+            .FromUnixTimeMilliseconds((dto.StartTimeUnixNano ?? 0) / 1_000_000)
+            .UtcDateTime;
+
+        var endTime = DateTimeOffset
+            .FromUnixTimeMilliseconds((dto.EndTimeUnixNano ?? 0) / 1_000_000)
+            .UtcDateTime;
+
+        var durationMs = (dto.DurationNano ?? 0) / 1_000_000.0;
+
+        var attributes =
+            dto.Attributes
+                ?.Where(kv => kv.Value != null)
+                .ToDictionary(kv => kv.Key, kv => kv.Value!.ToString() ?? "")
+                .AsReadOnly() ?? new Dictionary<string, string>().AsReadOnly();
+
+        var events =
+            dto.Events
+                ?.Select(e => new SpanEvent(
+                    Name: e.Name ?? "unknown",
+                    Timestamp: DateTimeOffset
+                        .FromUnixTimeMilliseconds((e.TimeUnixNano ?? 0) / 1_000_000)
+                        .UtcDateTime,
+                    Attributes: e.Attributes
+                        ?.Where(kv => kv.Value != null)
+                        .ToDictionary(kv => kv.Key, kv => kv.Value!.ToString() ?? "")
+                        .AsReadOnly() ?? new Dictionary<string, string>().AsReadOnly()
+                ))
+                .ToList()
+                .AsReadOnly() ?? new List<SpanEvent>().AsReadOnly();
+
+        return new TraceSpan(
+            SpanId: dto.SpanId ?? "unknown",
+            ParentSpanId: dto.ParentSpanId,
+            SpanName: dto.Name ?? "unknown",
+            ServiceName: dto.ServiceName ?? "unknown",
+            SpanKind: dto.Kind ?? "INTERNAL",
+            StartTime: startTime,
+            EndTime: endTime,
+            DurationMs: durationMs,
+            StatusCode: dto.Status?.Code ?? "OK",
+            StatusMessage: dto.Status?.Message,
+            Attributes: attributes,
+            Events: events,
+            Links: new List<SpanLink>().AsReadOnly() // SigNoz doesn't expose links in this API
+        );
+    } // End of Method ConvertSpan
+
+    public async Task<TracesSearchResult> SearchTracesAsync(
+        string? serviceName = null,
+        int timeRangeMinutes = 60,
+        int limit = 20,
+        CancellationToken cancellationToken = default
+    )
+    {
+        ValidateQueryType("traces");
+
+        var cacheKey = $"signoz:traces_search:{serviceName ?? "all"}:{timeRangeMinutes}:{limit}";
+
+        return await _cache.GetOrCreateAsync(
+            cacheKey,
+            async _ =>
+            {
+                var endTime = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() * 1_000_000;
+                var startTime =
+                    DateTimeOffset.UtcNow.AddMinutes(-timeRangeMinutes).ToUnixTimeMilliseconds()
+                    * 1_000_000;
+
+                var requestBody = new
+                {
+                    start = startTime,
+                    end = endTime,
+                    limit = limit,
+                    filters = serviceName != null
+                        ? new { serviceName = new[] { serviceName } }
+                        : null
+                };
+
+                var json = JsonSerializer.Serialize(requestBody);
+                var content = new StringContent(json, System.Text.Encoding.UTF8, "application/json");
+
+                var url = $"{_options.CurrentValue.ApiBaseUrl}/api/v3/query_range";
+                var request = await CreateAuthenticatedRequestAsync(HttpMethod.Post, url, cancellationToken);
+                request.Content = content;
+
+                var response = await ExecuteWithMetricsAsync(
+                    "/api/v3/query_range",
+                    async () => await _httpClient.SendAsync(request, cancellationToken),
+                    cancellationToken
+                );
+
+                response.EnsureSuccessStatusCode();
+                var responseJson = await response.Content.ReadAsStringAsync(cancellationToken);
+                var apiResponse = JsonSerializer.Deserialize<SigNozTracesSearchResponse>(
+                    responseJson,
+                    s_jsonOptions
+                );
+
+                if (apiResponse?.Data?.Traces == null)
+                {
+                    return new TracesSearchResult(
+                        Traces: Array.Empty<TraceListItem>(),
+                        TotalCount: 0
+                    );
+                }
+
+                var traces = apiResponse.Data.Traces
+                    .Select(t => new TraceListItem(
+                        TraceId: t.TraceId ?? "unknown",
+                        RootServiceName: t.RootServiceName ?? "unknown",
+                        RootOperationName: t.RootTraceName ?? "unknown",
+                        StartTime: DateTimeOffset
+                            .FromUnixTimeMilliseconds((t.StartTimeUnixNano ?? 0) / 1_000_000)
+                            .UtcDateTime,
+                        DurationMs: (t.DurationNano ?? 0) / 1_000_000.0,
+                        SpanCount: t.SpanCount ?? 0,
+                        ErrorCount: t.ErrorCount ?? 0
+                    ))
+                    .ToList()
+                    .AsReadOnly();
+
+                return new TracesSearchResult(
+                    Traces: traces,
+                    TotalCount: apiResponse.Data.Total ?? traces.Count
+                );
+            },
+            new HybridCacheEntryOptions { Expiration = TimeSpan.FromMinutes(2) },
+            cancellationToken: cancellationToken
+        );
+    } // End of Method SearchTracesAsync
 
     public CircuitBreakerState GetCircuitBreakerState()
     {

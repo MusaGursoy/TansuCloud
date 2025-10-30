@@ -1,0 +1,267 @@
+@page "/admin/observability/traces"
+@layout AdminLayout
+@using TansuCloud.Dashboard.Observability.SigNoz
+@inject ISigNozQueryService SigNozQuery
+@inject NavigationManager Navigation
+@inject ISnackbar Snackbar
+
+<PageTitle>Trace Viewer - TansuCloud Admin</PageTitle>
+
+<MudContainer MaxWidth="MaxWidth.ExtraExtraLarge" Class="mt-4">
+    <MudText Typo="Typo.h4" Class="mb-2">Trace Viewer</MudText>
+    <MudText Typo="Typo.body1" Color="Color.Secondary" Class="mb-4">
+        View detailed trace information including span hierarchy, timing, and attributes.
+    </MudText>
+
+    @* Recent Traces Section *@
+    @if (_loadingRecentTraces)
+    {
+        <MudPaper Elevation="2" Class="pa-4 mb-4">
+            <MudStack AlignItems="AlignItems.Center" Spacing="2">
+                <MudProgressCircular Indeterminate="true" Color="Color.Primary" Size="Size.Small" />
+                <MudText Typo="Typo.body2">Loading recent traces...</MudText>
+            </MudStack>
+        </MudPaper>
+    }
+    else if (_recentTraces?.Traces.Count > 0)
+    {
+        <MudPaper Elevation="2" Class="pa-4 mb-4">
+            <MudText Typo="Typo.h6" Class="mb-3">Recent Traces (@_recentTraces.Traces.Count)</MudText>
+            <MudTable Items="@_recentTraces.Traces" Hover="true" Dense="true" OnRowClick="OnTraceRowClick" T="TraceListItem" Style="cursor: pointer;">
+                <HeaderContent>
+                    <MudTh>Start Time</MudTh>
+                    <MudTh>Service</MudTh>
+                    <MudTh>Operation</MudTh>
+                    <MudTh>Duration</MudTh>
+                    <MudTh>Spans</MudTh>
+                    <MudTh>Errors</MudTh>
+                </HeaderContent>
+                <RowTemplate>
+                    <MudTd DataLabel="Start Time">@context.StartTime.ToString("HH:mm:ss.fff")</MudTd>
+                    <MudTd DataLabel="Service">@context.RootServiceName</MudTd>
+                    <MudTd DataLabel="Operation">@context.RootOperationName</MudTd>
+                    <MudTd DataLabel="Duration">@FormatDuration(context.DurationMs)</MudTd>
+                    <MudTd DataLabel="Spans">@context.SpanCount</MudTd>
+                    <MudTd DataLabel="Errors">
+                        @if (context.ErrorCount > 0)
+                        {
+                            <MudChip T="string" Size="Size.Small" Color="Color.Error">@context.ErrorCount</MudChip>
+                        }
+                        else
+                        {
+                            <MudChip T="string" Size="Size.Small" Color="Color.Success">0</MudChip>
+                        }
+                    </MudTd>
+                </RowTemplate>
+            </MudTable>
+        </MudPaper>
+    }
+    else if (!string.IsNullOrWhiteSpace(_recentTracesError))
+    {
+        <MudAlert Severity="Severity.Warning" Class="mb-4">
+            @_recentTracesError
+        </MudAlert>
+    }
+
+    <MudPaper Elevation="2" Class="pa-4 mb-4">
+        <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="2">
+            <MudTextField @bind-Value="_searchTraceId"
+                          Label="Trace ID"
+                          Variant="Variant.Outlined"
+                          Placeholder="Enter trace ID to search..."
+                          Style="flex: 1;" />
+            <MudButton Color="Color.Primary"
+                       Variant="Variant.Filled"
+                       OnClick="LoadTraceAsync"
+                       Disabled="@string.IsNullOrWhiteSpace(_searchTraceId)">
+                <MudIcon Icon="@Icons.Material.Filled.Search" Class="mr-2" />
+                Load Trace
+            </MudButton>
+        </MudStack>
+    </MudPaper>
+
+    @if (_loading)
+    {
+        <MudPaper Elevation="2" Class="pa-4">
+            <MudStack AlignItems="AlignItems.Center" Spacing="2">
+                <MudProgressCircular Indeterminate="true" Color="Color.Primary" />
+                <MudText>Loading trace details...</MudText>
+            </MudStack>
+        </MudPaper>
+    }
+    else if (_errorMessage != null)
+    {
+        <MudAlert Severity="Severity.Error" Class="mb-4">
+            @_errorMessage
+        </MudAlert>
+    }
+    else if (_traceDetails != null)
+    {
+        <MudPaper Elevation="2" Class="pa-4 mb-4">
+            <MudText Typo="Typo.h6" Class="mb-3">Trace Information</MudText>
+            <MudSimpleTable Dense="true">
+                <tbody>
+                    <tr>
+                        <td><strong>Trace ID:</strong></td>
+                        <td>@_traceDetails.TraceId</td>
+                    </tr>
+                    <tr>
+                        <td><strong>Root Service:</strong></td>
+                        <td>@_traceDetails.RootServiceName</td>
+                    </tr>
+                    <tr>
+                        <td><strong>Duration:</strong></td>
+                        <td>@FormatDuration(_traceDetails.DurationMs)</td>
+                    </tr>
+                    <tr>
+                        <td><strong>Total Spans:</strong></td>
+                        <td>@_traceDetails.TotalSpans</td>
+                    </tr>
+                    <tr>
+                        <td><strong>Error Spans:</strong></td>
+                        <td>
+                            <MudChip T="string" Size="Size.Small" Color="@(_traceDetails.ErrorSpans > 0 ? Color.Error : Color.Success)">
+                                @_traceDetails.ErrorSpans
+                            </MudChip>
+                        </td>
+                    </tr>
+                    <tr>
+                        <td><strong>Start Time:</strong></td>
+                        <td>@_traceDetails.StartTime.ToString("yyyy-MM-dd HH:mm:ss.fff")</td>
+                    </tr>
+                </tbody>
+            </MudSimpleTable>
+        </MudPaper>
+
+        <MudPaper Elevation="2" Class="pa-4">
+            <MudText Typo="Typo.h6" Class="mb-3">Spans (@_traceDetails.Spans.Count)</MudText>
+            <MudTable Items="@_traceDetails.Spans" Hover="true" Dense="true">
+                <HeaderContent>
+                    <MudTh>Span Name</MudTh>
+                    <MudTh>Service</MudTh>
+                    <MudTh>Duration</MudTh>
+                    <MudTh>Status</MudTh>
+                </HeaderContent>
+                <RowTemplate>
+                    <MudTd DataLabel="Span Name">@context.SpanName</MudTd>
+                    <MudTd DataLabel="Service">@context.ServiceName</MudTd>
+                    <MudTd DataLabel="Duration">@FormatDuration(context.DurationMs)</MudTd>
+                    <MudTd DataLabel="Status">
+                        <MudChip T="string" Size="Size.Small" Color="@GetStatusColor(context.StatusCode)">
+                            @context.StatusCode
+                        </MudChip>
+                    </MudTd>
+                </RowTemplate>
+            </MudTable>
+        </MudPaper>
+    }
+</MudContainer>
+
+@code {
+    private string? _searchTraceId;
+    private TraceDetailsResult? _traceDetails;
+    private bool _loading;
+    private string? _errorMessage;
+    
+    private TracesSearchResult? _recentTraces;
+    private bool _loadingRecentTraces;
+    private string? _recentTracesError;
+
+    protected override async Task OnInitializedAsync()
+    {
+        // Load recent traces in the background
+        _ = LoadRecentTracesAsync();
+        
+        var uri = new Uri(Navigation.Uri);
+        var query = System.Web.HttpUtility.ParseQueryString(uri.Query);
+        var traceId = query["traceId"];
+        
+        if (!string.IsNullOrWhiteSpace(traceId))
+        {
+            _searchTraceId = traceId;
+            await LoadTraceAsync();
+        }
+    }
+
+    private async Task LoadRecentTracesAsync()
+    {
+        _loadingRecentTraces = true;
+        _recentTracesError = null;
+        
+        try
+        {
+            _recentTraces = await SigNozQuery.SearchTracesAsync(limit: 20);
+            
+            if (_recentTraces.Traces.Count == 0)
+            {
+                _recentTracesError = "No traces found. Start generating activity to see traces here.";
+            }
+        }
+        catch (Exception ex)
+        {
+            _recentTracesError = $"Could not load recent traces: {ex.Message}";
+        }
+        finally
+        {
+            _loadingRecentTraces = false;
+            StateHasChanged();
+        }
+    }
+
+    private void OnTraceRowClick(TableRowClickEventArgs<TraceListItem> args)
+    {
+        _searchTraceId = args.Item.TraceId;
+        _ = LoadTraceAsync();
+    }
+
+    private async Task LoadTraceAsync()
+    {
+        if (string.IsNullOrWhiteSpace(_searchTraceId))
+            return;
+
+        _loading = true;
+        _errorMessage = null;
+        _traceDetails = null;
+
+        try
+        {
+            _traceDetails = await SigNozQuery.GetTraceDetailsAsync(_searchTraceId);
+            
+            if (_traceDetails == null)
+            {
+                _errorMessage = $"Trace '{_searchTraceId}' not found.";
+                Snackbar.Add(_errorMessage, Severity.Warning);
+            }
+        }
+        catch (Exception ex)
+        {
+            _errorMessage = $"Error loading trace: {ex.Message}";
+            Snackbar.Add(_errorMessage, Severity.Error);
+        }
+        finally
+        {
+            _loading = false;
+        }
+    }
+
+    private string FormatDuration(double durationMs)
+    {
+        if (durationMs < 1)
+            return $"{durationMs * 1000:F2}µs";
+        if (durationMs < 1000)
+            return $"{durationMs:F2}ms";
+        if (durationMs < 60000)
+            return $"{durationMs / 1000:F2}s";
+        return $"{durationMs / 60000:F2}min";
+    }
+
+    private Color GetStatusColor(string? statusCode)
+    {
+        return statusCode?.ToUpperInvariant() switch
+        {
+            "ERROR" => Color.Error,
+            "OK" => Color.Success,
+            _ => Color.Default
+        };
+    }
+}

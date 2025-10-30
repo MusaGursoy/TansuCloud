@@ -37,7 +37,7 @@
 
 services:
   postgres:
-    image: tansu/citus-pgvector:local
+    image: ghcr.io/musagursoy/tansucloud-postgres:latest
     container_name: tansu-postgres
     restart: unless-stopped
     deploy:
@@ -157,9 +157,7 @@ services:
       - tansucloud-network
 
   identity:
-    build:
-      context: .
-      dockerfile: TansuCloud.Identity/Dockerfile
+    image: ghcr.io/musagursoy/tansucloud-identity:latest
     container_name: tansu-identity
     restart: unless-stopped
     deploy:
@@ -202,9 +200,7 @@ services:
       - tansucloud-network
 
   dashboard:
-    build:
-      context: .
-      dockerfile: TansuCloud.Dashboard/Dockerfile
+    image: ghcr.io/musagursoy/tansucloud-dashboard:latest
     user: "0:0"
     container_name: tansu-dashboard
     restart: unless-stopped
@@ -229,6 +225,12 @@ services:
       Cache__Redis: redis:6379
       # Route audit writes via PgCat; override via env in real deployments
       Audit__ConnectionString: "Host=pgcat;Port=6432;Database=postgres;Username=${POSTGRES_USER};Password=${POSTGRES_PASSWORD}"
+      # SigNoz Query Service API (inside container network, port 8080)
+      SigNozQuery__ApiBaseUrl: http://signoz:8080
+      SigNozQuery__Email: ${SIGNOZ_API_EMAIL}
+      SigNozQuery__Password: ${SIGNOZ_API_PASSWORD}
+      # Signoz can not be hosted behind a gateway path currently, so for production we dont set a UI base URL.
+      # SigNozQuery__SigNozUiBaseUrl: ${PUBLIC_BASE_URL}/signoz
       GatewayBaseUrl: ${GATEWAY_BASE_URL}
       # Prometheus has been removed in favor of SigNoz. Leave unset to disable legacy metrics proxy.
       # Prometheus__BaseUrl:
@@ -253,9 +255,7 @@ services:
       - tansucloud-network
 
   db:
-    build:
-      context: .
-      dockerfile: TansuCloud.Database/Dockerfile
+    image: ghcr.io/musagursoy/tansucloud-db:latest
     container_name: tansu-db
     restart: unless-stopped
     deploy:
@@ -307,9 +307,7 @@ services:
       - tansucloud-network
 
   storage:
-    build:
-      context: .
-      dockerfile: TansuCloud.Storage/Dockerfile
+    image: ghcr.io/musagursoy/tansucloud-storage:latest
     user: "0:0"
     container_name: tansu-storage
     restart: unless-stopped
@@ -350,9 +348,7 @@ services:
       - tansucloud-network
 
   gateway:
-    build:
-      context: .
-      dockerfile: TansuCloud.Gateway/Dockerfile
+    image: ghcr.io/musagursoy/tansucloud-gateway:latest
     container_name: tansu-gateway
     restart: unless-stopped
     deploy:
@@ -373,7 +369,7 @@ services:
       Services__IdentityBaseUrl: http://identity:8080
       Services__DatabaseBaseUrl: http://db:8080
       Services__StorageBaseUrl: http://storage:8080
-      Services__SigNozBaseUrl: http://signoz-frontend:3301
+      Services__SigNozBaseUrl: http://signoz:8080
       # OTLP exporter endpoint - defaults to internal collector when observability profile is active
       OpenTelemetry__Otlp__Endpoint: ${OTLP_ENDPOINT:-http://signoz-otel-collector:4317}
       Cache__Redis: redis:6379
@@ -485,6 +481,8 @@ services:
       - SIGNOZ_TELEMETRYSTORE_CLICKHOUSE_CLUSTER=cluster
       - SIGNOZ_ALERTMANAGER_PROVIDER=signoz
       - SIGNOZ_JWT_SECRET=${SIGNOZ_JWT_SECRET:-change-me}
+      # Disable API authentication - safe since SigNoz API is only accessible within Docker network
+      - SIGNOZ_DISABLE_FRONTEND_AUTH=true
     depends_on:
       clickhouse:
         condition: service_healthy
@@ -492,6 +490,28 @@ services:
       - signoz-data:/var/lib/signoz
     networks:
       - tansucloud-network
+
+  signoz-init:
+    profiles: [observability]
+    image: mcr.microsoft.com/powershell:latest
+    container_name: signoz-init
+    restart: on-failure
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 256M
+    environment:
+      SIGNOZ_API_EMAIL: ${SIGNOZ_API_EMAIL}
+      SIGNOZ_API_PASSWORD: ${SIGNOZ_API_PASSWORD}
+    depends_on:
+      signoz:
+        condition: service_healthy
+    networks:
+      - tansucloud-network
+    volumes:
+      - ./dev/tools:/tools:ro
+    command: ["pwsh", "-NoProfile", "-File", "/tools/signoz-init.ps1", "-SigNozUrl", "http://signoz:8080"]
 
   signoz-otel-collector:
     profiles: [observability]

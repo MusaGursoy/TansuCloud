@@ -3,6 +3,9 @@
 
 services:
   postgres:
+    build:
+      context: .
+      dockerfile: dev/Dockerfile.citus-pgvector
     image: tansu/citus-pgvector:local
     container_name: tansu-postgres
     restart: unless-stopped
@@ -119,6 +122,8 @@ services:
       - SIGNOZ_TELEMETRYSTORE_CLICKHOUSE_CLUSTER=cluster
       - SIGNOZ_ALERTMANAGER_PROVIDER=signoz
       - SIGNOZ_JWT_SECRET=dev-signoz-jwt-secret-change-me
+      # Disable API authentication - safe since SigNoz API is only accessible within Docker network
+      - SIGNOZ_DISABLE_FRONTEND_AUTH=true
     user: "0:0"
     # NOTE: SigNoz listens on 8080 internally. To avoid clashing with our Gateway's host mapping,
     # we publish it on host port 3301 while keeping the container default port. Access: http://127.0.0.1:3301/
@@ -135,6 +140,28 @@ services:
       - tansucloud-network
     volumes:
       - signoz-data:/var/lib/signoz
+
+  # SigNoz initialization (automatic admin user registration)
+  signoz-init:
+    image: mcr.microsoft.com/powershell:latest
+    container_name: signoz-init
+    restart: on-failure
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 256M
+    environment:
+      SIGNOZ_API_EMAIL: ${SIGNOZ_API_EMAIL}
+      SIGNOZ_API_PASSWORD: ${SIGNOZ_API_PASSWORD}
+    depends_on:
+      signoz:
+        condition: service_healthy
+    networks:
+      - tansucloud-network
+    volumes:
+      - ./dev/tools:/tools:ro
+    command: ["pwsh", "-NoProfile", "-File", "/tools/signoz-init.ps1", "-SigNozUrl", "http://signoz:8080"]
 
   # SigNoz OpenTelemetry collector (receives OTLP from all services)
   signoz-otel-collector:
@@ -401,6 +428,11 @@ services:
       Cache__Redis: redis:6379
       # Route audit writes via PgCat; avoid localhost inside container
       Audit__ConnectionString: "Host=pgcat;Port=6432;Database=postgres;Username=${POSTGRES_USER};Password=${POSTGRES_PASSWORD}"
+      # SigNoz Query Service API (inside container network, port 8080; host-mapped as 3301)
+      SigNozQuery__ApiBaseUrl: http://signoz:8080
+      SigNozQuery__SigNozUiBaseUrl: http://127.0.0.1:3301
+      SigNozQuery__Email: ${SIGNOZ_API_EMAIL}
+      SigNozQuery__Password: ${SIGNOZ_API_PASSWORD}
       Oidc__Authority: ${PUBLIC_BASE_URL}/identity
       # Use in-cluster gateway for backchannel discovery; browser-facing Authority follows PUBLIC_BASE_URL
       Oidc__MetadataAddress: ${GATEWAY_BASE_URL}/identity/.well-known/openid-configuration
