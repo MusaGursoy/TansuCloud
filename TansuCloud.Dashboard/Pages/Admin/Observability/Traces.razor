@@ -1,0 +1,392 @@
+@page "/admin/observability/traces"
+@using TansuCloud.Dashboard.Models
+@using TansuCloud.Dashboard.Services
+@using MudBlazor
+@using Microsoft.AspNetCore.Components.Rendering
+@attribute [Authorize(Policy = "AdminOnly")]
+@layout AdminLayout
+@inject ISigNozTracesService TracesService
+@inject ILogger<Traces> Logger
+@inject ISnackbar Snackbar
+
+<PageTitle>Traces Explorer | TansuCloud Admin</PageTitle>
+
+<MudContainer MaxWidth="MaxWidth.ExtraLarge" Class="mt-4">
+    <MudText Typo="Typo.h4" Class="mb-2">Traces Explorer</MudText>
+    <MudText Typo="Typo.body1" Color="Color.Default" Class="mb-4">
+        Search and analyze distributed traces from your services.
+    </MudText>
+
+    <!-- Search Filters -->
+    <MudCard Elevation="2" Class="mb-4">
+        <MudCardHeader>
+            <CardHeaderContent>
+                <MudText Typo="Typo.h6">Search Filters</MudText>
+            </CardHeaderContent>
+        </MudCardHeader>
+        <MudCardContent>
+            <MudGrid>
+                <MudItem xs="12" md="3">
+                    <MudSelect T="string" @bind-Value="_selectedService" Label="Service" Variant="Variant.Outlined" Clearable="true">
+                        <MudSelectItem T="string" Value="@(null)">All Services</MudSelectItem>
+                        @foreach (var service in _services)
+                        {
+                            <MudSelectItem T="string" Value="@service">@service</MudSelectItem>
+                        }
+                    </MudSelect>
+                </MudItem>
+
+                <MudItem xs="12" md="2">
+                    <MudSelect T="string" @bind-Value="_selectedStatus" Label="Status" Variant="Variant.Outlined" Clearable="true">
+                        <MudSelectItem T="string" Value="@(null)">All Statuses</MudSelectItem>
+                        <MudSelectItem T="string" Value="@("OK")">OK</MudSelectItem>
+                        <MudSelectItem T="string" Value="@("ERROR")">ERROR</MudSelectItem>
+                        <MudSelectItem T="string" Value="@("UNSET")">UNSET</MudSelectItem>
+                    </MudSelect>
+                </MudItem>
+
+                <MudItem xs="12" md="2">
+                    <MudNumericField T="long?" @bind-Value="_minDurationMs" Label="Min Duration (ms)" Variant="Variant.Outlined" Min="0" />
+                </MudItem>
+
+                <MudItem xs="12" md="2">
+                    <MudNumericField T="long?" @bind-Value="_maxDurationMs" Label="Max Duration (ms)" Variant="Variant.Outlined" Min="0" />
+                </MudItem>
+
+                <MudItem xs="12" md="3">
+                    <MudSelect T="int" @bind-Value="_timeRangeHours" Label="Time Range" Variant="Variant.Outlined">
+                        <MudSelectItem T="int" Value="1">Last 1 hour</MudSelectItem>
+                        <MudSelectItem T="int" Value="6">Last 6 hours</MudSelectItem>
+                        <MudSelectItem T="int" Value="24">Last 24 hours</MudSelectItem>
+                        <MudSelectItem T="int" Value="168">Last 7 days</MudSelectItem>
+                    </MudSelect>
+                </MudItem>
+            </MudGrid>
+        </MudCardContent>
+        <MudCardActions>
+            <MudButton Variant="Variant.Filled" Color="Color.Primary" StartIcon="@Icons.Material.Filled.Search" OnClick="SearchTraces" Disabled="@_loading">
+                Search
+            </MudButton>
+            <MudButton Variant="Variant.Outlined" Color="Color.Default" StartIcon="@Icons.Material.Filled.Refresh" OnClick="RefreshServices" Disabled="@_loading">
+                Refresh Services
+            </MudButton>
+        </MudCardActions>
+    </MudCard>
+
+    <!-- Loading Indicator -->
+    @if (_loading)
+    {
+        <MudProgressLinear Color="Color.Primary" Indeterminate="true" Class="mb-4" />
+    }
+
+    <!-- Results Table -->
+    @if (_searchResult != null && _searchResult.Traces.Any())
+    {
+        <MudCard Elevation="2">
+            <MudCardHeader>
+                <CardHeaderContent>
+                    <MudText Typo="Typo.h6">Search Results (@_searchResult.Total traces)</MudText>
+                </CardHeaderContent>
+            </MudCardHeader>
+            <MudCardContent>
+                <MudDataGrid T="TraceSummary" Items="@_searchResult.Traces" Filterable="false" Dense="true" Hover="true">
+                    <Columns>
+                        <TemplateColumn Title="TraceID">
+                            <CellTemplate>
+                                <MudLink Href="#" OnClick="@(() => ViewTraceDetail(context.Item.TraceId))">
+                                    <code>@context.Item.TraceId.Substring(0, Math.Min(16, context.Item.TraceId.Length))...</code>
+                                </MudLink>
+                            </CellTemplate>
+                        </TemplateColumn>
+                        <PropertyColumn Property="x => x.ServiceName" Title="Service" />
+                        <PropertyColumn Property="x => x.OperationName" Title="Operation" />
+                        <TemplateColumn Title="Duration">
+                            <CellTemplate>
+                                @FormatDuration(context.Item.DurationMs)
+                            </CellTemplate>
+                        </TemplateColumn>
+                        <PropertyColumn Property="x => x.SpanCount" Title="Spans" />
+                        <TemplateColumn Title="Status">
+                            <CellTemplate>
+                                <MudChip Size="Size.Small" Color="@GetStatusColor(context.Item.Status)">@context.Item.Status</MudChip>
+                            </CellTemplate>
+                        </TemplateColumn>
+                        <TemplateColumn Title="Timestamp">
+                            <CellTemplate>
+                                @context.Item.Timestamp.ToString("yyyy-MM-dd HH:mm:ss")
+                            </CellTemplate>
+                        </TemplateColumn>
+                    </Columns>
+                </MudDataGrid>
+            </MudCardContent>
+        </MudCard>
+    }
+    else if (!_loading && _searched)
+    {
+        <MudAlert Severity="Severity.Info">No traces found matching your search criteria.</MudAlert>
+    }
+
+    <!-- Trace Detail Dialog (populated when trace is clicked) -->
+    @if (_selectedTrace != null)
+    {
+        <MudDialog @bind-IsVisible="_showDetailDialog" Options="new DialogOptions { MaxWidth = MaxWidth.ExtraLarge, FullWidth = true }">
+            <TitleContent>
+                <MudText Typo="Typo.h6">Trace Detail: <code>@_selectedTrace.TraceId</code></MudText>
+            </TitleContent>
+            <DialogContent>
+                <MudGrid>
+                    <MudItem xs="12">
+                        <MudText Typo="Typo.subtitle2">Service: @_selectedTrace.ServiceName</MudText>
+                        <MudText Typo="Typo.subtitle2">Duration: @FormatDuration(_selectedTrace.DurationMs)</MudText>
+                        <MudText Typo="Typo.subtitle2">Timestamp: @_selectedTrace.Timestamp.ToString("yyyy-MM-dd HH:mm:ss.fff")</MudText>
+                    </MudItem>
+
+                    <!-- Span Tree -->
+                    <MudItem xs="12" Class="mt-4">
+                        <MudText Typo="Typo.h6" Class="mb-2">Spans (@_selectedTrace.Spans.Count)</MudText>
+                        @RenderSpanTree(_selectedTrace.Spans)
+                    </MudItem>
+                </MudGrid>
+            </DialogContent>
+            <DialogActions>
+                <MudButton Color="Color.Default" Variant="Variant.Filled" OnClick="CloseDetailDialog">Close</MudButton>
+            </DialogActions>
+        </MudDialog>
+    }
+</MudContainer>
+
+@code {
+    private bool _loading = true;
+    private bool _searched = false;
+    private List<string> _services = new();
+    private TraceSearchResult? _searchResult;
+    private TraceDetail? _selectedTrace;
+    private bool _showDetailDialog = false;
+
+    // Search filters
+    private string? _selectedService;
+    private string? _selectedStatus;
+    private long? _minDurationMs;
+    private long? _maxDurationMs;
+    private int _timeRangeHours = 1;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadServices();
+        await SearchTraces();
+    } // End of Method OnInitializedAsync
+
+    private async Task LoadServices()
+    {
+        try
+        {
+            _services = await TracesService.GetServicesAsync();
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Error loading services");
+            Snackbar.Add("Failed to load services", Severity.Error);
+        }
+    } // End of Method LoadServices
+
+    private async Task RefreshServices()
+    {
+        await LoadServices();
+        Snackbar.Add("Services refreshed", Severity.Success);
+    } // End of Method RefreshServices
+
+    private async Task SearchTraces()
+    {
+        _loading = true;
+        _searched = false;
+
+        try
+        {
+            var endTime = DateTimeOffset.UtcNow;
+            var startTime = endTime.AddHours(-_timeRangeHours);
+
+            var request = new TraceSearchRequest
+            {
+                StartTimeNano = startTime.ToUnixTimeMilliseconds() * 1_000_000,
+                EndTimeNano = endTime.ToUnixTimeMilliseconds() * 1_000_000,
+                ServiceName = _selectedService,
+                Status = _selectedStatus,
+                MinDurationMs = _minDurationMs,
+                MaxDurationMs = _maxDurationMs,
+                Limit = 100
+            };
+
+            _searchResult = await TracesService.SearchTracesAsync(request);
+            _searched = true;
+
+            Logger.LogInformation("Trace search completed: {Count} traces found", _searchResult.Total);
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Error searching traces");
+            Snackbar.Add("Failed to search traces", Severity.Error);
+        }
+        finally
+        {
+            _loading = false;
+        }
+    } // End of Method SearchTraces
+
+    private async Task ViewTraceDetail(string traceId)
+    {
+        try
+        {
+            _selectedTrace = await TracesService.GetTraceByIdAsync(traceId);
+            if (_selectedTrace != null)
+            {
+                _showDetailDialog = true;
+            }
+            else
+            {
+                Snackbar.Add("Trace not found", Severity.Warning);
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Error loading trace detail for {TraceId}", traceId);
+            Snackbar.Add("Failed to load trace detail", Severity.Error);
+        }
+    } // End of Method ViewTraceDetail
+
+    private void CloseDetailDialog()
+    {
+        _showDetailDialog = false;
+        _selectedTrace = null;
+    } // End of Method CloseDetailDialog
+
+    private RenderFragment RenderSpanTree(List<SpanDetail> spans)
+    {
+        // Build parent-child map
+        var rootSpans = spans.Where(s => string.IsNullOrEmpty(s.ParentSpanId)).ToList();
+        var spansByParent = spans.Where(s => !string.IsNullOrEmpty(s.ParentSpanId))
+                                 .GroupBy(s => s.ParentSpanId)
+                                 .ToDictionary(g => g.Key!, g => g.ToList());
+
+        return builder =>
+        {
+            builder.OpenComponent<MudList<string>>(0);
+            builder.AddAttribute(1, "Dense", true);
+
+            foreach (var rootSpan in rootSpans)
+            {
+                RenderSpan(builder, rootSpan, spansByParent, 0);
+            }
+
+            builder.CloseComponent();
+        };
+    } // End of Method RenderSpanTree
+
+    private void RenderSpan(RenderTreeBuilder builder, SpanDetail span, Dictionary<string, List<SpanDetail>> spansByParent, int depth)
+    {
+        builder.OpenComponent<MudListItem<string>>(0);
+        builder.AddAttribute(1, "ChildContent", (RenderFragment)(b =>
+        {
+            // Use MudPaper instead of plain div for better Material Design styling
+            b.OpenComponent<MudPaper>(0);
+            b.AddAttribute(1, "Elevation", 0);
+            b.AddAttribute(2, "Class", $"pa-2 mb-1 ml-{depth * 2}");
+            b.AddAttribute(3, "ChildContent", (RenderFragment)(paperBuilder =>
+            {
+                // Span header with MudStack for layout
+                paperBuilder.OpenComponent<MudStack>(0);
+                paperBuilder.AddAttribute(1, "Row", true);
+                paperBuilder.AddAttribute(2, "Spacing", 2);
+                paperBuilder.AddAttribute(3, "AlignItems", AlignItems.Center);
+                paperBuilder.AddAttribute(4, "ChildContent", (RenderFragment)(stackBuilder =>
+                {
+                    // Status chip
+                    stackBuilder.OpenComponent<MudChip<string>>(0);
+                    stackBuilder.AddAttribute(1, "Size", Size.Small);
+                    stackBuilder.AddAttribute(2, "Color", GetStatusColor(span.Status));
+                    stackBuilder.AddAttribute(3, "ChildContent", (RenderFragment)(chipBuilder =>
+                    {
+                        chipBuilder.AddContent(0, span.Status);
+                    }));
+                    stackBuilder.CloseComponent();
+
+                    // Span details
+                    stackBuilder.OpenComponent<MudText>(1);
+                    stackBuilder.AddAttribute(2, "Typo", Typo.body2);
+                    stackBuilder.AddAttribute(3, "ChildContent", (RenderFragment)(textBuilder =>
+                    {
+                        textBuilder.OpenElement(0, "strong");
+                        textBuilder.AddContent(1, span.ServiceName);
+                        textBuilder.CloseElement();
+                        textBuilder.AddContent(2, " - ");
+                        textBuilder.AddContent(3, span.Name);
+                        textBuilder.AddContent(4, " (");
+                        textBuilder.AddContent(5, FormatDuration(span.DurationMs));
+                        textBuilder.AddContent(6, ")");
+                    }));
+                    stackBuilder.CloseComponent();
+                }));
+                paperBuilder.CloseComponent(); // MudStack
+
+                // Span attributes (if any)
+                if (span.Attributes.Any())
+                {
+                    paperBuilder.OpenComponent<MudStack>(5);
+                    paperBuilder.AddAttribute(6, "Spacing", 1);
+                    paperBuilder.AddAttribute(7, "Class", "ml-4 mt-1");
+                    paperBuilder.AddAttribute(8, "ChildContent", (RenderFragment)(attrStackBuilder =>
+                    {
+                        foreach (var attr in span.Attributes.Take(5))
+                        {
+                            attrStackBuilder.OpenComponent<MudText>(0);
+                            attrStackBuilder.AddAttribute(1, "Typo", Typo.caption);
+                            attrStackBuilder.AddAttribute(2, "Color", Color.Default);
+                            attrStackBuilder.AddAttribute(3, "ChildContent", (RenderFragment)(attrBuilder =>
+                            {
+                                attrBuilder.OpenElement(0, "code");
+                                attrBuilder.AddContent(1, attr.Key);
+                                attrBuilder.CloseElement();
+                                attrBuilder.AddContent(2, ": ");
+                                attrBuilder.AddContent(3, attr.Value);
+                            }));
+                            attrStackBuilder.CloseComponent();
+                        }
+                    }));
+                    paperBuilder.CloseComponent(); // MudStack for attributes
+                }
+            }));
+            b.CloseComponent(); // MudPaper
+        }));
+        builder.CloseComponent(); // MudListItem
+
+        // Recursively render children
+        if (spansByParent.TryGetValue(span.SpanId, out var children))
+        {
+            foreach (var child in children.OrderBy(c => c.StartTimeNano))
+            {
+                RenderSpan(builder, child, spansByParent, depth + 1);
+            }
+        }
+    } // End of Method RenderSpan
+
+    private Color GetStatusColor(string status)
+    {
+        return status switch
+        {
+            "OK" => Color.Success,
+            "ERROR" => Color.Error,
+            "UNSET" => Color.Default,
+            _ => Color.Default
+        };
+    } // End of Method GetStatusColor
+
+    private string FormatDuration(long durationMs)
+    {
+        if (durationMs < 1)
+            return $"{durationMs * 1000}µs";
+        if (durationMs < 1000)
+            return $"{durationMs}ms";
+        if (durationMs < 60000)
+            return $"{durationMs / 1000.0:F2}s";
+        return $"{durationMs / 60000.0:F2}m";
+    } // End of Method FormatDuration
+}

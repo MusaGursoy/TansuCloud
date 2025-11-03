@@ -200,29 +200,21 @@ builder.Services.Configure<IdentityPolicyOptions>(
 builder.Services.AddSingleton<TansuCloud.Identity.Infrastructure.Runtime.IIdentityPoliciesRuntime>(
     sp =>
     {
-        var identityOpts = sp.GetRequiredService<
-            Microsoft.Extensions.Options.IOptions<Microsoft.AspNetCore.Identity.IdentityOptions>
-        >();
-        var policyOpts = sp.GetRequiredService<
-            Microsoft.Extensions.Options.IOptions<TansuCloud.Identity.Infrastructure.Options.IdentityPolicyOptions>
-        >();
+        var identityOpts =
+            sp.GetRequiredService<Microsoft.Extensions.Options.IOptions<Microsoft.AspNetCore.Identity.IdentityOptions>>();
+        var policyOpts =
+            sp.GetRequiredService<Microsoft.Extensions.Options.IOptions<TansuCloud.Identity.Infrastructure.Options.IdentityPolicyOptions>>();
         var config = new TansuCloud.Identity.Infrastructure.Runtime.IdentityPoliciesConfig
         {
             PasswordRequiredLength = identityOpts.Value.Password.RequiredLength,
             PasswordRequireDigit = identityOpts.Value.Password.RequireDigit,
             PasswordRequireUppercase = identityOpts.Value.Password.RequireUppercase,
             PasswordRequireLowercase = identityOpts.Value.Password.RequireLowercase,
-            PasswordRequireNonAlphanumeric = identityOpts
-                .Value
-                .Password
-                .RequireNonAlphanumeric,
+            PasswordRequireNonAlphanumeric = identityOpts.Value.Password.RequireNonAlphanumeric,
             LockoutEnabled = identityOpts.Value.Lockout.AllowedForNewUsers,
             LockoutMaxFailedAttempts = identityOpts.Value.Lockout.MaxFailedAccessAttempts,
-            LockoutDurationMinutes = (int)identityOpts
-                .Value
-                .Lockout
-                .DefaultLockoutTimeSpan
-                .TotalMinutes,
+            LockoutDurationMinutes = (int)
+                identityOpts.Value.Lockout.DefaultLockoutTimeSpan.TotalMinutes,
             AccessTokenLifetimeSeconds = (int)policyOpts.Value.AccessTokenLifetime.TotalSeconds,
             RefreshTokenLifetimeSeconds = (int)policyOpts.Value.RefreshTokenLifetime.TotalSeconds
         };
@@ -357,6 +349,9 @@ builder
         var issuer = appUrls.GetIssuer("identity");
         options.SetIssuer(new Uri(issuer));
 
+        // Diagnostic: log the configured issuer at startup
+        Console.WriteLine($"[OpenIddict] Configured Issuer: {issuer}");
+
         // Default relative endpoints; PathBase and Issuer ensure advertised URLs include "/identity"
         options
             .SetAuthorizationEndpointUris("/connect/authorize")
@@ -435,6 +430,12 @@ builder
                     {
                         issuerUri = new Uri(issuerUri.AbsoluteUri + "/");
                     }
+
+                    // Diagnostic: log what issuer we're setting in discovery response
+                    Console.WriteLine(
+                        $"[OpenIddict] Discovery response issuer: {issuerUri.AbsoluteUri}"
+                    );
+
                     context.Response["issuer"] = issuerUri.AbsoluteUri;
                     context.Response["authorization_endpoint"] = new Uri(
                         issuerUri,
@@ -535,11 +536,14 @@ if (!app.Environment.IsDevelopment())
     app.UseExceptionHandler("/Error");
 }
 
-// Respect proxy headers from the Gateway (so Request.Scheme reflects client HTTPS)
+// Respect proxy headers from the Gateway (so Request.Scheme reflects client HTTPS and Host reflects original browser host)
 app.UseForwardedHeaders(
     new ForwardedHeadersOptions
     {
-        ForwardedHeaders = ForwardedHeaders.XForwardedFor | ForwardedHeaders.XForwardedProto,
+        ForwardedHeaders =
+            ForwardedHeaders.XForwardedFor
+            | ForwardedHeaders.XForwardedProto
+            | ForwardedHeaders.XForwardedHost,
         // We trust the in-front gateway; clear defaults to accept any (dev only)
         ForwardLimit = null,
         AllowedHosts = { "*" }
@@ -615,8 +619,7 @@ adminGroup
         {
             return Results.Problem(
                 title: "Not implemented",
-                detail:
-                    "Identity policy updates require service restart. Use configuration files or environment variables to change these settings.",
+                detail: "Identity policy updates require service restart. Use configuration files or environment variables to change these settings.",
                 statusCode: StatusCodes.Status501NotImplemented
             );
         }

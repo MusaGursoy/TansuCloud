@@ -1,0 +1,322 @@
+@page "/admin/audit"
+@layout TansuCloud.Dashboard.Pages.Admin.AdminLayout
+@attribute [Microsoft.AspNetCore.Authorization.Authorize(Policy = "AdminOnly")]
+
+<h3>Audit</h3>
+
+<div class="mb-3">
+    <div class="row g-2">
+        <div class="col-auto">
+            <label class="form-label">Start (UTC)</label>
+            <input type="datetime-local" class="form-control form-control-sm" @bind="startLocal" />
+        </div>
+        <div class="col-auto">
+            <label class="form-label">End (UTC)</label>
+            <input type="datetime-local" class="form-control form-control-sm" @bind="endLocal" />
+        </div>
+        <div class="col-auto">
+            <label class="form-label">Tenant</label>
+            <input class="form-control form-control-sm" @bind="tenantId" />
+        </div>
+        <div class="col-auto">
+            <label class="form-label">Subject</label>
+            <input class="form-control form-control-sm" @bind="subject" />
+        </div>
+        <div class="col-auto">
+            <label class="form-label">Category</label>
+            <input class="form-control form-control-sm" @bind="category" />
+        </div>
+        <div class="col-auto">
+            <label class="form-label">Action</label>
+            <input class="form-control form-control-sm" @bind="action" />
+        </div>
+        <div class="col-auto">
+            <label class="form-label">Service</label>
+            <input class="form-control form-control-sm" @bind="service" />
+        </div>
+        <div class="col-auto">
+            <label class="form-label">Outcome</label>
+            <input class="form-control form-control-sm" @bind="outcome" />
+        </div>
+        <div class="col-auto">
+            <label class="form-label">Correlation</label>
+            <input class="form-control form-control-sm" @bind="correlationId" />
+        </div>
+        <div class="col-auto form-check mt-4">
+            <input type="checkbox" class="form-check-input" id="impOnly" @bind="impersonationOnly" />
+            <label class="form-check-label" for="impOnly">Impersonation only</label>
+        </div>
+        <div class="col-auto align-self-end">
+            <button class="btn btn-sm btn-primary" @onclick="SearchAsync">Search</button>
+            <button class="btn btn-sm btn-outline-secondary ms-1" @onclick="ResetFilters">Reset</button>
+        </div>
+    </div>
+</div>
+
+<div class="d-flex justify-content-between align-items-center mb-2">
+    <div>
+        <button class="btn btn-sm btn-secondary" @onclick="LoadMoreAsync" disabled="@string.IsNullOrEmpty(nextPageToken)">Load more</button>
+        <span class="ms-2 text-muted">@items.Count item(s)</span>
+    </div>
+    <div>
+        <button class="btn btn-sm btn-outline-success" @onclick="ExportCsvAsync">Export CSV</button>
+        <button class="btn btn-sm btn-outline-info ms-1" @onclick="ExportJsonAsync">Export JSON</button>
+    </div>
+    
+</div>
+
+@if (error is not null)
+{
+    <div class="alert alert-danger">@error</div>
+}
+else if (loading)
+{
+    <div class="text-muted">Loading…</div>
+}
+else if (items.Count == 0)
+{
+    <div class="text-muted">No audit entries found for the selected range.</div>
+}
+else
+{
+    <div class="row">
+        <div class="col-7">
+            <table class="table table-sm table-striped">
+                <thead>
+                    <tr>
+                        <th>Time (UTC)</th>
+                        <th>Tenant</th>
+                        <th>Subject</th>
+                        <th>Category</th>
+                        <th>Action</th>
+                        <th>Service</th>
+                        <th>Outcome</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var it in items)
+                    {
+                        <tr class="@(selected?.Id == it.Id ? "table-primary" : null)" @onclick="() => Select(it)">
+                            <td>@it.WhenUtc.ToString("u")</td>
+                            <td>@it.TenantId</td>
+                            <td>@it.Subject</td>
+                            <td>@it.Category</td>
+                            <td>@it.Action</td>
+                            <td>@it.Service</td>
+                            <td>@(it.Outcome ?? "")</td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+        <div class="col-5">
+            @if (selected is null)
+            {
+                <div class="text-muted">Select a row to see details.</div>
+            }
+            else
+            {
+                <div class="card">
+                    <div class="card-header">
+                        <strong>@selected.Category</strong> / @selected.Action
+                    </div>
+                    <div class="card-body">
+                        <div><strong>When:</strong> @selected.WhenUtc.ToString("u")</div>
+                        <div><strong>Tenant:</strong> @selected.TenantId</div>
+                        <div><strong>Subject:</strong> @selected.Subject</div>
+                        <div><strong>Service:</strong> @selected.Service (@selected.Environment @selected.Version)</div>
+                        <div><strong>Outcome:</strong> @(selected.Outcome ?? "") (@(selected.ReasonCode ?? ""))</div>
+                        <div><strong>Route:</strong> @selected.RouteTemplate</div>
+                        <div><strong>CorrelationId:</strong> @selected.CorrelationId</div>
+                        <div><strong>Trace:</strong> @selected.TraceId / @selected.SpanId</div>
+                        <div><strong>Client:</strong> @selected.ClientIpHash; @selected.UserAgent</div>
+                        <div><strong>ImpersonatedBy:</strong> @(selected.ImpersonatedBy ?? "-")</div>
+                        <div class="mt-2"><strong>Details:</strong>
+                            <pre class="small" style="white-space:pre-wrap">@detailsText</pre>
+                        </div>
+                        <div class="mt-2">
+                            <a class="btn btn-sm btn-outline-secondary" href="@_sigNozBaseUrl" target="_blank" rel="noopener">Open SigNoz</a>
+                        </div>
+                    </div>
+                </div>
+            }
+        </div>
+    </div>
+}
+
+@code {
+    private List<AuditItem> items = new();
+    private AuditItem? selected;
+    private string? detailsText;
+    private string? nextPageToken;
+    private bool loading;
+    private string? error;
+
+    private DateTimeOffset startUtc = DateTimeOffset.UtcNow.AddHours(-1);
+    private DateTimeOffset endUtc = DateTimeOffset.UtcNow;
+    private string? tenantId;
+    private string? subject;
+    private string? category;
+    private string? action;
+    private string? service;
+    private string? outcome;
+    private string? correlationId;
+    private bool impersonationOnly;
+
+    // datetime-local binding helpers (UTC)
+    private DateTime startLocal
+    {
+        get => startUtc.UtcDateTime;
+        set => startUtc = DateTime.SpecifyKind(value, DateTimeKind.Utc);
+    }
+    private DateTime endLocal
+    {
+        get => endUtc.UtcDateTime;
+        set => endUtc = DateTime.SpecifyKind(value, DateTimeKind.Utc);
+    }
+
+    [Inject] private HttpClient Http { get; set; } = default!;
+    [Inject] private TansuCloud.Dashboard.Observability.SigNoz.SigNozMetricsCatalog Catalog { get; set; } = default!;
+    [Inject] private Microsoft.Extensions.Options.IOptionsMonitor<TansuCloud.Dashboard.Observability.SigNoz.SigNozOptions> OptionsMonitor { get; set; } = default!;
+
+    private string _sigNozBaseUrl = string.Empty;
+    private IDisposable? _optionsReload;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await SearchAsync();
+    }
+
+    private async Task SearchAsync()
+    {
+        try
+        {
+            loading = true; error = null; items.Clear(); nextPageToken = null; selected = null; detailsText = null;
+            await LoadPageAsync();
+        }
+        finally { loading = false; }
+    }
+
+    private async Task LoadMoreAsync()
+    {
+        await LoadPageAsync();
+    }
+
+    private async Task LoadPageAsync()
+    {
+        var url = new System.Text.StringBuilder();
+        url.Append($"/db/api/audit?startUtc={Uri.EscapeDataString(startUtc.ToString("o"))}&endUtc={Uri.EscapeDataString(endUtc.ToString("o"))}&pageSize=100");
+        if (!string.IsNullOrWhiteSpace(tenantId)) url.Append($"&tenantId={Uri.EscapeDataString(tenantId)}");
+        if (!string.IsNullOrWhiteSpace(subject)) url.Append($"&subject={Uri.EscapeDataString(subject)}");
+        if (!string.IsNullOrWhiteSpace(category)) url.Append($"&category={Uri.EscapeDataString(category)}");
+        if (!string.IsNullOrWhiteSpace(action)) url.Append($"&action={Uri.EscapeDataString(action)}");
+        if (!string.IsNullOrWhiteSpace(service)) url.Append($"&service={Uri.EscapeDataString(service)}");
+        if (!string.IsNullOrWhiteSpace(outcome)) url.Append($"&outcome={Uri.EscapeDataString(outcome)}");
+        if (!string.IsNullOrWhiteSpace(correlationId)) url.Append($"&correlationId={Uri.EscapeDataString(correlationId)}");
+        if (impersonationOnly) url.Append("&impersonationOnly=true");
+        if (!string.IsNullOrWhiteSpace(nextPageToken)) url.Append($"&pageToken={Uri.EscapeDataString(nextPageToken)}");
+
+        try
+        {
+            var result = await Http.GetFromJsonAsync<QueryResult>(url.ToString());
+            if (result is not null)
+            {
+                items.AddRange(result.Items);
+                nextPageToken = result.NextPageToken;
+            }
+        }
+        catch (Exception ex)
+        {
+            error = ex.Message;
+        }
+        StateHasChanged();
+    }
+
+    private async Task ExportCsvAsync()
+    {
+        var url = BuildExportUrl("csv");
+        await JS.InvokeVoidAsync("open", url, "_blank");
+    }
+
+    private async Task ExportJsonAsync()
+    {
+        var url = BuildExportUrl("json");
+        await JS.InvokeVoidAsync("open", url, "_blank");
+    }
+
+    private string BuildExportUrl(string kind)
+    {
+        var url = new System.Text.StringBuilder();
+        url.Append($"/db/api/audit/export/{kind}?startUtc={Uri.EscapeDataString(startUtc.ToString("o"))}&endUtc={Uri.EscapeDataString(endUtc.ToString("o"))}");
+        if (!string.IsNullOrWhiteSpace(tenantId)) url.Append($"&tenantId={Uri.EscapeDataString(tenantId)}");
+        if (!string.IsNullOrWhiteSpace(subject)) url.Append($"&subject={Uri.EscapeDataString(subject)}");
+        if (!string.IsNullOrWhiteSpace(category)) url.Append($"&category={Uri.EscapeDataString(category)}");
+        if (!string.IsNullOrWhiteSpace(action)) url.Append($"&action={Uri.EscapeDataString(action)}");
+        if (!string.IsNullOrWhiteSpace(service)) url.Append($"&service={Uri.EscapeDataString(service)}");
+        if (!string.IsNullOrWhiteSpace(outcome)) url.Append($"&outcome={Uri.EscapeDataString(outcome)}");
+        if (!string.IsNullOrWhiteSpace(correlationId)) url.Append($"&correlationId={Uri.EscapeDataString(correlationId)}");
+        if (impersonationOnly) url.Append("&impersonationOnly=true");
+        return url.ToString();
+    }
+
+    private void Select(AuditItem it)
+    {
+        selected = it;
+        detailsText = it.Details?.RootElement.GetRawText() ?? "(no details)";
+    }
+
+    private void ResetFilters()
+    {
+        startUtc = DateTimeOffset.UtcNow.AddHours(-1);
+        endUtc = DateTimeOffset.UtcNow;
+        tenantId = subject = category = action = service = outcome = correlationId = null;
+        impersonationOnly = false;
+        _ = SearchAsync();
+    }
+
+    [Inject] private Microsoft.JSInterop.IJSRuntime JS { get; set; } = default!;
+
+    private sealed class QueryResult
+    {
+        public List<AuditItem> Items { get; set; } = new();
+        public string? NextPageToken { get; set; }
+    }
+
+    private sealed class AuditItem
+    {
+        public Guid Id { get; set; }
+        public DateTimeOffset WhenUtc { get; set; }
+        public string Service { get; set; } = string.Empty;
+        public string Environment { get; set; } = string.Empty;
+        public string Version { get; set; } = string.Empty;
+        public string TenantId { get; set; } = string.Empty;
+        public string Subject { get; set; } = string.Empty;
+        public string Action { get; set; } = string.Empty;
+        public string Category { get; set; } = string.Empty;
+        public string RouteTemplate { get; set; } = string.Empty;
+        public string CorrelationId { get; set; } = string.Empty;
+        public string TraceId { get; set; } = string.Empty;
+        public string SpanId { get; set; } = string.Empty;
+        public string? ClientIpHash { get; set; }
+        public string? UserAgent { get; set; }
+        public string? Outcome { get; set; }
+        public string? ReasonCode { get; set; }
+        public System.Text.Json.JsonDocument? Details { get; set; }
+        public string? ImpersonatedBy { get; set; }
+        public string? SourceHost { get; set; }
+    }
+    protected override void OnInitialized()
+    {
+        _sigNozBaseUrl = Catalog.CreateCatalog().BaseUrl;
+        _optionsReload = OptionsMonitor.OnChange((_, _) =>
+        {
+            _sigNozBaseUrl = Catalog.CreateCatalog().BaseUrl;
+            _ = InvokeAsync(StateHasChanged);
+        });
+    }
+
+    public void Dispose()
+    {
+        _optionsReload?.Dispose();
+    }
+}

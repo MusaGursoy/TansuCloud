@@ -1869,58 +1869,9 @@ if (app.Environment.IsDevelopment())
             var text = await resp.Content.ReadAsStringAsync(http.RequestAborted);
             if (resp.IsSuccessStatusCode && IsValidOidcPayload(cacheKey, text, oidcCacheLogger))
             {
-                if (string.Equals(cacheKey, "discovery", StringComparison.Ordinal))
-                {
-                    var publicOrigin = string.Concat(http.Request.Scheme, "://", http.Request.Host);
-                    var issuerBase = string.Concat(publicOrigin, "/identity/");
-                    var authEndpoint = string.Concat(publicOrigin, "/connect/authorize");
-                    var tokenEndpoint = string.Concat(publicOrigin, "/connect/token");
-                    var introspectEndpoint = string.Concat(publicOrigin, "/connect/introspect");
-                    var jwksEndpoint = string.Concat(publicOrigin, "/.well-known/jwks");
-
-                    try
-                    {
-                        using var doc = JsonDocument.Parse(text);
-                        using var buffer = new MemoryStream();
-                        using (var writer = new Utf8JsonWriter(buffer))
-                        {
-                            writer.WriteStartObject();
-                            foreach (var prop in doc.RootElement.EnumerateObject())
-                            {
-                                switch (prop.Name)
-                                {
-                                    case "issuer":
-                                        writer.WriteString(prop.Name, issuerBase);
-                                        break;
-                                    case "authorization_endpoint":
-                                        writer.WriteString(prop.Name, authEndpoint);
-                                        break;
-                                    case "token_endpoint":
-                                        writer.WriteString(prop.Name, tokenEndpoint);
-                                        break;
-                                    case "introspection_endpoint":
-                                        writer.WriteString(prop.Name, introspectEndpoint);
-                                        break;
-                                    case "jwks_uri":
-                                        writer.WriteString(prop.Name, jwksEndpoint);
-                                        break;
-                                    default:
-                                        prop.WriteTo(writer);
-                                        break;
-                                }
-                            }
-                            writer.WriteEndObject();
-                        }
-                        text = Encoding.UTF8.GetString(buffer.ToArray());
-                    }
-                    catch (JsonException ex)
-                    {
-                        oidcCacheLogger.LogWarning(
-                            ex,
-                            "Failed to rewrite discovery payload for public endpoints"
-                        );
-                    }
-                }
+                // DO NOT rewrite issuer - pass through Identity's configured issuer unchanged
+                // Identity is configured with the correct public issuer, and tokens match that
+                // Rewriting based on request host causes issuer mismatches in container networks
 
                 var ttl = TimeSpan.FromSeconds(30); // short TTL in dev
                 cache[cacheKey] = (DateTimeOffset.UtcNow.Add(ttl), text, contentType);
@@ -3408,6 +3359,183 @@ adminGroup
         }
     )
     .WithDisplayName("Admin: Get observability governance config");
+
+// Observability governance admin endpoint - save configuration (dev-only for now)
+adminGroup
+    .MapPost(
+        "/observability/governance",
+        async (HttpContext http) =>
+        {
+            try
+            {
+                // Read the incoming config from request body
+                var config = await http.Request.ReadFromJsonAsync<JsonElement>();
+
+                if (
+                    config.ValueKind == JsonValueKind.Undefined
+                    || config.ValueKind == JsonValueKind.Null
+                )
+                {
+                    return Results.BadRequest(new { error = "Invalid configuration payload" });
+                }
+
+                // In development, write to SigNoz/governance.dev.json
+                var governanceFilePath = Path.Combine(
+                    Directory.GetCurrentDirectory(),
+                    "SigNoz",
+                    "governance.dev.json"
+                );
+
+                // Ensure directory exists
+                var governanceDir = Path.GetDirectoryName(governanceFilePath);
+                if (!string.IsNullOrEmpty(governanceDir) && !Directory.Exists(governanceDir))
+                {
+                    Directory.CreateDirectory(governanceDir);
+                }
+
+                // Write formatted JSON to file
+                var jsonOptions = new JsonSerializerOptions
+                {
+                    WriteIndented = true,
+                    PropertyNamingPolicy = JsonNamingPolicy.CamelCase
+                };
+
+                var jsonString = JsonSerializer.Serialize(config, jsonOptions);
+                await File.WriteAllTextAsync(governanceFilePath, jsonString);
+
+                // Log the save operation
+                var logger = http.RequestServices.GetRequiredService<ILogger<Program>>();
+                logger.LogInformation(
+                    "Observability governance configuration saved to {FilePath} by user {User}",
+                    governanceFilePath,
+                    http.User.Identity?.Name ?? "anonymous"
+                );
+
+                return Results.Ok(
+                    new
+                    {
+                        message = "Configuration saved successfully. Run 'SigNoz: governance (apply)' task to apply changes.",
+                        filePath = governanceFilePath
+                    }
+                );
+            }
+            catch (Exception ex)
+            {
+                var logger = http.RequestServices.GetRequiredService<ILogger<Program>>();
+                logger.LogError(ex, "Error saving observability governance configuration");
+                return Results.Problem(
+                    title: "Failed to save configuration",
+                    detail: ex.Message,
+                    statusCode: 500
+                );
+            }
+        }
+    )
+    .WithDisplayName("Admin: Save observability governance config");
+
+// Observability config aliases (backwards compatibility + cleaner URLs)
+// These are identical to the /governance endpoints above, just cleaner naming
+adminGroup
+    .MapGet(
+        "/observability/config",
+        () =>
+        {
+            // Return static governance config (dev defaults)
+            var config = new
+            {
+                retentionDays = new
+                {
+                    traces = 7,
+                    logs = 7,
+                    metrics = 14
+                },
+                sampling = new { traceRatio = 1.0 },
+                alertSLOs = new[]
+                {
+                    new
+                    {
+                        id = "gateway_error_rate",
+                        description = "Gateway 5xx rate over 5m should stay < 1%",
+                        service = "tansu.gateway",
+                        kind = "error_rate",
+                        windowMinutes = 5,
+                        threshold = 0.01,
+                        comparison = "<"
+                    }
+                }
+            };
+
+            return Results.Json(config);
+        }
+    )
+    .WithDisplayName("Admin: Get observability config");
+
+adminGroup
+    .MapPost(
+        "/observability/config",
+        async (HttpContext http) =>
+        {
+            try
+            {
+                var config = await http.Request.ReadFromJsonAsync<JsonElement>();
+
+                if (
+                    config.ValueKind == JsonValueKind.Undefined
+                    || config.ValueKind == JsonValueKind.Null
+                )
+                {
+                    return Results.BadRequest(new { error = "Invalid configuration payload" });
+                }
+
+                var governanceFilePath = Path.Combine(
+                    Directory.GetCurrentDirectory(),
+                    "SigNoz",
+                    "governance.dev.json"
+                );
+
+                var governanceDir = Path.GetDirectoryName(governanceFilePath);
+                if (!string.IsNullOrEmpty(governanceDir) && !Directory.Exists(governanceDir))
+                {
+                    Directory.CreateDirectory(governanceDir);
+                }
+
+                var jsonOptions = new JsonSerializerOptions
+                {
+                    WriteIndented = true,
+                    PropertyNamingPolicy = JsonNamingPolicy.CamelCase
+                };
+
+                var jsonString = JsonSerializer.Serialize(config, jsonOptions);
+                await File.WriteAllTextAsync(governanceFilePath, jsonString);
+
+                var logger = http.RequestServices.GetRequiredService<ILogger<Program>>();
+                logger.LogInformation(
+                    "Observability configuration saved to {FilePath} by user {User}",
+                    governanceFilePath,
+                    http.User.Identity?.Name ?? "anonymous"
+                );
+
+                return Results.Ok(
+                    new
+                    {
+                        message = "Configuration saved successfully. Run 'SigNoz: governance (apply)' task to apply changes.",
+                        filePath = governanceFilePath
+                    }
+                );
+            }
+            catch (Exception ex)
+            {
+                var logger = http.RequestServices.GetRequiredService<ILogger<Program>>();
+                logger.LogError(ex, "Error saving observability configuration");
+                return Results.Problem(
+                    title: "Failed to save configuration",
+                    detail: ex.Message,
+                    statusCode: 500
+                );
+            }
+        }
+    )
+    .WithDisplayName("Admin: Save observability config");
 
 // Phase 0: dynamic log level override shim (Development only)
 if (app.Environment.IsDevelopment())

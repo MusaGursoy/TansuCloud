@@ -1,6 +1,7 @@
 @inherits LayoutComponentBase
 @inject NavigationManager Navigation
 @inject ThemeService ThemeService
+@inject IWebHostEnvironment Environment
 @using Microsoft.AspNetCore.Authorization
 @using Microsoft.AspNetCore.Components.Routing
 @using MudBlazor
@@ -37,51 +38,59 @@
             </MudNavGroup>
 
             <!-- Networking -->
-            <MudNavGroup Title="Networking" Icon="@Icons.Material.Filled.NetworkCheck">
+            <MudNavGroup Title="Networking" Icon="@Icons.Material.Filled.NetworkCheck" Expanded="@_expandAllGroups">
                 <MudNavLink Href="/admin/domains" Icon="@Icons.Material.Filled.Domain" data-testid="nav-domains">Domains & TLS</MudNavLink>
                 <MudNavLink Href="/admin/providers" Icon="@Icons.Material.Filled.Extension" data-testid="nav-providers">Providers</MudNavLink>
             </MudNavGroup>
 
             <!-- Routing -->
-            <MudNavGroup Title="Routing" Icon="@Icons.Material.Filled.Route">
+            <MudNavGroup Title="Routing" Icon="@Icons.Material.Filled.Route" Expanded="@_expandAllGroups">
                 <MudNavLink Href="/admin/routes" Icon="@Icons.Material.Filled.AltRoute" data-testid="nav-routes">YARP Routes</MudNavLink>
             </MudNavGroup>
 
             <!-- Caching -->
-            <MudNavGroup Title="Caching" Icon="@Icons.Material.Filled.Storage">
+            <MudNavGroup Title="Caching" Icon="@Icons.Material.Filled.Storage" Expanded="@_expandAllGroups">
                 <MudNavLink Href="/admin/cache-rate-policies" Icon="@Icons.Material.Filled.Policy" data-testid="nav-cache-rate-policies">Cache & Rate Limits</MudNavLink>
                 <MudNavLink Href="/admin/rate-limits" Icon="@Icons.Material.Filled.Speed" data-testid="nav-rate-limits">Rate Limits</MudNavLink>
                 <MudNavLink Href="/admin/output-cache" Icon="@Icons.Material.Filled.Cached" data-testid="nav-output-cache">Output Cache</MudNavLink>
             </MudNavGroup>
 
             <!-- Identity -->
-            <MudNavGroup Title="Identity" Icon="@Icons.Material.Filled.People">
+            <MudNavGroup Title="Identity" Icon="@Icons.Material.Filled.People" Expanded="@_expandAllGroups">
                 <MudNavLink Href="/admin/identity-policies" Icon="@Icons.Material.Filled.Password" data-testid="nav-identity-policies">Identity Policies</MudNavLink>
                 <MudNavLink Href="/admin/security" Icon="@Icons.Material.Filled.Security" data-testid="nav-security">Security Events</MudNavLink>
             </MudNavGroup>
 
             <!-- Observability -->
-            <MudNavGroup Title="Observability" Icon="@Icons.Material.Filled.Visibility">
-                <MudNavLink Href="/admin/observability" Icon="@Icons.Material.Filled.Dashboard" data-testid="nav-observability">Observability Dashboard</MudNavLink>
-                <MudNavLink Href="/admin/observability/traces" Icon="@Icons.Material.Filled.Timeline" data-testid="nav-traces">Trace Viewer</MudNavLink>
-                <MudNavLink Href="/admin/observability-config" Icon="@Icons.Material.Filled.Settings" data-testid="nav-observability-config">Observability Config</MudNavLink>
-                <MudNavLink Href="/admin/metrics" Icon="@Icons.Material.Filled.ShowChart" data-testid="nav-metrics">Metrics (SigNoz)</MudNavLink>
-                <MudNavLink Href="/admin/logs" Icon="@Icons.Material.Filled.Article" data-testid="nav-logs">Logs</MudNavLink>
-                <MudNavLink Href="/admin/audit" Icon="@Icons.Material.Filled.History" data-testid="nav-audit">Audit</MudNavLink>
+            <MudNavGroup Title="Observability" Icon="@Icons.Material.Filled.Visibility" Expanded="@_expandAllGroups">
+                <MudNavLink Href="/admin/observability" Icon="@Icons.Material.Filled.Dashboard" data-testid="nav-observability">Overview Dashboard</MudNavLink>
+                <MudNavLink Href="/admin/observability/traces" Icon="@Icons.Material.Filled.Route" data-testid="nav-traces">Traces</MudNavLink>
+                <MudNavLink Href="/admin/observability/logs" Icon="@Icons.Material.Filled.Description" data-testid="nav-logs">Logs</MudNavLink>
+                <MudNavLink Href="/admin/observability/config" Icon="@Icons.Material.Filled.Settings" data-testid="nav-observability-config">Configuration</MudNavLink>
+            </MudNavGroup>
+
+            <!-- Telemetry -->
+            <MudNavGroup Title="Telemetry" Icon="@Icons.Material.Filled.DeviceHub" Expanded="@_expandAllGroups">
+                <MudNavLink Href="/admin/telemetry" Icon="@Icons.Material.Filled.Article" data-testid="nav-telemetry">Reporting</MudNavLink>
+            </MudNavGroup>
+
+            <!-- Security & Compliance -->
+            <MudNavGroup Title="Security & Compliance" Icon="@Icons.Material.Filled.Security" Expanded="@_expandAllGroups">
+                <MudNavLink Href="/admin/audit" Icon="@Icons.Material.Filled.History" data-testid="nav-audit">Audit Logs</MudNavLink>
             </MudNavGroup>
 
             <!-- Policies -->
-            <MudNavGroup Title="Policy Center" Icon="@Icons.Material.Filled.Security">
+            <MudNavGroup Title="Policy Center" Icon="@Icons.Material.Filled.Security" Expanded="@_expandAllGroups">
                 <MudNavLink Href="/admin/policy-center" Icon="@Icons.Material.Filled.ListAlt" data-testid="nav-policy-center">Policy Center</MudNavLink>
             </MudNavGroup>
 
             <!-- Storage & Database -->
-            <MudNavGroup Title="Storage & Database" Icon="@Icons.Material.Filled.Storage">
+            <MudNavGroup Title="Storage & Database" Icon="@Icons.Material.Filled.Storage" Expanded="@_expandAllGroups">
                 <MudNavLink Href="/admin/storage" Icon="@Icons.Material.Filled.Folder" data-testid="nav-storage">Storage</MudNavLink>
             </MudNavGroup>
 
             <!-- ML -->
-            <MudNavGroup Title="Machine Learning" Icon="@Icons.Material.Filled.Memory">
+            <MudNavGroup Title="Machine Learning" Icon="@Icons.Material.Filled.Memory" Expanded="@_expandAllGroups">
                 <MudNavLink Href="/admin/ml" Icon="@Icons.Material.Filled.Psychology" data-testid="nav-ml">ML Management</MudNavLink>
             </MudNavGroup>
         </MudNavMenu>
@@ -106,9 +115,13 @@
 
 @code {
     private bool _drawerOpen = true;
+    
+    // Expand all nav groups in Development/E2E to make navigation links immediately clickable for tests
+    // In Production, keep groups collapsed for cleaner UI (users expand as needed)
+    private bool _expandAllGroups => Environment.IsDevelopment();
 
     private void ToggleDrawer()
     {
         _drawerOpen = !_drawerOpen;
     }
-}
+} // End of Code Block

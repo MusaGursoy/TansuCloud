@@ -37,6 +37,7 @@ using TansuCloud.Dashboard.Hosting;
 using TansuCloud.Dashboard.Observability;
 using TansuCloud.Dashboard.Observability.Logging;
 using TansuCloud.Dashboard.Observability.SigNoz;
+using TansuCloud.Dashboard.Services;
 using TansuCloud.Observability;
 using TansuCloud.Observability.Auditing;
 using TansuCloud.Observability.Shared.Configuration;
@@ -148,6 +149,12 @@ builder.Services.AddSingleton<SigNozCircuitBreaker>();
 builder.Services.AddHttpClient<ISigNozAuthenticationService, SigNozAuthenticationService>();
 
 builder.Services.AddHttpClient<ISigNozQueryService, SigNozQueryService>();
+
+// SigNoz Traces Service (Task 19 Phase 6)
+builder.Services.AddHttpClient<ISigNozTracesService, SigNozTracesService>();
+
+// SigNoz Logs Service (Task 19 Phase 7)
+builder.Services.AddHttpClient<ISigNozLogsService, SigNozLogsService>();
 
 // HttpClient for SigNoz health checks (Task 19 Phase 6)
 builder.Services.AddHttpClient(
@@ -2805,17 +2812,126 @@ app.MapGet(
 
 app.MapPost(
         "/api/admin/observability/governance",
-        (HttpContext http) =>
+        async (
+            TansuCloud.Dashboard.Models.ObservabilityGovernanceConfig config,
+            HttpContext http,
+            IAuditLogger audit
+        ) =>
         {
-            return Results.Problem(
-                title: "Not implemented",
-                detail: "Observability governance updates must be applied via the governance.defaults.json file and the 'SigNoz: governance (apply)' VS Code task. See Guide-For-Admins-and-Tenants.md section 6.5 for details.",
-                statusCode: StatusCodes.Status501NotImplemented
-            );
+            try
+            {
+                // Validate config
+                if (config.RetentionDays.Traces < 1 || config.RetentionDays.Traces > 365)
+                    return Results.ValidationProblem(
+                        new Dictionary<string, string[]>
+                        {
+                            ["RetentionDays.Traces"] = new[]
+                            {
+                                "Traces retention must be between 1 and 365 days"
+                            }
+                        }
+                    );
+
+                if (config.RetentionDays.Logs < 1 || config.RetentionDays.Logs > 365)
+                    return Results.ValidationProblem(
+                        new Dictionary<string, string[]>
+                        {
+                            ["RetentionDays.Logs"] = new[]
+                            {
+                                "Logs retention must be between 1 and 365 days"
+                            }
+                        }
+                    );
+
+                if (config.RetentionDays.Metrics < 1 || config.RetentionDays.Metrics > 365)
+                    return Results.ValidationProblem(
+                        new Dictionary<string, string[]>
+                        {
+                            ["RetentionDays.Metrics"] = new[]
+                            {
+                                "Metrics retention must be between 1 and 365 days"
+                            }
+                        }
+                    );
+
+                if (config.Sampling.TraceRatio < 0.0 || config.Sampling.TraceRatio > 1.0)
+                    return Results.ValidationProblem(
+                        new Dictionary<string, string[]>
+                        {
+                            ["Sampling.TraceRatio"] = new[]
+                            {
+                                "Trace sampling ratio must be between 0.0 and 1.0"
+                            }
+                        }
+                    );
+
+                // Find governance.defaults.json file
+                var baseDir = AppContext.BaseDirectory;
+                var governanceFilePath = Path.Combine(
+                    baseDir,
+                    "..",
+                    "..",
+                    "..",
+                    "..",
+                    "SigNoz",
+                    "governance.defaults.json"
+                );
+
+                // Read existing config for audit comparison
+                var existingJson = File.Exists(governanceFilePath)
+                    ? await File.ReadAllTextAsync(governanceFilePath)
+                    : null;
+
+                // Serialize and write new config
+                var jsonOptions = new System.Text.Json.JsonSerializerOptions
+                {
+                    WriteIndented = true,
+                    PropertyNamingPolicy = System.Text.Json.JsonNamingPolicy.CamelCase
+                };
+
+                var newJson = System.Text.Json.JsonSerializer.Serialize(config, jsonOptions);
+                await File.WriteAllTextAsync(governanceFilePath, newJson);
+
+                // Audit the change
+                var ev = new TansuCloud.Observability.Auditing.AuditEvent
+                {
+                    Category = "Admin",
+                    Action = "ObservabilityGovernanceUpdate",
+                    Outcome = "Success",
+                    Subject = http.User?.Identity?.Name ?? "anonymous",
+                    CorrelationId = http.TraceIdentifier
+                };
+                audit.TryEnqueueRedacted(
+                    ev,
+                    new
+                    {
+                        RetentionDays = config.RetentionDays,
+                        Sampling = config.Sampling,
+                        AlertSLOCount = config.AlertSLOs.Count
+                    },
+                    new[] { "RetentionDays", "Sampling", "AlertSLOCount" }
+                );
+
+                return Results.Ok(
+                    new
+                    {
+                        message = "Observability governance configuration saved successfully. Changes will take effect after running 'SigNoz: governance (apply)' task.",
+                        filePath = "SigNoz/governance.defaults.json"
+                    }
+                );
+            }
+            catch (Exception ex)
+            {
+                return Results.Problem(
+                    title: "Error saving configuration",
+                    detail: ex.Message,
+                    statusCode: StatusCodes.Status500InternalServerError
+                );
+            }
         }
     )
     .RequireAuthorization("AdminOnly")
-    .WithDisplayName("Admin: Update observability governance (not implemented)");
+    .WithDisplayName("Admin: Update observability governance");
 
 // Admin API: SigNoz Query Service endpoints (Task 19 - Observability pages)
 app.MapGet(

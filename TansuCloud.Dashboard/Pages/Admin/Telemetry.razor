@@ -1,0 +1,361 @@
+@page "/admin/telemetry"
+@layout TansuCloud.Dashboard.Pages.Admin.AdminLayout
+@attribute [Microsoft.AspNetCore.Authorization.Authorize(Policy = "AdminOnly")]
+@using MudBlazor
+
+<MudText Typo="Typo.h4" Class="mb-2">Telemetry Reporting</MudText>
+<MudText Typo="Typo.body2" Color="Color.Dark" Class="mb-4">
+    Monitor telemetry infrastructure status and log reporting to the central Telemetry server. 
+    View buffered logs awaiting upload, control reporting settings, and send test reports.
+</MudText>
+
+@* Status Card *@
+<MudCard Elevation="2" Class="mb-4">
+    <MudCardHeader>
+        <CardHeaderContent>
+            <MudText Typo="Typo.h6">
+                <MudIcon Icon="@Icons.Material.Filled.Assessment" Class="me-2" />
+                Status
+            </MudText>
+        </CardHeaderContent>
+        <CardHeaderActions>
+            <MudChip T="string" Color="@(status.effective ? Color.Success : Color.Default)" Size="Size.Small">
+                @(status.effective ? "Active" : "Inactive")
+            </MudChip>
+        </CardHeaderActions>
+    </MudCardHeader>
+    <MudCardContent>
+        <MudGrid>
+            <MudItem xs="12" sm="6" md="3">
+                <MudText Typo="Typo.body2" Color="Color.Dark">Buffer</MudText>
+                <MudText Typo="Typo.h6">@bufferCount / @bufferCapacity</MudText>
+                <MudProgressLinear Color="@GetBufferColor()" Value="@GetBufferPercent()" Class="mt-2" />
+            </MudItem>
+            <MudItem xs="12" sm="6" md="3">
+                <MudText Typo="Typo.body2" Color="Color.Dark">Min Level</MudText>
+                <MudText Typo="Typo.h6">@captureMinLevel</MudText>
+            </MudItem>
+            <MudItem xs="12" sm="6" md="3">
+                <MudText Typo="Typo.body2" Color="Color.Dark">Report Interval</MudText>
+                <MudText Typo="Typo.h6">@status.reportIntervalMinutes min</MudText>
+            </MudItem>
+            <MudItem xs="12" sm="6" md="3">
+                <MudText Typo="Typo.body2" Color="Color.Dark">Endpoint</MudText>
+                <MudText Typo="Typo.body2">@status.mainServerUrl</MudText>
+            </MudItem>
+        </MudGrid>
+        <MudDivider Class="my-3" />
+        <MudGrid>
+            <MudItem xs="12" sm="6">
+                <MudText Typo="Typo.caption" Color="Color.Dark">Configured: @status.configured</MudText><br />
+                <MudText Typo="Typo.caption" Color="Color.Dark">Pseudonymize tenants: @status.pseudonymizeTenants</MudText><br />
+                <MudText Typo="Typo.caption" Color="Color.Dark">Hash secret configured: @status.tenantHashSecretConfigured</MudText>
+            </MudItem>
+            <MudItem xs="12" sm="6">
+                <MudText Typo="Typo.caption" Color="Color.Dark">Warning sampling: @status.warningSamplingPercent%</MudText><br />
+                <MudText Typo="Typo.caption" Color="Color.Dark">Allowlist: @(status.allowedWarningCategories is { Length: > 0 } cats ? string.Join(", ", cats) : "(none)")</MudText><br />
+                <MudText Typo="Typo.caption" Color="Color.Dark">Report kinds: @(status.reportKinds is { Length: > 0 } kinds ? string.Join(", ", kinds) : "(none)")</MudText>
+            </MudItem>
+        </MudGrid>
+    </MudCardContent>
+    <MudCardActions>
+        <MudButton Variant="Variant.Filled" Color="Color.Primary" StartIcon="@Icons.Material.Filled.Refresh" OnClick="Refresh">
+            Refresh
+        </MudButton>
+        <MudButton Variant="Variant.Outlined" Color="Color.Success" StartIcon="@Icons.Material.Filled.Send" 
+                   OnClick="SendTestReport" Disabled="@isSendingTest">
+            @if (isSendingTest)
+            {
+                <MudProgressCircular Class="me-2" Size="Size.Small" Indeterminate="true" />
+                <span>Sending…</span>
+            }
+            else
+            {
+                <span>Send Test Report</span>
+            }
+        </MudButton>
+        <MudSwitch T="bool" Value="@runtimeEnabled" Label="Reporting Enabled (Runtime)" Color="Color.Success" 
+                   ValueChanged="@(async (bool val) => { runtimeEnabled = val; await Toggle(); })" />
+    </MudCardActions>
+</MudCard>
+
+@* Alerts *@
+@if (!string.IsNullOrWhiteSpace(error))
+{
+    <MudAlert Severity="Severity.Error" Class="mb-4" Variant="Variant.Filled">
+        <strong>Error:</strong> @error
+    </MudAlert>
+}
+else if (!string.IsNullOrWhiteSpace(lastTestMessage))
+{
+    <MudAlert Severity="Severity.Info" Class="mb-4" Variant="Variant.Filled">
+        @lastTestMessage
+    </MudAlert>
+}
+
+@* Filters Card *@
+<MudCard Elevation="2" Class="mb-4">
+    <MudCardHeader>
+        <CardHeaderContent>
+            <MudText Typo="Typo.h6">
+                <MudIcon Icon="@Icons.Material.Filled.FilterList" Class="me-2" />
+                Filters
+            </MudText>
+        </CardHeaderContent>
+    </MudCardHeader>
+    <MudCardContent>
+        <MudGrid>
+            <MudItem xs="12" sm="6" md="3">
+                <MudSelect T="string" @bind-Value="filterLevel" Label="Level" Variant="Variant.Outlined">
+                    <MudSelectItem Value="@("")">All</MudSelectItem>
+                    <MudSelectItem Value="@("Critical")">Critical</MudSelectItem>
+                    <MudSelectItem Value="@("Error")">Error</MudSelectItem>
+                    <MudSelectItem Value="@("Warning")">Warning</MudSelectItem>
+                    <MudSelectItem Value="@("Information")">Information</MudSelectItem>
+                    <MudSelectItem Value="@("Debug")">Debug</MudSelectItem>
+                    <MudSelectItem Value="@("Trace")">Trace</MudSelectItem>
+                </MudSelect>
+            </MudItem>
+            <MudItem xs="12" sm="6" md="3">
+                <MudTextField T="string" @bind-Value="filterCategory" Label="Category Contains" Variant="Variant.Outlined" />
+            </MudItem>
+            <MudItem xs="12" sm="6" md="3">
+                <MudNumericField T="int" @bind-Value="take" Label="Take" Variant="Variant.Outlined" Min="1" Max="1000" />
+            </MudItem>
+            <MudItem xs="12" sm="6" md="3">
+                <MudNumericField T="int" @bind-Value="skip" Label="Skip" Variant="Variant.Outlined" Min="0" />
+            </MudItem>
+        </MudGrid>
+    </MudCardContent>
+    <MudCardActions>
+        <MudButton Variant="Variant.Filled" Color="Color.Secondary" StartIcon="@Icons.Material.Filled.Search" OnClick="ApplyFilters">
+            Apply Filters
+        </MudButton>
+    </MudCardActions>
+</MudCard>
+
+@* Recent Logs Table *@
+<MudCard Elevation="2">
+    <MudCardHeader>
+        <CardHeaderContent>
+            <MudText Typo="Typo.h6">
+                <MudIcon Icon="@Icons.Material.Filled.History" Class="me-2" />
+                Recent Logs (@recent.Count)
+            </MudText>
+        </CardHeaderContent>
+    </MudCardHeader>
+    <MudCardContent>
+        <MudDataGrid T="TansuCloud.Dashboard.Observability.Logging.LogRecord" Items="@recent" Dense="true" Hover="true" 
+                     Filterable="false" SortMode="SortMode.None" Groupable="false">
+            <Columns>
+                <PropertyColumn Property="x => x.Timestamp" Title="Time (UTC)" Format="o">
+                    <CellTemplate>
+                        @context.Item.Timestamp.ToString("yyyy-MM-dd HH:mm:ss")
+                    </CellTemplate>
+                </PropertyColumn>
+                <PropertyColumn Property="x => x.Level" Title="Level">
+                    <CellTemplate>
+                        <MudChip T="string" Size="Size.Small" Color="@GetLevelColor(context.Item.Level)">
+                            @context.Item.Level
+                        </MudChip>
+                    </CellTemplate>
+                </PropertyColumn>
+                <PropertyColumn Property="x => x.Category" Title="Category" />
+                <PropertyColumn Property="x => x.Message" Title="Message" />
+            </Columns>
+        </MudDataGrid>
+    </MudCardContent>
+</MudCard>
+
+@code {
+    private List<TansuCloud.Dashboard.Observability.Logging.LogRecord> recent = new();
+    private StatusDto status = new();
+    private int bufferCount;
+    private int bufferCapacity;
+    private string captureMinLevel = "";
+    private bool runtimeEnabled;
+    private string? filterLevel;
+    private string? filterCategory;
+    private int take = 200;
+    private int skip = 0;
+    private bool isSendingTest;
+    private string? lastTestMessage;
+
+    [Inject] private HttpClient Http { get; set; } = default!;
+    [Inject] private NavigationManager Nav { get; set; } = default!;
+    private string? error;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadAsync();
+    }
+
+    private async Task LoadAsync()
+    {
+        try
+        {
+            error = null;
+            // Call via Gateway using relative "/dashboard/api/*" so it works in-container too
+            var statusUrl = new Uri("dashboard/api/admin/log-reporting/status", UriKind.Relative);
+            var s = await Http.GetFromJsonAsync<StatusDto>(statusUrl);
+            status = s ?? new();
+            // Null-safe access in case the API payload is missing nested objects
+            bufferCount = status.buffer?.Count ?? 0;
+            bufferCapacity = status.buffer?.Capacity ?? 0;
+            captureMinLevel = status.capture?.MinimumLevel ?? "";
+            runtimeEnabled = status.runtime;
+            lastTestMessage = null;
+
+            var logsUrl = new Uri(
+                $"dashboard/api/admin/logs/recent?take={take}&skip={skip}&level={Uri.EscapeDataString(filterLevel ?? string.Empty)}&categoryContains={Uri.EscapeDataString(filterCategory ?? string.Empty)}",
+                UriKind.Relative
+            );
+            var logs = await Http.GetFromJsonAsync<List<TansuCloud.Dashboard.Observability.Logging.LogRecord>>(logsUrl);
+            recent = logs ?? new();
+        }
+        catch (Exception ex)
+        {
+            // Avoid crashing the Blazor circuit; surface a concise error instead
+            error = ex.Message;
+            recent = new();
+            status = new();
+            bufferCount = 0;
+            bufferCapacity = 0;
+            captureMinLevel = "";
+            lastTestMessage = null;
+        }
+        StateHasChanged();
+    }
+
+    private async Task Refresh()
+    {
+        await LoadAsync();
+    }
+
+    private async Task Toggle()
+    {
+        try
+        {
+            error = null;
+            var toggleUrl = new Uri("dashboard/api/admin/log-reporting/toggle", UriKind.Relative);
+            await Http.PostAsJsonAsync(toggleUrl, new { enabled = runtimeEnabled });
+            await LoadAsync();
+        }
+        catch (Exception ex)
+        {
+            error = ex.Message;
+        }
+    }
+
+    private async Task ApplyFilters()
+    {
+        skip = Math.Max(0, skip);
+        take = Math.Clamp(take, 1, 1000);
+        await LoadAsync();
+    }
+
+    private async Task SendTestReport()
+    {
+        if (isSendingTest)
+        {
+            return;
+        }
+
+        try
+        {
+            isSendingTest = true;
+            error = null;
+            lastTestMessage = null;
+            var testUrl = new Uri("dashboard/api/admin/log-reporting/test", UriKind.Relative);
+            using var response = await Http.PostAsJsonAsync(testUrl, new { });
+            if (!response.IsSuccessStatusCode)
+            {
+                var details = await response.Content.ReadAsStringAsync();
+                throw new InvalidOperationException($"Test send failed ({(int)response.StatusCode}): {details}");
+            }
+
+            var payload = await response.Content.ReadFromJsonAsync<TestSendResponse>();
+            lastTestMessage = payload is null
+                ? "Test report sent."
+                : $"Test report sent to {payload.target} (kind: {payload.kind}).";
+        }
+        catch (Exception ex)
+        {
+            error = ex.Message;
+        }
+        finally
+        {
+            isSendingTest = false;
+            StateHasChanged();
+        }
+    }
+
+    // Helper methods for MudBlazor UI
+    private double GetBufferPercent()
+    {
+        if (bufferCapacity == 0) return 0;
+        return (double)bufferCount / bufferCapacity * 100.0;
+    }
+
+    private Color GetBufferColor()
+    {
+        var percent = GetBufferPercent();
+        if (percent >= 90) return Color.Error;
+        if (percent >= 70) return Color.Warning;
+        return Color.Success;
+    }
+
+    private Color GetLevelColor(string level)
+    {
+        return level switch
+        {
+            "Critical" => Color.Error,
+            "Error" => Color.Error,
+            "Warning" => Color.Warning,
+            "Information" => Color.Info,
+            "Debug" => Color.Default,
+            "Trace" => Color.Default,
+            _ => Color.Default
+        };
+    }
+
+    private sealed class StatusDto
+    {
+        public bool configured { get; set; }
+        public bool runtime { get; set; }
+        public bool effective { get; set; }
+        public int reportIntervalMinutes { get; set; }
+        public string? mainServerUrl { get; set; }
+        public string? severityThreshold { get; set; }
+        public int queryWindowMinutes { get; set; }
+        public int maxItems { get; set; }
+        public int httpTimeoutSeconds { get; set; }
+        public double warningSamplingPercent { get; set; }
+        public string[]? allowedWarningCategories { get; set; }
+        public bool pseudonymizeTenants { get; set; }
+        public bool tenantHashSecretConfigured { get; set; }
+        public string[]? reportKinds { get; set; }
+        public CaptureDto capture { get; set; } = new();
+        public BufferDto buffer { get; set; } = new();
+    }
+    private sealed class CaptureDto
+    {
+        public bool Enabled { get; set; }
+        public string? MinimumLevel { get; set; }
+        public int MaxBufferEntries { get; set; }
+        public int MaxBatchSize { get; set; }
+        public TimeSpan ReportInterval { get; set; }
+    }
+    private sealed class BufferDto
+    {
+        public int Capacity { get; set; }
+        public int Count { get; set; }
+    }
+
+    private sealed class TestSendResponse
+    {
+        public bool sent { get; set; }
+        public string? target { get; set; }
+        public string? kind { get; set; }
+    }
+}

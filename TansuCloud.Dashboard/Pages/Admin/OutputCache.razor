@@ -3,88 +3,146 @@
 @attribute [Microsoft.AspNetCore.Authorization.Authorize(Policy = "AdminOnly")]
 @inject IHttpClientFactory ClientFactory
 @using System.Net.Http.Json
+@using MudBlazor
 
-<h3>Gateway Output Cache (Dev)</h3>
-<p class="text-muted">Edit live gateway output-cache TTL settings. In dev, this calls the gateway dev admin API.</p>
+<PageTitle>Output Cache Configuration | TansuCloud Admin</PageTitle>
 
-@if (error is not null)
-{
-    <div class="alert alert-danger">@error</div>
-}
-@if (!string.IsNullOrWhiteSpace(success))
-{
-    <div class="alert alert-success">@success</div>
-}
+<MudContainer MaxWidth="MaxWidth.Large" Class="py-4">
+    <MudText Typo="Typo.h4" Class="mb-2">Gateway Output Cache (Dev)</MudText>
+    <MudText Typo="Typo.body2" Color="Color.Secondary" Class="mb-4">
+        Edit live gateway output-cache TTL settings. In dev, this calls the gateway dev admin API.
+    </MudText>
 
-<div class="mb-3 d-flex align-items-center gap-2">
-    <button class="btn btn-secondary" data-testid="btn-load" @onclick="LoadAsync">Load current</button>
-    <button class="btn btn-primary" data-testid="btn-save" @onclick="SaveClicked" disabled="@(!CanSave)">Save</button>
-</div>
+    @if (error is not null)
+    {
+        <MudAlert Severity="Severity.Error" Variant="Variant.Filled" Class="mb-4 alert alert-danger" CloseIconClicked="@(() => error = null)" ShowCloseIcon="true">
+            @error
+        </MudAlert>
+    }
+    @if (!string.IsNullOrWhiteSpace(success))
+    {
+        <MudAlert Severity="Severity.Success" Variant="Variant.Filled" Class="mb-4 alert alert-success" CloseIconClicked="@(() => success = null)" ShowCloseIcon="true">
+            @success
+        </MudAlert>
+    }
 
-<div class="alert alert-info d-flex align-items-center" role="note">
-    <span class="me-2" aria-hidden="true">ℹ️</span>
-    OutputCache policies control response caching TTL. Changes take effect immediately for new requests.
-</div>
+    <MudStack Row="true" Spacing="2" Class="mb-4">
+        <MudButton Variant="Variant.Outlined" 
+                   Color="Color.Secondary" 
+                   StartIcon="@Icons.Material.Filled.Refresh"
+                   OnClick="LoadAsync" 
+                   data-testid="btn-load">
+            Load Current
+        </MudButton>
+        <MudButton Variant="Variant.Filled" 
+                   Color="Color.Primary" 
+                   StartIcon="@Icons.Material.Filled.Save"
+                   OnClick="SaveClicked" 
+                   Disabled="@(!CanSave)" 
+                   data-testid="btn-save">
+            Save Changes
+        </MudButton>
+    </MudStack>
 
-@if (dto is null)
-{
-    <em>Click Load to fetch current settings…</em>
-}
-else
-{
-    <div class="card" style="max-width: 920px">
-        <div class="card-body">
-            @if (validationErrors.Count > 0)
-            {
-                <div class="alert alert-warning">
-                    <strong>Fix the following before saving:</strong>
-                    <ul>
-                        @foreach (var e in validationErrors)
-                        {
-                            <li>@e</li>
-                        }
-                    </ul>
-                </div>
-            }
-            <div class="row g-3">
-                <div class="col-md-6">
-                    <label class="form-label">Default TTL (seconds)</label>
-                    <input data-testid="input-default-ttl" type="number" class="form-control @(IsInvalid("default") ? "is-invalid" : null)" @bind-value="dto.DefaultTtlSeconds" @bind-value:event="oninput" @bind-value:after="Validate" />
-                    <div class="form-text">TTL for general API responses (base policy)</div>
-                </div>
-                <div class="col-md-6">
-                    <label class="form-label">Static Assets TTL (seconds)</label>
-                    <input data-testid="input-static-ttl" type="number" class="form-control @(IsInvalid("static") ? "is-invalid" : null)" @bind-value="dto.StaticTtlSeconds" @bind-value:event="oninput" @bind-value:after="Validate" />
-                    <div class="form-text">TTL for public static assets (PublicStaticLong policy)</div>
-                </div>
-            </div>
-        </div>
-    </div>
-}
+    <MudAlert Severity="Severity.Info" Variant="Variant.Outlined" Class="mb-4">
+        <MudStack Row="true" AlignItems="AlignItems.Center">
+            <MudIcon Icon="@Icons.Material.Filled.Info" />
+            <MudText Typo="Typo.body2">
+                OutputCache policies control response caching TTL. Changes take effect immediately for new requests.
+            </MudText>
+        </MudStack>
+    </MudAlert>
+
+    @if (dto is null)
+    {
+        <MudText Typo="Typo.body2" Color="Color.Secondary" Class="my-8">
+            Click "Load Current" to fetch current settings…
+        </MudText>
+    }
+    else
+    {
+        <MudCard Elevation="2">
+            <MudCardContent>
+                @if (validationErrors.Count > 0)
+                {
+                    <MudAlert Severity="Severity.Warning" Variant="Variant.Filled" Class="mb-4">
+                        <MudText Typo="Typo.subtitle2" Class="mb-2"><strong>Fix the following before saving:</strong></MudText>
+                        <MudList T="string" Dense="true">
+                            @foreach (var e in validationErrors)
+                            {
+                                <MudListItem T="string" Icon="@Icons.Material.Filled.Warning" IconColor="Color.Warning">
+                                    @e
+                                </MudListItem>
+                            }
+                        </MudList>
+                    </MudAlert>
+                }
+                <MudGrid Spacing="4">
+                    <MudItem xs="12" sm="6">
+                        <MudNumericField T="int" 
+                                         Value="@dto.DefaultTtlSeconds"
+                                         ValueChanged="@((int value) => { dto.DefaultTtlSeconds = value; Validate(); })"
+                                         Label="Default TTL (seconds)" 
+                                         Variant="Variant.Outlined"
+                                         HelperText="TTL for general API responses (base policy)"
+                                         Min="0"
+                                         Error="@IsInvalid("default")"
+                                         data-testid="input-default-ttl"
+                                         Immediate="true" />
+                    </MudItem>
+                    <MudItem xs="12" sm="6">
+                        <MudNumericField T="int" 
+                                         Value="@dto.StaticTtlSeconds"
+                                         ValueChanged="@((int value) => { dto.StaticTtlSeconds = value; Validate(); })"
+                                         Label="Static Assets TTL (seconds)" 
+                                         Variant="Variant.Outlined"
+                                         HelperText="TTL for public static assets (PublicStaticLong policy)"
+                                         Min="0"
+                                         Error="@IsInvalid("static")"
+                                         data-testid="input-static-ttl"
+                                         Immediate="true" />
+                    </MudItem>
+                </MudGrid>
+            </MudCardContent>
+        </MudCard>
+    }
+</MudContainer>
 
 @if (showConfirmModal)
 {
-    <div class="modal show d-block" tabindex="-1" style="background-color: rgba(0,0,0,0.5)">
-        <div class="modal-dialog">
-            <div class="modal-content">
-                <div class="modal-header">
-                    <h5 class="modal-title">Confirm Save</h5>
-                </div>
-                <div class="modal-body">
-                    <p>Changes:</p>
-                    <ul>
-                        <li>Default TTL: @beforeSave?.DefaultTtlSeconds → @dto?.DefaultTtlSeconds</li>
-                        <li>Static TTL: @beforeSave?.StaticTtlSeconds → @dto?.StaticTtlSeconds</li>
-                    </ul>
-                    <p class="text-warning">These changes take effect immediately for new requests.</p>
-                </div>
-                <div class="modal-footer">
-                    <button type="button" class="btn btn-secondary" data-testid="btn-cancel-save" @onclick="CancelSave">Cancel</button>
-                    <button type="button" class="btn btn-primary" data-testid="btn-confirm-save" @onclick="ConfirmSaveAsync">Confirm</button>
-                </div>
-            </div>
-        </div>
-    </div>
+    <MudDialog @bind-Visible="showConfirmModal" Options="@(new DialogOptions { CloseButton = true })">
+        <TitleContent>
+            <MudText Typo="Typo.h6">Confirm Save</MudText>
+        </TitleContent>
+        <DialogContent>
+            <MudText Typo="Typo.body1" Class="mb-3">Changes:</MudText>
+            <MudList T="string" Dense="true">
+                <MudListItem T="string" Icon="@Icons.Material.Filled.Update">
+                    Default TTL: @beforeSave?.DefaultTtlSeconds → @dto?.DefaultTtlSeconds
+                </MudListItem>
+                <MudListItem T="string" Icon="@Icons.Material.Filled.Update">
+                    Static TTL: @beforeSave?.StaticTtlSeconds → @dto?.StaticTtlSeconds
+                </MudListItem>
+            </MudList>
+            <MudAlert Severity="Severity.Warning" Variant="Variant.Outlined" Class="mt-3">
+                These changes take effect immediately for new requests.
+            </MudAlert>
+        </DialogContent>
+        <DialogActions>
+            <MudButton Variant="Variant.Outlined" 
+                       Color="Color.Default" 
+                       OnClick="CancelSave" 
+                       data-testid="btn-cancel-save">
+                Cancel
+            </MudButton>
+            <MudButton Variant="Variant.Filled" 
+                       Color="Color.Primary" 
+                       OnClick="ConfirmSaveAsync" 
+                       data-testid="btn-confirm-save">
+                Confirm
+            </MudButton>
+        </DialogActions>
+    </MudDialog>
 }
 
 @code {

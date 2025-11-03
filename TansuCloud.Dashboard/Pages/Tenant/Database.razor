@@ -338,56 +338,75 @@
 
     protected override async Task OnInitializedAsync()
     {
-        TenantContext.SetTenant(TenantId);
-        await LoadDatabaseDataAsync();
+        try
+        {
+            TenantContext.SetTenant(TenantId);
+            await LoadDatabaseDataAsync();
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error initializing Database page: {ex.Message}");
+            _isLoading = false;
+            Snackbar.Add($"Failed to load database data: {ex.Message}", Severity.Error);
+        }
     }
 
     private async Task LoadDatabaseDataAsync()
     {
-        _isLoading = true;
-        
-        // Simulate API call - TODO: Replace with actual Database service API calls
-        await Task.Delay(500);
-        
-        // Mock collection data
-        _collections = new List<CollectionModel>
+        try
         {
-            new CollectionModel
+            _isLoading = true;
+            
+            // Simulate API call - TODO: Replace with actual Database service API calls
+            await Task.Delay(500);
+            
+            // Mock collection data
+            _collections = new List<CollectionModel>
             {
-                CollectionId = "coll-1",
-                Name = "products",
-                DocumentCount = 125400,
-                SizeMB = 852.4m,
-                HasVectorIndex = true,
-                IndexType = "HNSW",
-                RetentionDays = null,
-                CreatedAt = DateTime.UtcNow.AddMonths(-12)
-            },
-            new CollectionModel
-            {
-                CollectionId = "coll-2",
-                Name = "user_content",
-                DocumentCount = 287542,
-                SizeMB = 1248.6m,
-                HasVectorIndex = true,
-                IndexType = "IVFFlat",
-                RetentionDays = 180,
-                CreatedAt = DateTime.UtcNow.AddMonths(-8)
-            },
-            new CollectionModel
-            {
-                CollectionId = "coll-3",
-                Name = "analytics_events",
-                DocumentCount = 45790,
-                SizeMB = 355.2m,
-                HasVectorIndex = false,
-                IndexType = null,
-                RetentionDays = 30,
-                CreatedAt = DateTime.UtcNow.AddMonths(-3)
-            }
-        };
-        
-        _isLoading = false;
+                new CollectionModel
+                {
+                    CollectionId = "coll-1",
+                    Name = "products",
+                    DocumentCount = 125400,
+                    SizeMB = 852.4m,
+                    HasVectorIndex = true,
+                    IndexType = "HNSW",
+                    RetentionDays = null,
+                    CreatedAt = DateTime.UtcNow.AddMonths(-12)
+                },
+                new CollectionModel
+                {
+                    CollectionId = "coll-2",
+                    Name = "user_content",
+                    DocumentCount = 287542,
+                    SizeMB = 1248.6m,
+                    HasVectorIndex = true,
+                    IndexType = "IVFFlat",
+                    RetentionDays = 180,
+                    CreatedAt = DateTime.UtcNow.AddMonths(-8)
+                },
+                new CollectionModel
+                {
+                    CollectionId = "coll-3",
+                    Name = "analytics_events",
+                    DocumentCount = 45790,
+                    SizeMB = 355.2m,
+                    HasVectorIndex = false,
+                    IndexType = null,
+                    RetentionDays = 30,
+                    CreatedAt = DateTime.UtcNow.AddMonths(-3)
+                }
+            };
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error loading database data: {ex.Message}");
+            Snackbar.Add($"Failed to load database data: {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            _isLoading = false;
+        }
     }
 
     private async Task OpenCreateCollectionDialog()

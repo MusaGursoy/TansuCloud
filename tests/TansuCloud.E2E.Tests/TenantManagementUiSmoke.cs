@@ -209,6 +209,13 @@ public class TenantManagementUiSmoke : IAsyncLifetime
         var heading = page.Locator("h4, h5, h3").Locator("text=/Storage|Buckets/i").First;
         await heading.WaitForAsync(new() { Timeout = 10000 });
 
+        // Wait for loading spinner to disappear (Blazor Server async render)
+        var spinner = page.Locator(".mud-progress-circular");
+        if (await spinner.CountAsync() > 0)
+        {
+            await spinner.WaitForAsync(new() { State = WaitForSelectorState.Detached, Timeout = 10000 });
+        }
+
         // Verify metrics cards
         var cards = page.Locator("div.mud-card");
         var cardCount = await cards.CountAsync();
@@ -237,6 +244,13 @@ public class TenantManagementUiSmoke : IAsyncLifetime
         // Verify Database heading
         var heading = page.Locator("h4, h5, h3").Locator("text=/Database|Collections/i").First;
         await heading.WaitForAsync(new() { Timeout = 10000 });
+
+        // Wait for loading spinner to disappear (Blazor Server async render)
+        var spinner = page.Locator(".mud-progress-circular");
+        if (await spinner.CountAsync() > 0)
+        {
+            await spinner.WaitForAsync(new() { State = WaitForSelectorState.Detached, Timeout = 10000 });
+        }
 
         // Verify metrics cards
         var cards = page.Locator("div.mud-card");

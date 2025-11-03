@@ -437,37 +437,42 @@ Common pitfalls
 
 ### 8.2 SigNoz metrics & dashboards (Unified Observability)
 
-We use SigNoz as the single UI for metrics, traces, and logs.
+We use SigNoz as the backend telemetry store for metrics, traces, and logs. **All observability access is through the TansuCloud Dashboard's Observability pages** via the SigNoz REST API.
 
-**Development**: The SigNoz UI is available at [http://127.0.0.1:3301/](http://127.0.0.1:3301/) via direct port mapping in docker-compose.yml.
+**Architecture**: SigNoz runs inside the Docker network without external port exposure. The Dashboard integrates with SigNoz through API-only calls, providing curated observability views at:
+- `/dashboard/admin/observability` - Overview dashboard with key metrics
+- `/dashboard/admin/observability/traces` - Distributed traces explorer with filtering
+- `/dashboard/admin/observability/config` - Observability governance settings
 
-**Production**: SigNoz is not exposed through the gateway or to end users. For production deployments:
+**Direct SigNoz UI Access** (optional, advanced users only):
+By default, SigNoz UI is NOT exposed externally - all observability features are available through the Dashboard's curated views. However, advanced users may optionally enable direct access to the full SigNoz UI for deep troubleshooting:
 
-- Restrict SigNoz access to infrastructure administrators via secure network policies
-- Consider embedding SigNoz observability data into the Admin Dashboard's Observability pages using the SigNoz REST API
-- Alternatively, expose SigNoz on a separate subdomain with appropriate authentication
+**To enable (dev/compose):**
+```yaml
+# Add to the signoz service in docker-compose.yml
+ports:
+  - "3301:8080"
+```
+
+Then access SigNoz directly at `http://127.0.0.1:3301`. For production, use your load balancer or ingress controller to expose the signoz service port 8080 on your chosen external port.
+
+**Note:** 99% of users will never need this - the Dashboard provides all standard observability workflows (Overview, Traces, Logs, Configuration).
 
 All services export OTLP to the in-cluster SigNoz collector. Metrics, traces, and logs appear automatically as you drive traffic through the gateway.Quick start (dev)
 
 1) Bring up infra and apps (VS Code tasks: "compose: up infra (pg + garnet + pgcat)" then "compose: up apps").
 2) Drive some traffic: open `/storage/health/ready` and `/db/health/ready` a few times via the gateway.
-3) Open the SigNoz UI at [http://127.0.0.1:3301/](http://127.0.0.1:3301/) and explore:
-   - Metrics: Service graphs (requests/sec, error rate, latency percentiles)
-   - Traces: End-to-end spans per request
-
-- Logs: Centralized structured logs across services
-- Infrastructure: Postgres, Garnet, and PgCat dashboards now surface automatically through the shared collector (pool saturation, cache hit rate, connection counts)
+3) Open the TansuCloud Dashboard at [http://127.0.0.1:8080/dashboard/admin/observability](http://127.0.0.1:8080/dashboard/admin/observability) and explore:
+   - **Overview**: Service graphs, request rates, error rates, latency percentiles
+   - **Traces**: End-to-end distributed traces with filtering by service, status, duration
+   - **Logs** (coming soon): Centralized structured logs across services
+   - **Infrastructure**: Postgres, Garnet, and PgCat metrics surface through the shared collector
 
 Legacy in-app charts (Prometheus proxy)
 
 - The Dashboard used to proxy Prometheus and render curated charts at `/dashboard/admin/metrics`.
-- That Prometheus proxy has been retired. The Metrics page now renders a curated SigNoz catalog using the configured base URL (default `http://127.0.0.1:3301/`).
-- Admin APIs under `/dashboard/api/metrics/*` remain available for smoke tests and integrations; they return SigNoz metadata (catalog entries and redirect URLs) instead of raw Prometheus payloads.
-
-Notes
-
-- Override the SigNoz base URL with `SigNoz:BaseUrl` (or env var `SigNoz__BaseUrl`) to align with your deployment.
-- `/dashboard/api/metrics/catalog` responds with JSON containing the normalized base URL plus the curated chart list, so automation can deep-link into SigNoz.
+- That Prometheus proxy has been retired. The Dashboard now integrates directly with SigNoz via REST API, providing curated observability views through the Observability section.
+- All observability data is accessed through `/dashboard/admin/observability/*` pages using API-driven integration.
 
 ### SigNoz readiness and troubleshooting (dev)
 
@@ -477,7 +482,7 @@ Readiness checks
 
 - OTLP gRPC (collector): `<http://127.0.0.1:4317>` reachable from apps and the host (our E2E will soft-skip if not)
 - ClickHouse HTTP: `<http://127.0.0.1:8123>` reachable (used by tests to query spans/logs)
-- SigNoz UI: `<http://127.0.0.1:3301>` opens without errors
+- Dashboard Observability pages: `<http://127.0.0.1:8080/dashboard/admin/observability>` loads without errors
 
 Dev validation route
 
@@ -543,15 +548,14 @@ Notes
 - The helper script `dev/tools/signoz-apply-governance.ps1` reads environment via `.env` using `Import-TansuDotEnv`. Prefer environment-driven endpoints to avoid hardcoding URLs.
 - Dashboard’s observability pages link to SigNoz for deep dives; thin status surfaces remain in-app.
 
-#### SigNoz UI validation (quick checks)
+#### Dashboard Observability validation (quick checks)
 
-Use these quick checks after `docker compose up` to confirm SigNoz is healthy:
+Use these quick checks after `docker compose up` to confirm observability is working:
 
-- Open `<http://127.0.0.1:3301/>` and ensure the landing page loads without errors.
-- Navigate to Services → a service like `TansuCloud.Gateway` should appear under load; open it and see request rate, latency, and error charts.
-- Navigate to Traces → Explorer; run a search for the last 15 minutes. You should see spans from Gateway/Identity/Database/Storage under light traffic.
-- Navigate to Logs → Recent; filter by `service.name="TansuCloud.Gateway"` and confirm new entries appear while driving requests.
-- Navigate to Dashboards → Host (or Infrastructure) and verify CPU/Memory charts populate. This is powered by the dev-only hostmetrics receiver.
+- Open the Dashboard at `<http://127.0.0.1:8080/dashboard/admin/observability>` and ensure the Overview page loads without errors.
+- Navigate to Observability → Traces; run a search for the last 15 minutes. You should see traces from Gateway/Identity/Database/Storage under light traffic.
+- Navigate to Observability → Configuration; verify governance settings are loaded.
+- Check Telemetry page at `<http://127.0.0.1:8080/dashboard/admin/telemetry>` for infrastructure metrics.
 - Optional sanity queries (via ClickHouse client inside the network):
   - `SELECT count() FROM signoz_metrics.time_series_v4` → should be non-zero and increasing.
   - `SHOW CREATE TABLE signoz_traces.signoz_index_v3` → contains `resource.service.name` alias and `resource_string_service$$name_exists`.
@@ -1051,13 +1055,139 @@ Recommended workflow
 4. Restart the Identity service for changes to take effect.
 5. Verify new settings appear correctly in the Dashboard UI after restart.
 
-### 6.5 Observability Governance (Admin)
+### 6.5 Observability Traces (Admin)
+
+Search and analyze distributed traces from your services to debug performance issues and understand request flows.
+
+**Admin UI**
+
+- Navigate to `/dashboard/admin/observability/traces`.
+- The page provides comprehensive trace search and visualization:
+  
+**Search Filters**:
+
+- **Service**: Filter by specific service name (dropdown populated from SigNoz)
+- **Status**: Filter by trace status (OK, ERROR, UNSET, or All)
+- **Duration**: Set minimum and maximum duration in milliseconds
+- **Time Range**: Select time window (Last 1 hour, 6 hours, 24 hours, or 7 days)
+- Click **Search** to execute the query
+- Click **Refresh Services** to update the service dropdown
+
+**Search Results Table**:
+
+- **TraceID**: Clickable link to view full trace details (displays first 16 characters)
+- **Service**: Root service that initiated the trace
+- **Operation**: Root span operation name
+- **Duration**: Total trace duration (formatted as µs, ms, seconds, or minutes)
+- **Spans**: Number of spans in the trace
+- **Status**: Color-coded status chip (Green=OK, Red=ERROR, Gray=UNSET)
+- **Timestamp**: When the trace started (UTC)
+
+**Trace Detail View**:
+
+- Click any TraceID to open the detail dialog
+- **Trace Summary**: Service name, total duration, timestamp
+- **Hierarchical Span Tree**: Parent-child relationships with indentation
+  - Each span shows: Status chip, Service name, Operation name, Duration
+  - Span attributes displayed (first 5 key-value pairs)
+  - Tree structure preserves the actual call hierarchy
+  - Spans ordered by start time within each level
+
+**Use Cases**:
+
+- **Debug slow requests**: Filter by high duration (e.g., >1000ms) to find performance bottlenecks
+- **Investigate errors**: Filter by Status=ERROR to analyze failed requests
+- **Service-specific analysis**: Filter by service to see traces for a single component
+- **Trace a specific request**: Copy TraceID from logs and search directly
+
+**Integration with Logs**:
+
+- Traces and logs are correlated via TraceID/SpanID
+- Future enhancement: Click span to view correlated logs for that span
+
+**Tips**:
+
+- Start with broad time ranges and narrow down as needed
+- Use duration filters to focus on outliers
+- Combine service + status filters for targeted debugging
+- Trace detail tree shows exact request path through your microservices
+
+### 6.6 Observability Logs (Admin)
+
+Search and analyze structured logs from all TansuCloud services. Filter by service, severity, time range, or text content to debug issues and understand system behavior.
+
+**Admin UI**
+
+- Navigate to `/dashboard/admin/observability/logs`.
+- The page provides comprehensive log search and filtering capabilities:
+
+**Search Filters**:
+
+- **Service**: Filter by specific service name (dropdown populated from logs)
+- **Severity**: Filter by log level (TRACE, DEBUG, INFO, WARN, ERROR, FATAL, or All)
+- **Time Range**: Select time window (Last 15 minutes, 1 hour, 6 hours, 24 hours, or 7 days)
+- **Search Text**: Full-text search in log message body
+- Click **Search** to execute the query
+- Click **Refresh Services** to update the service dropdown
+
+**Search Results Table**:
+
+- **Timestamp**: When the log entry was created (UTC, with milliseconds)
+- **Service**: Service that generated the log
+- **Severity**: Color-coded severity chip (TRACE=Gray, DEBUG=Blue, INFO=Green, WARN=Orange, ERROR=Red, FATAL=Red)
+- **Message**: Log body text (truncated for display, full text in detail view)
+- **Trace**: TraceID link if log is correlated with a distributed trace
+- **Actions**: View detail button to expand full log entry
+
+**Log Entry Detail View**:
+
+- Click the view icon (eye) to open the detail dialog
+- **Full message**: Complete log body with proper formatting (preserves line breaks and whitespace)
+- **Timestamp**: Full precision timestamp (microseconds)
+- **Service & Severity**: Service name and severity level with number
+- **Trace Correlation**: TraceID and SpanID if available
+  - Click "View Trace" to jump to the correlated trace in the Traces page
+- **Attributes**: Expandable list of structured log attributes (up to 20 shown)
+  - Each attribute is an expansion panel for large values
+- **Resource Attributes**: Service metadata table (service version, host, etc.)
+
+**Pagination**:
+
+- Results limited to 100 logs per page
+- Click "Load More" to fetch the next 100 logs
+- Total count shown in results header
+- Offset-based pagination (scroll through thousands of logs)
+
+**Use Cases**:
+
+- **Debug errors**: Filter by Severity=ERROR or FATAL to find failures
+- **Service-specific logs**: Filter by service to see logs from one component
+- **Time-based investigation**: Use time range to focus on a specific incident window
+- **Text search**: Find logs containing specific error codes, user IDs, or messages
+- **Trace correlation**: Use TraceID from traces to find related logs
+- **Follow request flow**: View logs for a specific TraceID/SpanID to see detailed execution
+
+**Integration with Traces**:
+
+- Logs are correlated with traces via TraceID and SpanID
+- Click "View Trace" in log detail to navigate to the associated trace
+- Future enhancement: Automatically show correlated logs when viewing a trace
+
+**Tips**:
+
+- Start with recent time ranges (15 minutes or 1 hour) for faster results
+- Use severity filters to reduce noise (e.g., ERROR only for production issues)
+- Combine service + text search for targeted debugging
+- TraceID correlation is powerful: find the trace first, then drill into logs
+- Load More fetches additional pages without losing current results
+
+### 6.7 Observability Governance (Admin)
 
 View and manage SigNoz observability governance settings from the Dashboard admin UI.
 
 Admin UI
 
-- Navigate to `/dashboard/admin/observability-config`.
+- Navigate to `/dashboard/admin/observability/config`.
 - The page displays three configuration sections:
   - **Retention Periods**: Days to retain traces, logs, and metrics in ClickHouse (minimum 1 day, maximum 365 days).
   - **Sampling**: Trace head-based sampling ratio (0.0 = no traces, 1.0 = all traces captured).
@@ -1197,20 +1327,19 @@ SigNoz integration is configured via `appsettings.json` with environment-specifi
 ```json
 {
   "SigNozQuery": {
-    "ApiBaseUrl": "http://signoz:3301",
+    "ApiBaseUrl": "http://signoz:8080",
     "ApiKey": "",
     "TimeoutSeconds": 30,
     "MaxRetries": 2,
-    "EnableQueryAllowlist": true,
-    "SigNozUiBaseUrl": "http://127.0.0.1:3301"
+    "EnableQueryAllowlist": true
   }
 }
 ```
 
 **Development** (`appsettings.Development.json`):
 
-- SigNoz API: `http://signoz:3301` (internal Docker network)
-- SigNoz UI: `http://127.0.0.1:3301` (localhost browser access)
+- SigNoz API: `http://signoz:8080` (internal Docker network)
+- No external SigNoz UI exposure (access through Dashboard Observability pages)
 - Timeout: 30 seconds
 - Max Retries: 2
 - OIDC cert validation: Disabled (`AcceptAnyServerCert: true`) for self-signed certs
@@ -1218,8 +1347,7 @@ SigNoz integration is configured via `appsettings.json` with environment-specifi
 
 **Staging** (`appsettings.Staging.json`):
 
-- SigNoz API: `http://signoz:3301` (internal Docker network)
-- SigNoz UI: `https://signoz-staging.example.com` (public staging URL)
+- SigNoz API: `http://signoz:8080` (internal Docker network)
 - Timeout: 45 seconds (moderate production-like load)
 - Max Retries: 2
 - OIDC cert validation: Enabled (`AcceptAnyServerCert: false`)
@@ -1229,8 +1357,7 @@ SigNoz integration is configured via `appsettings.json` with environment-specifi
 
 **Production** (`appsettings.Production.json`):
 
-- SigNoz API: `http://signoz:3301` (internal Docker network)
-- SigNoz UI: `https://signoz.example.com` (public production URL)
+- SigNoz API: `http://signoz:8080` (internal Docker network)
 - Timeout: 60 seconds (higher for production load)
 - Max Retries: 3 (more aggressive retry for reliability)
 - OIDC cert validation: Enabled (`AcceptAnyServerCert: false`)
@@ -1341,7 +1468,7 @@ spec:
             image: custom/key-rotator:latest
             env:
             - name: SIGNOZ_URL
-              value: "http://signoz:3301"
+              value: "http://signoz:8080"
             - name: VAULT_ADDR
               value: "https://vault.example.com"
             command:
@@ -1377,7 +1504,7 @@ spec:
   - Verify new key was copied correctly (no extra spaces/newlines)
   - Check SigNoz logs for key validation errors: `docker logs signoz`
   - Confirm new key has correct permissions (read access to query API)
-  - Test key directly: `curl -H "Authorization: Bearer <new-key>" http://signoz:3301/api/v1/services`
+  - Test key directly: `curl -H "Authorization: Bearer <new-key>" http://signoz:8080/api/v1/services`
 
 - **Old key still being used after 60+ seconds**:
   - IOptionsMonitor reload interval is not configurable; 60s is typical but not guaranteed
@@ -2526,27 +2653,39 @@ Task 6 introduced several security controls that operators can manage without re
   - `tansu_storage_cache_misses_total`
   Each counter includes an `op` tag (list/head). Exporters can aggregate/graph these for hit ratio.
 
-### 8.2 SigNoz UI configuration (Task 40 compliant)
+### 8.2 SigNoz API configuration (Task 40 compliant)
 
-To keep URLs consistent across environments and satisfy Task 40 (No New Hardcoded URLs), the Dashboard derives the SigNoz UI base URL from configuration. Prefer setting an explicit base when the SigNoz UI is reachable to operators.
+The Dashboard integrates with SigNoz through API-only calls using the internal Docker network. Configuration is set via `SigNozQuery:ApiBaseUrl`.
 
-- Preferred key: `SigNoz:BaseUrl`
-  - Environment variables are supported as `SigNoz__BaseUrl` (double underscore) or `SIG_NOZ_BASE_URL`.
-  - Example (dev): `http://127.0.0.1:3301/`.
-  - Example (prod): `https://observability.example.com/`.
+Configuration keys:
 
-- Fallback behavior (dev convenience only):
-  - If `SigNoz:BaseUrl` is not configured, the Dashboard will derive the SigNoz base from the host component of `PublicBaseUrl` (preferred) or `GatewayBaseUrl` by combining `http(s)://{host}:3301/`.
-  - This ensures there are no hardcoded literals in app code, and the UI links remain consistent with the environment.
+- **SigNozQuery:ApiBaseUrl**: Internal SigNoz API base URL (required)
+  - Environment variable: `SigNozQuery__ApiBaseUrl` (double underscore)
+  - Example (dev): `http://signoz:8080`
+  - Example (prod): `http://signoz:8080` (internal Docker network)
+  
+- **SigNozQuery:Authentication**: Optional authentication settings
+  - Environment variables: `SigNozQuery__Authentication__*`
+  - By default, SigNoz runs with `SIGNOZ_DISABLE_FRONTEND_AUTH=true` inside the Docker network
 
-- Task 40 compliance:
-  - No hardcoded `http://localhost:3301` or similar literals are introduced. All external links are composed from configured base URLs.
-  - Tests and docs may show loopback examples where they are covered by the repository allowlist; runtime code does not inline such literals.
+Architecture:
 
-Notes
+- SigNoz API is accessible only within the Docker network (no external port exposure)
+- The Dashboard services (Backend) call SigNoz APIs internally via `http://signoz:8080`
+- The Dashboard frontend (Blazor pages) displays observability data through API-driven UI components
+- No iframe embedding or direct browser-to-SigNoz communication
 
-- The Dashboard metrics page no longer embeds charts directly; it shows curated links to SigNoz dashboards. Ensure the SigNoz UI is reachable from operator networks.
-- When running via Docker Compose in development, SigNoz UI typically binds to port 3301 on the host.
+Task 40 compliance:
+
+- No hardcoded `http://localhost:3301` or similar literals in application code
+- All SigNoz access is via configured `ApiBaseUrl` pointing to internal service name
+- Tests and docs may show loopback examples where covered by the repository allowlist
+
+Notes:
+
+- The Dashboard Observability pages (`/dashboard/admin/observability/*`) provide curated views of metrics, traces, and logs
+- Advanced users can optionally expose SigNoz UI by adding `ports: ["3301:8080"]` to docker-compose.yml signoz service
+- 99% of users should access observability through the Dashboard only
 
 Troubleshooting tips
 
@@ -2605,8 +2744,8 @@ curl http://127.0.0.1:9121/metrics  # Garnet (via redis-exporter)
 # Check collector logs
 docker logs signoz-otel-collector | grep -E "postgres|pgcat|redis"
 
-# Open SigNoz UI
-Start-Process http://127.0.0.1:3301/
+# Open Dashboard Observability pages to view infrastructure metrics
+Start-Process http://127.0.0.1:8080/dashboard/admin/observability
 ```
 
 Production considerations
@@ -2700,13 +2839,13 @@ Configuration (Dashboard)
 
 Runtime toggle
 
-- Admins can disable or re-enable reporting on the fly at Dashboard → Admin → Logs. This does not affect local log capture/viewing.
-- The Admin Logs card now surfaces the effective status (`Configured`, `Runtime`, `Effective`), the active endpoint, sampling percentage, warning allowlist, pseudonymization flags, and the set of report kinds (`critical`, `error`, `warning` (allowlisted/sampled), `perf_slo_breach`, `telemetry_internal`). This makes it clear what will leave the deployment.
+- Admins can disable or re-enable reporting on the fly at Dashboard → Admin → Telemetry. This does not affect local log capture/viewing.
+- The Admin Telemetry page now surfaces the effective status (`Configured`, `Runtime`, `Effective`), the active endpoint, sampling percentage, warning allowlist, pseudonymization flags, and the set of report kinds (`critical`, `error`, `warning` (allowlisted/sampled), `perf_slo_breach`, `telemetry_internal`). This makes it clear what will leave the deployment.
 - Use the **Send test report** button to emit a harmless `diagnostic_heartbeat` envelope on demand. The call uses the currently bound `LogReporting` options, and the UI confirms the target endpoint when the POST succeeds. This is the fastest way to validate egress connectivity after configuring credentials.
 
 Buffering and failure handling
 
-- Logs are first captured into a bounded in-memory buffer (default 5,000 entries) for the Admin Logs page.
+- Logs are first captured into a bounded in-memory buffer (default 5,000 entries) for the Admin Telemetry page.
 - The reporter snapshots the buffer, filters items for reporting, sends them, and only then dequeues the sent items. If the send fails (non-2xx or network error), nothing is removed and the next cycle retries. This avoids data loss.
 
 Security notes
@@ -2725,10 +2864,12 @@ Troubleshooting
 Validation checklist (after configuring telemetry)
 
 1. Confirm `MainServerUrl` and `ApiKey` are populated via configuration (`appsettings.{Environment}.json`, `.env`, or host secrets).
-2. In Dashboard → Admin → Logs, check that `Configured`, `Runtime`, and `Effective` read `true` when telemetry should flow.
+2. In Dashboard → Admin → Telemetry, check that `Configured`, `Runtime`, and `Effective` read `true` when telemetry should flow.
 3. Review the status details: warning sampling percentage, allowlisted categories, pseudonymization flags, and report kinds.
 4. Click **Send test report** and ensure the success toast reports the target endpoint. If it fails, inspect the returned error details and Dashboard logs.
 5. (Optional) Monitor the main server ingress endpoint for the `diagnostic_heartbeat` entry to ensure end-to-end flow works.
+6. In Dashboard → Admin → Observability → Traces, verify traces are being collected from your services and can be searched/filtered.
+7. In Dashboard → Admin → Observability → Logs, verify logs are being collected, can be searched by service/severity, and correlated with traces via TraceID.
 
 Durable sink posture
 
@@ -3383,20 +3524,24 @@ If you routinely run with Redis, consider adding a VS Code test task that sets `
 
 ### 8.2 Observability dashboards (SigNoz)
 
-The Dashboard still hosts an admin-only entry point at `/dashboard/admin/metrics`, but it now serves as a hand-off to SigNoz instead of rendering native charts. Operators should open the SigNoz UI (Compose default: `http://127.0.0.1:3301/`) for metrics, traces, and logs across all services.
+**TansuCloud Dashboard provides curated observability views** through API-only integration with SigNoz. Access all observability features at:
+- `/dashboard/admin/observability` - Overview with key metrics, service graphs, and system health
+- `/dashboard/admin/observability/traces` - Distributed traces explorer with filtering by service, status, duration
+- `/dashboard/admin/observability/logs` - Centralized log viewer with search and context (Phase 7)
+- `/dashboard/admin/observability/config` - Observability governance settings (retention, sampling, alerts)
 
-Key points
+**Architecture**: SigNoz runs inside the Docker network without external port exposure. All services export OTLP to the SigNoz collector (`signoz-otel-collector:4317`). The Dashboard integrates via the SigNoz REST API to provide curated views tailored for TansuCloud workflows.
 
-- All services export OTLP to the local SigNoz collector (`signoz-otel-collector:4317`). No Prometheus instance is required for dev or prod parity.
-- The Metrics page in the Dashboard provides a short checklist and direct link to SigNoz. There is no longer an in-app Prometheus proxy or metrics API surface (`/dashboard/api/metrics/*` has been removed).
-- SigNoz organizes dashboards under **Metrics → Dashboards**. Start with the "TansuCloud Overview" space to inspect service RPS, error rates, latency, database outbox throughput, and gateway fan-out.
-- Traces and logs stream to the same SigNoz instance. Use the built-in Explorer for request drill-downs and click-through from distributed traces to spanning logs.
+**Direct SigNoz UI** (optional, advanced users only): By default, SigNoz UI is NOT exposed externally - 99% of users access observability through the Dashboard. Advanced users can optionally enable direct access by adding `ports: ["3301:8080"]` to the signoz service in docker-compose.yml.
 
 Quick dev smoke
 
-1. Bring up Compose infra and apps (VS Code tasks: `compose: up infra (pg + redis + pgcat)` then `compose: up apps`).
+1. Bring up Compose infra and apps (VS Code tasks: `compose: up infra (pg + garnet + pgcat)` then `compose: up apps`).
 2. Generate traffic via the gateway (e.g., ping `/storage/health/ready` and `/db/health/ready`).
-3. Visit `http://127.0.0.1:3301/` and open the "TansuCloud Overview" dashboard. You should see new time-series points within ~1 minute.
+3. Visit the Dashboard Observability Overview at `http://127.0.0.1:8080/dashboard/admin/observability` and explore:
+   - Service request rates, error rates, latency percentiles
+   - Distributed traces with end-to-end span visualization
+   - System health indicators and resource utilization
 
 Troubleshooting
 

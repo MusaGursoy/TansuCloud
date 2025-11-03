@@ -227,88 +227,108 @@
 
     protected override async Task OnInitializedAsync()
     {
-        TenantContext.SetTenant(TenantId);
-        await LoadStorageDataAsync();
+        try
+        {
+            TenantContext.SetTenant(TenantId);
+            await LoadStorageDataAsync();
+        }
+        catch (Exception ex)
+        {
+            // Log error and ensure _isLoading is set to false to unblock UI
+            Console.WriteLine($"Error initializing Storage page: {ex.Message}");
+            _isLoading = false;
+            Snackbar.Add($"Failed to load storage data: {ex.Message}", Severity.Error);
+        }
     }
 
     private async Task LoadStorageDataAsync()
     {
         _isLoading = true;
         
-        // Simulate API call - TODO: Replace with actual Storage service API calls
-        await Task.Delay(500);
-        
-        // Mock bucket data
-        _buckets = new List<BucketModel>
+        try
         {
-            new BucketModel
+            // Simulate API call - TODO: Replace with actual Storage service API calls
+            await Task.Delay(500);
+            
+            // Mock bucket data
+            _buckets = new List<BucketModel>
             {
-                BucketId = "bucket-1",
-                Name = "product-images",
-                ObjectCount = 8456,
-                SizeGB = 25.4m,
-                QuotaGB = 50,
-                Versioning = true,
-                LifecyclePolicy = "Delete after 90 days",
-                CreatedAt = DateTime.UtcNow.AddMonths(-6)
-            },
-            new BucketModel
+                new BucketModel
+                {
+                    BucketId = "bucket-1",
+                    Name = "product-images",
+                    ObjectCount = 8456,
+                    SizeGB = 25.4m,
+                    QuotaGB = 50,
+                    Versioning = true,
+                    LifecyclePolicy = "Delete after 90 days",
+                    CreatedAt = DateTime.UtcNow.AddMonths(-6)
+                },
+                new BucketModel
+                {
+                    BucketId = "bucket-2",
+                    Name = "user-uploads",
+                    ObjectCount = 5243,
+                    SizeGB = 12.8m,
+                    QuotaGB = 30,
+                    Versioning = false,
+                    LifecyclePolicy = null,
+                    CreatedAt = DateTime.UtcNow.AddMonths(-3)
+                },
+                new BucketModel
+                {
+                    BucketId = "bucket-3",
+                    Name = "backups",
+                    ObjectCount = 1585,
+                    SizeGB = 3.6m,
+                    QuotaGB = 20,
+                    Versioning = true,
+                    LifecyclePolicy = "Archive after 30 days",
+                    CreatedAt = DateTime.UtcNow.AddYears(-1)
+                }
+            };
+            
+            // Mock transform presets
+            _transformPresets = new List<TransformPresetModel>
             {
-                BucketId = "bucket-2",
-                Name = "user-uploads",
-                ObjectCount = 5243,
-                SizeGB = 12.8m,
-                QuotaGB = 30,
-                Versioning = false,
-                LifecyclePolicy = null,
-                CreatedAt = DateTime.UtcNow.AddMonths(-3)
-            },
-            new BucketModel
-            {
-                BucketId = "bucket-3",
-                Name = "backups",
-                ObjectCount = 1585,
-                SizeGB = 3.6m,
-                QuotaGB = 20,
-                Versioning = true,
-                LifecyclePolicy = "Archive after 30 days",
-                CreatedAt = DateTime.UtcNow.AddYears(-1)
-            }
-        };
-        
-        // Mock transform presets
-        _transformPresets = new List<TransformPresetModel>
+                new TransformPresetModel
+                {
+                    PresetId = "preset-1",
+                    Name = "thumbnail",
+                    Width = 150,
+                    Height = 150,
+                    Format = "webp",
+                    Quality = 85
+                },
+                new TransformPresetModel
+                {
+                    PresetId = "preset-2",
+                    Name = "medium",
+                    Width = 800,
+                    Height = 600,
+                    Format = "webp",
+                    Quality = 90
+                },
+                new TransformPresetModel
+                {
+                    PresetId = "preset-3",
+                    Name = "large",
+                    Width = 1920,
+                    Height = 1080,
+                    Format = "jpg",
+                    Quality = 95
+                }
+            };
+        }
+        catch (Exception ex)
         {
-            new TransformPresetModel
-            {
-                PresetId = "preset-1",
-                Name = "thumbnail",
-                Width = 150,
-                Height = 150,
-                Format = "webp",
-                Quality = 85
-            },
-            new TransformPresetModel
-            {
-                PresetId = "preset-2",
-                Name = "medium",
-                Width = 800,
-                Height = 600,
-                Format = "webp",
-                Quality = 90
-            },
-            new TransformPresetModel
-            {
-                PresetId = "preset-3",
-                Name = "large",
-                Width = 1920,
-                Height = 1080,
-                Format = "jpg",
-                Quality = 95
-            }
-        };
-        
-        _isLoading = false;
+            Console.WriteLine($"Error loading storage data: {ex.Message}");
+            Snackbar.Add($"Failed to load storage data: {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            _isLoading = false;
+        }
     }
 
     private async Task OpenCreateBucketDialog()

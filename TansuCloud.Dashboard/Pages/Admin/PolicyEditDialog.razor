@@ -1,0 +1,56 @@
+@using System.Text.Json
+@using static TansuCloud.Dashboard.Pages.Admin.PolicyCenter
+
+<MudDialog>
+    <DialogContent>
+        <MudTextField @bind-Value="Model.Id" Label="Policy ID" Variant="Variant.Outlined" 
+                      Disabled="@IsEdit" Class="mb-3" Required="true" 
+                      HelperText="@(IsEdit ? "ID cannot be changed" : "Unique identifier for the policy")" />
+
+        <MudSelect @bind-Value="Model.Type" Label="Type" Variant="Variant.Outlined" Class="mb-3" Required="true">
+            <MudSelectItem Value="@("Cors")">CORS</MudSelectItem>
+            <MudSelectItem Value="@("IpAllow")">IP Allow</MudSelectItem>
+            <MudSelectItem Value="@("IpDeny")">IP Deny</MudSelectItem>
+        </MudSelect>
+
+        <MudSelect @bind-Value="Model.Mode" Label="Enforcement Mode" Variant="Variant.Outlined" Class="mb-3" Required="true">
+            <MudSelectItem Value="@("Shadow")">Shadow (Log only)</MudSelectItem>
+            <MudSelectItem Value="@("AuditOnly")">Audit Only (Log + Alert)</MudSelectItem>
+            <MudSelectItem Value="@("Enforce")">Enforce (Block/Allow)</MudSelectItem>
+        </MudSelect>
+
+        <MudTextField @bind-Value="Model.Description" Label="Description" Variant="Variant.Outlined" Class="mb-3" />
+
+        <MudTextField @bind-Value="Model.ConfigJson" Label="Configuration (JSON)" 
+                      Variant="Variant.Outlined" Lines="10" 
+                      Placeholder="Enter policy configuration as JSON"
+                      Class="font-monospace" />
+        
+        <MudText Typo="Typo.caption" Color="Color.Secondary" Class="mt-2">
+            <strong>Example CORS:</strong> {"origins": ["https://example.com"], "methods": ["GET", "POST"], "headers": ["*"], "allowCredentials": false}<br/>
+            <strong>Example IP:</strong> {"cidrs": ["192.168.1.0/24", "10.0.0.1"], "description": "Office network"}
+        </MudText>
+    </DialogContent>
+    <DialogActions>
+        <MudButton OnClick="Cancel" Variant="Variant.Filled" Color="Color.Default">Cancel</MudButton>
+        <MudButton OnClick="Submit" Variant="Variant.Filled" Color="Color.Primary">Save Policy</MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code {
+    [CascadingParameter]
+    private MudBlazor.IDialogReference? MudDialog { get; set; }
+    
+    [Parameter] public PolicyDialogModel Model { get; set; } = new();
+    [Parameter] public bool IsEdit { get; set; }
+
+    private void Cancel()
+    {
+        MudDialog?.Close(DialogResult.Cancel());
+    } // End of Method Cancel
+
+    private void Submit()
+    {
+        MudDialog?.Close(DialogResult.Ok(Model));
+    } // End of Method Submit
+} // End of Class PolicyEditDialog

@@ -140,7 +140,7 @@ public class AdminAccessE2E : IAsyncLifetime
         (await _page.GetByTestId("nav-providers").CountAsync()).Should().BeGreaterThan(0);
         (await _page.GetByTestId("nav-routes").CountAsync()).Should().BeGreaterThan(0);
         (await _page.GetByTestId("nav-rate-limits").CountAsync()).Should().BeGreaterThan(0);
-        (await _page.GetByTestId("nav-logs").CountAsync()).Should().BeGreaterThan(0);
+        (await _page.GetByTestId("nav-telemetry").CountAsync()).Should().BeGreaterThan(0);
     }
 
     private static async Task<bool> TryWaitAsync(ILocator loc, int timeoutMs)

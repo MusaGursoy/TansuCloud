@@ -1,0 +1,449 @@
+@* Tansu.Cloud Public Repository:    https://github.com/MusaGursoy/TansuCloud *@
+
+@page "/admin/observability/logs"
+@attribute [Authorize(Policy = "AdminOnly")]
+@using TansuCloud.Dashboard.Models
+@using TansuCloud.Dashboard.Services
+@inject ISigNozLogsService LogsService
+@inject ILogger<Logs> Logger
+@inject ISnackbar Snackbar
+
+<PageTitle>Observability Logs - TansuCloud Dashboard</PageTitle>
+
+<MudContainer MaxWidth="MaxWidth.ExtraExtraLarge" Class="mt-4">
+    <MudText Typo="Typo.h4" Class="mb-4">Observability Logs</MudText>
+    <MudText Typo="Typo.body1" Class="mb-6">
+        Search and analyze structured logs from all TansuCloud services. Filter by service, severity, time range, or text content.
+    </MudText>
+
+    @* Search Filters Card *@
+    <MudCard Elevation="2" Class="mb-4">
+        <MudCardContent>
+            <MudGrid>
+                <MudItem xs="12" sm="6" md="3">
+                    <MudSelect T="string" @bind-Value="_selectedService" Label="Service" Variant="Variant.Outlined" 
+                               Clearable="true" Disabled="_loading">
+                        <MudSelectItem T="string" Value="@string.Empty">All Services</MudSelectItem>
+                        @foreach (var service in _services)
+                        {
+                            <MudSelectItem T="string" Value="@service">@service</MudSelectItem>
+                        }
+                    </MudSelect>
+                </MudItem>
+
+                <MudItem xs="12" sm="6" md="3">
+                    <MudSelect T="string" @bind-Value="_selectedSeverity" Label="Severity" Variant="Variant.Outlined"
+                               Clearable="true" Disabled="_loading">
+                        <MudSelectItem T="string" Value="@string.Empty">All Severities</MudSelectItem>
+                        <MudSelectItem T="string" Value="@("TRACE")">TRACE</MudSelectItem>
+                        <MudSelectItem T="string" Value="@("DEBUG")">DEBUG</MudSelectItem>
+                        <MudSelectItem T="string" Value="@("INFO")">INFO</MudSelectItem>
+                        <MudSelectItem T="string" Value="@("WARN")">WARN</MudSelectItem>
+                        <MudSelectItem T="string" Value="@("ERROR")">ERROR</MudSelectItem>
+                        <MudSelectItem T="string" Value="@("FATAL")">FATAL</MudSelectItem>
+                    </MudSelect>
+                </MudItem>
+
+                <MudItem xs="12" sm="6" md="3">
+                    <MudSelect T="string" @bind-Value="_selectedTimeRange" Label="Time Range" Variant="Variant.Outlined"
+                               Disabled="_loading">
+                        <MudSelectItem T="string" Value="@("15m")">Last 15 minutes</MudSelectItem>
+                        <MudSelectItem T="string" Value="@("1h")">Last hour</MudSelectItem>
+                        <MudSelectItem T="string" Value="@("6h")">Last 6 hours</MudSelectItem>
+                        <MudSelectItem T="string" Value="@("24h")">Last 24 hours</MudSelectItem>
+                        <MudSelectItem T="string" Value="@("7d")">Last 7 days</MudSelectItem>
+                    </MudSelect>
+                </MudItem>
+
+                <MudItem xs="12" sm="6" md="3">
+                    <MudTextField @bind-Value="_searchText" Label="Search Text" Variant="Variant.Outlined"
+                                  Placeholder="Search in log body..." Clearable="true" Disabled="_loading"
+                                  Adornment="Adornment.Start" AdornmentIcon="@Icons.Material.Filled.Search" />
+                </MudItem>
+            </MudGrid>
+        </MudCardContent>
+        <MudCardActions>
+            <MudButton Color="Color.Primary" Variant="Variant.Filled" OnClick="SearchLogs" 
+                       Disabled="_loading" StartIcon="@Icons.Material.Filled.Search">
+                Search
+            </MudButton>
+            <MudButton Color="Color.Default" Variant="Variant.Outlined" OnClick="RefreshServices" 
+                       Disabled="_loading" StartIcon="@Icons.Material.Filled.Refresh">
+                Refresh Services
+            </MudButton>
+            <MudSpacer />
+            @if (_searched && _searchResult != null)
+            {
+                <MudText Typo="Typo.body2">
+                    Found @_searchResult.Total logs (@_searchResult.Logs.Count displayed)
+                </MudText>
+            }
+        </MudCardActions>
+    </MudCard>
+
+    @* Loading Indicator *@
+    @if (_loading)
+    {
+        <MudCard Elevation="1" Class="pa-4 text-center">
+            <MudProgressCircular Color="Color.Primary" Indeterminate="true" Size="Size.Large" />
+            <MudText Typo="Typo.body1" Class="mt-2">Loading logs...</MudText>
+        </MudCard>
+    }
+    else if (_searched && _searchResult != null)
+    {
+        @* Results Table *@
+        <MudCard Elevation="2">
+            <MudCardContent>
+                <MudTable Items="@_searchResult.Logs" Hover="true" Striped="true" Dense="true" 
+                          FixedHeader="true" Height="600px">
+                    <HeaderContent>
+                        <MudTh>Timestamp</MudTh>
+                        <MudTh>Service</MudTh>
+                        <MudTh>Severity</MudTh>
+                        <MudTh>Message</MudTh>
+                        <MudTh>Trace</MudTh>
+                        <MudTh>Actions</MudTh>
+                    </HeaderContent>
+                    <RowTemplate>
+                        <MudTd DataLabel="Timestamp">
+                            <MudText Typo="Typo.body2">@context.Timestamp.ToString("yyyy-MM-dd HH:mm:ss.fff")</MudText>
+                        </MudTd>
+                        <MudTd DataLabel="Service">
+                            <MudText Typo="Typo.body2">@context.ServiceName</MudText>
+                        </MudTd>
+                        <MudTd DataLabel="Severity">
+                            <MudChip T="string" Size="Size.Small" Color="@GetSeverityColor(context.SeverityText)" Variant="Variant.Filled">
+                                @context.SeverityText
+                            </MudChip>
+                        </MudTd>
+                        <MudTd DataLabel="Message">
+                            <MudText Typo="Typo.body2" Style="max-width: 400px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
+                                @context.Body
+                            </MudText>
+                        </MudTd>
+                        <MudTd DataLabel="Trace">
+                            @if (!string.IsNullOrWhiteSpace(context.TraceId))
+                            {
+                                <MudChip T="string" Size="Size.Small" Icon="@Icons.Material.Filled.Link" 
+                                         OnClick="@(() => NavigateToTrace(context.TraceId!))"
+                                         Color="Color.Info" Variant="Variant.Text">
+                                    @context.TraceId.Substring(0, Math.Min(8, context.TraceId.Length))
+                                </MudChip>
+                            }
+                            else
+                            {
+                                <MudText Typo="Typo.body2" Color="Color.Default">—</MudText>
+                            }
+                        </MudTd>
+                        <MudTd DataLabel="Actions">
+                            <MudIconButton Icon="@Icons.Material.Filled.Visibility" Size="Size.Small" 
+                                           OnClick="@(() => ViewLogDetail(context))" 
+                                           Color="Color.Primary" />
+                        </MudTd>
+                    </RowTemplate>
+                    <NoRecordsContent>
+                        <MudText Typo="Typo.body1" Align="Align.Center" Class="pa-4">
+                            No logs found for the selected filters.
+                        </MudText>
+                    </NoRecordsContent>
+                </MudTable>
+            </MudCardContent>
+        </MudCard>
+
+        @* Pagination *@
+        @if (_searchResult.Total > 100)
+        {
+            <MudCard Elevation="1" Class="mt-2">
+                <MudCardContent>
+                    <MudText Typo="Typo.body2" Align="Align.Center">
+                        Showing @_searchResult.Logs.Count of @_searchResult.Total logs. 
+                        @if (_searchResult.HasMore)
+                        {
+                            <MudButton Size="Size.Small" Color="Color.Primary" OnClick="LoadMore" Disabled="_loading">
+                                Load More
+                            </MudButton>
+                        }
+                    </MudText>
+                </MudCardContent>
+            </MudCard>
+        }
+    }
+    else if (!_searched)
+    {
+        <MudCard Elevation="1" Class="pa-4">
+            <MudAlert Severity="Severity.Info">
+                Select filters and click <strong>Search</strong> to view logs.
+            </MudAlert>
+        </MudCard>
+    }
+</MudContainer>
+
+@* Log Detail Dialog *@
+<MudDialog @bind-IsVisible="_showDetailDialog" Options="_dialogOptions">
+    <TitleContent>
+        <MudText Typo="Typo.h6">Log Entry Details</MudText>
+    </TitleContent>
+    <DialogContent>
+        @if (_selectedLog != null)
+        {
+            <MudGrid>
+                <MudItem xs="12">
+                    <MudText Typo="Typo.subtitle2" Class="mb-2"><strong>Timestamp:</strong></MudText>
+                    <MudText Typo="Typo.body2">@_selectedLog.Timestamp.ToString("yyyy-MM-dd HH:mm:ss.ffffff UTC")</MudText>
+                </MudItem>
+
+                <MudItem xs="12" sm="6">
+                    <MudText Typo="Typo.subtitle2" Class="mb-2"><strong>Service:</strong></MudText>
+                    <MudText Typo="Typo.body2">@_selectedLog.ServiceName</MudText>
+                </MudItem>
+
+                <MudItem xs="12" sm="6">
+                    <MudText Typo="Typo.subtitle2" Class="mb-2"><strong>Severity:</strong></MudText>
+                    <MudChip T="string" Size="Size.Small" Color="@GetSeverityColor(_selectedLog.SeverityText)" Variant="Variant.Filled">
+                        @_selectedLog.SeverityText (Level @_selectedLog.SeverityNumber)
+                    </MudChip>
+                </MudItem>
+
+                <MudItem xs="12">
+                    <MudText Typo="Typo.subtitle2" Class="mb-2"><strong>Message:</strong></MudText>
+                    <MudPaper Elevation="0" Class="pa-2" Style="background-color: var(--mud-palette-background-grey); white-space: pre-wrap; word-wrap: break-word;">
+                        <MudText Typo="Typo.body2">@_selectedLog.Body</MudText>
+                    </MudPaper>
+                </MudItem>
+
+                @if (!string.IsNullOrWhiteSpace(_selectedLog.TraceId))
+                {
+                    <MudItem xs="12" sm="6">
+                        <MudText Typo="Typo.subtitle2" Class="mb-2"><strong>Trace ID:</strong></MudText>
+                        <MudText Typo="Typo.body2" Style="font-family: monospace;">@_selectedLog.TraceId</MudText>
+                        <MudButton Size="Size.Small" Color="Color.Info" Variant="Variant.Text" 
+                                   OnClick="@(() => NavigateToTrace(_selectedLog.TraceId!))"
+                                   StartIcon="@Icons.Material.Filled.Link">
+                            View Trace
+                        </MudButton>
+                    </MudItem>
+                }
+
+                @if (!string.IsNullOrWhiteSpace(_selectedLog.SpanId))
+                {
+                    <MudItem xs="12" sm="6">
+                        <MudText Typo="Typo.subtitle2" Class="mb-2"><strong>Span ID:</strong></MudText>
+                        <MudText Typo="Typo.body2" Style="font-family: monospace;">@_selectedLog.SpanId</MudText>
+                    </MudItem>
+                }
+
+                @if (_selectedLog.Attributes.Count > 0)
+                {
+                    <MudItem xs="12">
+                        <MudText Typo="Typo.subtitle2" Class="mb-2"><strong>Attributes:</strong></MudText>
+                        <MudExpansionPanels>
+                            @foreach (var attr in _selectedLog.Attributes.Take(20))
+                            {
+                                <MudExpansionPanel Text="@attr.Key">
+                                    <MudText Typo="Typo.body2" Style="font-family: monospace; white-space: pre-wrap;">
+                                        @attr.Value.ToString()
+                                    </MudText>
+                                </MudExpansionPanel>
+                            }
+                        </MudExpansionPanels>
+                        @if (_selectedLog.Attributes.Count > 20)
+                        {
+                            <MudText Typo="Typo.caption" Class="mt-2">
+                                ... and @(_selectedLog.Attributes.Count - 20) more attributes
+                            </MudText>
+                        }
+                    </MudItem>
+                }
+
+                @if (_selectedLog.ResourceAttributes.Count > 0)
+                {
+                    <MudItem xs="12">
+                        <MudText Typo="Typo.subtitle2" Class="mb-2"><strong>Resource Attributes:</strong></MudText>
+                        <MudSimpleTable Dense="true" Hover="true" Style="max-height: 200px; overflow-y: auto;">
+                            <thead>
+                                <tr>
+                                    <th><MudText Typo="Typo.subtitle2">Key</MudText></th>
+                                    <th><MudText Typo="Typo.subtitle2">Value</MudText></th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                @foreach (var attr in _selectedLog.ResourceAttributes.Take(10))
+                                {
+                                    <tr>
+                                        <td><MudText Typo="Typo.body2" Style="font-family: monospace;">@attr.Key</MudText></td>
+                                        <td><MudText Typo="Typo.body2" Style="font-family: monospace;">@attr.Value</MudText></td>
+                                    </tr>
+                                }
+                            </tbody>
+                        </MudSimpleTable>
+                    </MudItem>
+                }
+            </MudGrid>
+        }
+    </DialogContent>
+    <DialogActions>
+        <MudButton Color="Color.Default" OnClick="@(() => _showDetailDialog = false)">Close</MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code {
+    private bool _loading = false;
+    private bool _searched = false;
+    private List<string> _services = new();
+    private LogSearchResult? _searchResult;
+    private LogEntry? _selectedLog;
+    private bool _showDetailDialog = false;
+
+    // Filter state
+    private string _selectedService = string.Empty;
+    private string _selectedSeverity = string.Empty;
+    private string _selectedTimeRange = "1h";
+    private string _searchText = string.Empty;
+    private int _currentOffset = 0;
+
+    private readonly DialogOptions _dialogOptions = new()
+    {
+        MaxWidth = MaxWidth.Large,
+        FullWidth = true,
+        CloseButton = true,
+        CloseOnEscapeKey = true
+    };
+
+    protected override async Task OnInitializedAsync()
+    {
+        await RefreshServices();
+    }
+
+    private async Task SearchLogs()
+    {
+        _loading = true;
+        _currentOffset = 0;
+        try
+        {
+            var (startTime, endTime) = GetTimeRange(_selectedTimeRange);
+
+            var request = new LogSearchRequest
+            {
+                StartTimeNano = startTime,
+                EndTimeNano = endTime,
+                ServiceName = string.IsNullOrWhiteSpace(_selectedService) ? null : _selectedService,
+                SeverityText = string.IsNullOrWhiteSpace(_selectedSeverity) ? null : _selectedSeverity,
+                SearchText = string.IsNullOrWhiteSpace(_searchText) ? null : _searchText,
+                Limit = 100,
+                Offset = 0
+            };
+
+            _searchResult = await LogsService.SearchLogsAsync(request);
+            _searched = true;
+
+            Snackbar.Add($"Found {_searchResult.Total} logs", Severity.Success);
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Error searching logs");
+            Snackbar.Add("Failed to search logs", Severity.Error);
+        }
+        finally
+        {
+            _loading = false;
+        }
+    }
+
+    private async Task LoadMore()
+    {
+        if (_searchResult == null || !_searchResult.HasMore) return;
+
+        _loading = true;
+        _currentOffset += 100;
+
+        try
+        {
+            var (startTime, endTime) = GetTimeRange(_selectedTimeRange);
+
+            var request = new LogSearchRequest
+            {
+                StartTimeNano = startTime,
+                EndTimeNano = endTime,
+                ServiceName = string.IsNullOrWhiteSpace(_selectedService) ? null : _selectedService,
+                SeverityText = string.IsNullOrWhiteSpace(_selectedSeverity) ? null : _selectedSeverity,
+                SearchText = string.IsNullOrWhiteSpace(_searchText) ? null : _searchText,
+                Limit = 100,
+                Offset = _currentOffset
+            };
+
+            var nextPage = await LogsService.SearchLogsAsync(request);
+            _searchResult = _searchResult with
+            {
+                Logs = _searchResult.Logs.Concat(nextPage.Logs).ToList(),
+                HasMore = nextPage.HasMore
+            };
+
+            Snackbar.Add($"Loaded {nextPage.Logs.Count} more logs", Severity.Info);
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Error loading more logs");
+            Snackbar.Add("Failed to load more logs", Severity.Error);
+        }
+        finally
+        {
+            _loading = false;
+        }
+    }
+
+    private async Task RefreshServices()
+    {
+        try
+        {
+            _services = await LogsService.GetServicesAsync();
+            if (_services.Count > 0)
+            {
+                Logger.LogInformation("Refreshed services: {Count} found", _services.Count);
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Error refreshing services");
+        }
+    }
+
+    private void ViewLogDetail(LogEntry log)
+    {
+        _selectedLog = log;
+        _showDetailDialog = true;
+    }
+
+    private void NavigateToTrace(string traceId)
+    {
+        // Close dialog if open
+        _showDetailDialog = false;
+        // Navigate to traces page with trace ID filter (future enhancement)
+        Snackbar.Add($"Navigate to trace: {traceId} (feature coming soon)", Severity.Info);
+    }
+
+    private (long startTime, long endTime) GetTimeRange(string range)
+    {
+        var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() * 1_000_000;
+        var start = range switch
+        {
+            "15m" => now - (15L * 60 * 1_000_000_000),
+            "1h" => now - (3600L * 1_000_000_000),
+            "6h" => now - (6L * 3600 * 1_000_000_000),
+            "24h" => now - (24L * 3600 * 1_000_000_000),
+            "7d" => now - (7L * 24 * 3600 * 1_000_000_000),
+            _ => now - (3600L * 1_000_000_000)
+        };
+        return (start, now);
+    }
+
+    private Color GetSeverityColor(string severity) => severity switch
+    {
+        "TRACE" => Color.Default,
+        "DEBUG" => Color.Info,
+        "INFO" => Color.Success,
+        "WARN" => Color.Warning,
+        "ERROR" => Color.Error,
+        "FATAL" => Color.Error,
+        _ => Color.Default
+    };
+}

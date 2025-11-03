@@ -1,0 +1,278 @@
+@page "/admin/observability"
+@layout AdminLayout
+@using MudBlazor
+@using TansuCloud.Dashboard.Observability.SigNoz
+@inject ISigNozQueryService SigNozService
+@inject NavigationManager Navigation
+@inject ILogger<ObservabilityOverview> Logger
+@inject ISnackbar Snackbar
+@attribute [Authorize(Policy="AdminOnly")]
+
+<PageTitle>Observability Dashboard - TansuCloud Admin</PageTitle>
+
+<MudContainer MaxWidth="MaxWidth.ExtraExtraLarge" Class="mt-4 mb-4">
+    <MudText Typo="Typo.h4" Class="mb-2">Observability Dashboard</MudText>
+    <MudText Typo="Typo.body1" Class="mb-4">
+        Real-time service health, topology, and error tracking powered by SigNoz.
+    </MudText>
+
+    @if (_loading)
+    {
+        <MudCard Elevation="1" Class="pa-4 text-center">
+            <MudProgressCircular Color="Color.Primary" Indeterminate="true" Size="Size.Large" />
+            <MudText Typo="Typo.body1" Class="mt-2">Loading observability data...</MudText>
+        </MudCard>
+    }
+    else
+    {
+        <!-- Service Status Cards -->
+        <MudGrid Class="mb-4">
+            @if (_services.Any())
+            {
+                @foreach (var service in _services.Take(6))
+                {
+                    <MudItem xs="12" sm="6" md="4" lg="2">
+                        <MudCard Elevation="2">
+                            <MudCardContent>
+                                <MudText Typo="Typo.subtitle2" Class="mb-2">@service.ServiceName</MudText>
+                                <MudChip T="string" Size="Size.Small" Color="@GetHealthColor(service)" Variant="Variant.Filled">
+                                    @GetHealthStatus(service)
+                                </MudChip>
+                                <MudText Typo="Typo.caption" Class="mt-2">Error Rate: @service.ErrorRate.ToString("P2")</MudText>
+                                <MudText Typo="Typo.caption">Call Rate: @service.CallRate.ToString("F1")/s</MudText>
+                            </MudCardContent>
+                        </MudCard>
+                    </MudItem>
+                }
+            }
+            else
+            {
+                <MudItem xs="12">
+                    <MudAlert Severity="Severity.Info">No service data available. Services will appear here once trace data is collected.</MudAlert>
+                </MudItem>
+            }
+        </MudGrid>
+
+        <!-- OTLP Health Status -->
+        @if (_otlpHealth != null)
+        {
+            <MudCard Elevation="2" Class="mb-4">
+                <MudCardHeader>
+                    <CardHeaderContent>
+                        <MudText Typo="Typo.h6">OTLP Exporter Health</MudText>
+                    </CardHeaderContent>
+                </MudCardHeader>
+                <MudCardContent>
+                    <MudGrid>
+                        <MudItem xs="12" sm="6" md="3">
+                            <MudText Typo="Typo.subtitle2">Total Exporters</MudText>
+                            <MudText Typo="Typo.h5">@GetTotalExporters()</MudText>
+                        </MudItem>
+                        <MudItem xs="12" sm="6" md="3">
+                            <MudText Typo="Typo.subtitle2">Healthy</MudText>
+                            <MudText Typo="Typo.h5" Color="Color.Success">@GetHealthyExporters()</MudText>
+                        </MudItem>
+                        <MudItem xs="12" sm="6" md="3">
+                            <MudText Typo="Typo.subtitle2">Unhealthy</MudText>
+                            <MudText Typo="Typo.h5" Color="Color.Error">@GetUnhealthyExporters()</MudText>
+                        </MudItem>
+                        <MudItem xs="12" sm="6" md="3">
+                            <MudText Typo="Typo.subtitle2">Last Check</MudText>
+                            <MudText Typo="Typo.body2">@GetLastCheckTime()</MudText>
+                        </MudItem>
+                    </MudGrid>
+                </MudCardContent>
+            </MudCard>
+        }
+
+        <!-- Service Topology -->
+        @if (_topology != null && _topology.Nodes.Any())
+        {
+            <MudCard Elevation="2" Class="mb-4">
+                <MudCardHeader>
+                    <CardHeaderContent>
+                        <MudText Typo="Typo.h6">Service Topology</MudText>
+                    </CardHeaderContent>
+                </MudCardHeader>
+                <MudCardContent>
+                    <MudSimpleTable Dense="true" Hover="true">
+                        <thead>
+                            <tr>
+                                <th>Service</th>
+                                <th>Type</th>
+                                <th>Dependencies</th>
+                                <th>Call Rate</th>
+                                <th>Error Rate</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            @foreach (var node in _topology.Nodes.Take(10))
+                            {
+                                <tr>
+                                    <td><strong>@node.ServiceName</strong></td>
+                                    <td>@node.ServiceType</td>
+                                    <td>@GetDependencies(node.ServiceName).Count</td>
+                                    <td>@node.CallRate.ToString("F1")/s</td>
+                                    <td>
+                                        <MudChip T="string" Size="Size.Small" Color="@(node.ErrorRate > 0.05 ? Color.Error : Color.Success)">
+                                            @node.ErrorRate.ToString("P2")
+                                        </MudChip>
+                                    </td>
+                                </tr>
+                            }
+                        </tbody>
+                    </MudSimpleTable>
+                </MudCardContent>
+            </MudCard>
+        }
+
+        <!-- Recent Errors -->
+        @if (_recentErrors != null && _recentErrors.Errors.Any())
+        {
+            <MudCard Elevation="2" Class="mb-4">
+                <MudCardHeader>
+                    <CardHeaderContent>
+                        <MudText Typo="Typo.h6">Recent Errors (Last Hour)</MudText>
+                    </CardHeaderContent>
+                </MudCardHeader>
+                <MudCardContent>
+                    <MudTable Items="@_recentErrors.Errors.Take(10)" Hover="true" Dense="true">
+                        <HeaderContent>
+                            <MudTh>Timestamp</MudTh>
+                            <MudTh>Service</MudTh>
+                            <MudTh>Error Message</MudTh>
+                            <MudTh>Trace ID</MudTh>
+                        </HeaderContent>
+                        <RowTemplate>
+                            <MudTd>@context.Timestamp.ToString("HH:mm:ss")</MudTd>
+                            <MudTd>@context.ServiceName</MudTd>
+                            <MudTd>
+                                <MudText Typo="Typo.body2" Style="max-width: 400px; overflow: hidden; text-overflow: ellipsis;">
+                                    @context.ErrorMessage
+                                </MudText>
+                            </MudTd>
+                            <MudTd>
+                                <MudChip T="string" Size="Size.Small" Icon="@Icons.Material.Filled.Link" 
+                                         OnClick="@(() => ViewTrace(context.TraceId))"
+                                         Color="Color.Info" Variant="Variant.Text">
+                                    @context.TraceId.Substring(0, Math.Min(8, context.TraceId.Length))
+                                </MudChip>
+                            </MudTd>
+                        </RowTemplate>
+                    </MudTable>
+                </MudCardContent>
+            </MudCard>
+        }
+
+        <!-- Quick Actions -->
+        <MudGrid>
+            <MudItem xs="12" sm="6" md="4">
+                <MudButton Variant="Variant.Filled" 
+                          Color="Color.Primary" 
+                          FullWidth="true"
+                          StartIcon="@Icons.Material.Filled.Timeline"
+                          OnClick="@(() => Navigation.NavigateTo("/admin/observability/traces"))">
+                    View All Traces
+                </MudButton>
+            </MudItem>
+            <MudItem xs="12" sm="6" md="4">
+                <MudButton Variant="Variant.Filled" 
+                          Color="Color.Secondary" 
+                          FullWidth="true"
+                          StartIcon="@Icons.Material.Filled.Description"
+                          OnClick="@(() => Navigation.NavigateTo("/admin/observability/logs"))">
+                    View All Logs
+                </MudButton>
+            </MudItem>
+            <MudItem xs="12" sm="6" md="4">
+                <MudButton Variant="Variant.Outlined" 
+                          Color="Color.Default" 
+                          FullWidth="true"
+                          StartIcon="@Icons.Material.Filled.Settings"
+                          OnClick="@(() => Navigation.NavigateTo("/admin/observability/config"))">
+                    Configure
+                </MudButton>
+            </MudItem>
+        </MudGrid>
+    }
+</MudContainer>
+
+@code {
+    private bool _loading = true;
+    private List<ServiceNode> _services = new();
+    private ServiceTopologyResult? _topology;
+    private OtlpHealthResult? _otlpHealth;
+    private RecentErrorsResult? _recentErrors;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadData();
+    }
+
+    private async Task LoadData()
+    {
+        _loading = true;
+        try
+        {
+            // Load all dashboard data in parallel
+            var topologyTask = SigNozService.GetServiceTopologyAsync();
+            var otlpTask = SigNozService.GetOtlpHealthAsync();
+            var errorsTask = SigNozService.GetRecentErrorsAsync(timeRangeMinutes: 60, limit: 10);
+
+            await Task.WhenAll(topologyTask, otlpTask, errorsTask);
+
+            _topology = await topologyTask;
+            _services = _topology?.Nodes.ToList() ?? new();
+            _otlpHealth = await otlpTask;
+            _recentErrors = await errorsTask;
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Error loading observability dashboard data");
+            Snackbar.Add("Failed to load observability data. Check SigNoz connection.", Severity.Error);
+        }
+        finally
+        {
+            _loading = false;
+        }
+    }
+
+    private Color GetHealthColor(ServiceNode service)
+    {
+        if (service.ErrorRate > 0.05) return Color.Error;
+        if (service.ErrorRate > 0.01) return Color.Warning;
+        return Color.Success;
+    }
+
+    private string GetHealthStatus(ServiceNode service)
+    {
+        if (service.ErrorRate > 0.05) return "Degraded";
+        if (service.ErrorRate > 0.01) return "Warning";
+        return "Healthy";
+    }
+
+    private string FormatLatency(double latencyMs)
+    {
+        if (latencyMs < 1) return $"{latencyMs * 1000:F0}µs";
+        if (latencyMs < 1000) return $"{latencyMs:F0}ms";
+        return $"{latencyMs / 1000:F2}s";
+    }
+
+    private List<ServiceEdge> GetDependencies(string serviceName)
+    {
+        return _topology?.Edges.Where(e => e.SourceService == serviceName).ToList() ?? new();
+    }
+
+    private void ViewTrace(string traceId)
+    {
+        Navigation.NavigateTo($"/admin/observability/traces?traceId={traceId}");
+    }
+
+    private int GetTotalExporters() => _otlpHealth?.Exporters.Count ?? 0;
+    private int GetHealthyExporters() => _otlpHealth?.Exporters.Count(e => e.IsHealthy) ?? 0;
+    private int GetUnhealthyExporters() => _otlpHealth?.Exporters.Count(e => !e.IsHealthy) ?? 0;
+    private string GetLastCheckTime() => _otlpHealth?.Exporters.Any() == true 
+        ? (_otlpHealth.Exporters.Max(e => e.LastExport) ?? DateTime.UtcNow).ToString("HH:mm:ss") 
+        : "N/A";
+}
+

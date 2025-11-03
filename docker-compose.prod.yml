@@ -229,8 +229,8 @@ services:
       SigNozQuery__ApiBaseUrl: http://signoz:8080
       SigNozQuery__Email: ${SIGNOZ_API_EMAIL}
       SigNozQuery__Password: ${SIGNOZ_API_PASSWORD}
-      # Signoz can not be hosted behind a gateway path currently, so for production we dont set a UI base URL.
-      # SigNozQuery__SigNozUiBaseUrl: ${PUBLIC_BASE_URL}/signoz
+      # SigNoz UI accessed directly via Docker network (iframe in Dashboard)
+      SigNozQuery__SigNozUiBaseUrl: http://signoz:8080
       GatewayBaseUrl: ${GATEWAY_BASE_URL}
       # Prometheus has been removed in favor of SigNoz. Leave unset to disable legacy metrics proxy.
       # Prometheus__BaseUrl:
@@ -428,6 +428,7 @@ services:
       interval: 30s
       timeout: 5s
       retries: 5
+      start_period: 60s  # Allow 1 minute for ZooKeeper startup before marking unhealthy
     volumes:
       - signoz-zookeeper-data:/bitnami/zookeeper
     networks:
@@ -456,6 +457,7 @@ services:
       interval: 30s
       timeout: 5s
       retries: 5
+      start_period: 90s  # Allow 90 seconds for ClickHouse startup before marking unhealthy
     volumes:
       - signoz-clickhouse-data:/var/lib/clickhouse
       - ./dev/clickhouse/cluster.xml:/etc/clickhouse-server/config.d/cluster.xml:ro
@@ -483,6 +485,16 @@ services:
       - SIGNOZ_JWT_SECRET=${SIGNOZ_JWT_SECRET:-change-me}
       # Disable API authentication - safe since SigNoz API is only accessible within Docker network
       - SIGNOZ_DISABLE_FRONTEND_AUTH=true
+    # By default, SigNoz UI is NOT exposed externally - all observability accessed through Dashboard
+    # Advanced users can optionally expose the full SigNoz UI by uncommenting:
+    # ports:
+    #   - "3301:8080"
+    healthcheck:
+      test: ["CMD", "/bin/busybox", "wget", "-q", "-O", "-", "http://localhost:8080/"]
+      interval: 30s
+      timeout: 5s
+      retries: 10
+      start_period: 180s  # Allow 3 minutes for initial startup (ClickHouse connection + migrations) before marking unhealthy
     depends_on:
       clickhouse:
         condition: service_healthy

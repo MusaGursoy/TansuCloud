@@ -1,0 +1,43 @@
+@using static TansuCloud.Dashboard.Pages.Admin.PolicyCenter
+
+<MudDialog>
+    <DialogContent>
+        <MudText Typo="Typo.body1" Class="mb-3">
+            Are you sure you want to delete this policy?
+        </MudText>
+        
+        <MudPaper Elevation="0" Class="pa-2">
+            <div class="mb-2"><strong>ID:</strong> @Policy.Id</div>
+            <div class="mb-2"><strong>Type:</strong> @Policy.Type</div>
+            <div><strong>Description:</strong> @Policy.Description</div>
+        </MudPaper>
+
+        <MudAlert Severity="Severity.Warning" Class="mt-3">
+            This action cannot be undone.
+        </MudAlert>
+    </DialogContent>
+    <DialogActions>
+        <MudButton OnClick="Cancel" Variant="Variant.Filled" Color="Color.Default">Cancel</MudButton>
+        <MudButton OnClick="Confirm" Variant="Variant.Filled" Color="Color.Error" 
+                   StartIcon="@Icons.Material.Filled.Delete">
+            Delete Policy
+        </MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code {
+    [CascadingParameter]
+    private MudBlazor.IDialogReference? MudDialog { get; set; }
+    
+    [Parameter] public PolicyViewModel Policy { get; set; } = new();
+
+    private void Cancel()
+    {
+        MudDialog?.Close(DialogResult.Cancel());
+    } // End of Method Cancel
+
+    private void Confirm()
+    {
+        MudDialog?.Close(DialogResult.Ok(true));
+    } // End of Method Confirm
+} // End of Class PolicyDeleteDialog

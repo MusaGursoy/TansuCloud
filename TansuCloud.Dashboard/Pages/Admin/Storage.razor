@@ -4,165 +4,218 @@
 @using Microsoft.AspNetCore.Components.Forms
 @inject HttpClient Http
 
-<h3>Storage Management</h3>
+<PageTitle>Storage Management | TansuCloud Admin</PageTitle>
 
-<div class="mb-3">
-    <label class="form-label">Tenant Id (X-Tansu-Tenant)</label>
-    <input class="form-control" @bind="tenantId" placeholder="acme-dev" />
-    <small class="text-muted">All storage calls include this tenant header.</small>
-</div>
+<MudContainer MaxWidth="MaxWidth.Large" Class="mt-4">
+    <MudText Typo="Typo.h4" Class="mb-2">Storage Management</MudText>
+    <MudText Typo="Typo.body1" Color="Color.Secondary" Class="mb-4">
+        Manage buckets, upload objects, and monitor storage usage.
+    </MudText>
 
-@if (usage is not null)
-{
-    <div class="alert alert-info" role="alert" style="max-width: 900px">
-        <div class="d-flex justify-content-between">
-            <div>
-                <strong>Usage</strong> — Objects: @usage.objectCount / @(usage.maxObjectCount ?? 0), Bytes: @usage.totalBytes / @(usage.maxTotalBytes ?? 0)
+    <!-- Tenant ID Input -->
+    <MudTextField T="string" @bind-Value="tenantId" Label="Tenant Id (X-Tansu-Tenant)" 
+                  Placeholder="acme-dev" Variant="Variant.Outlined" 
+                  HelperText="All storage calls include this tenant header."
+                  Class="mb-4" Style="max-width: 600px;" />
+
+    <!-- Usage Display -->
+    @if (usage is not null)
+    {
+        <MudAlert Severity="Severity.Info" Class="mb-4" Style="max-width: 900px;">
+            <div class="d-flex justify-content-between align-items-center">
+                <div>
+                    <strong>Usage</strong> — Objects: @usage.objectCount / @(usage.maxObjectCount ?? 0), Bytes: @usage.totalBytes / @(usage.maxTotalBytes ?? 0)
+                </div>
+                <MudButton Variant="Variant.Outlined" Color="Color.Default" Size="Size.Small" 
+                           OnClick="LoadUsageAsync" StartIcon="@Icons.Material.Filled.Refresh">
+                    Refresh
+                </MudButton>
             </div>
-            <div>
-                <button class="btn btn-sm btn-outline-secondary" @onclick="LoadUsageAsync">Refresh</button>
-            </div>
-        </div>
-    </div>
-}
+        </MudAlert>
+    }
 
-<hr />
+    <MudDivider Class="my-4" />
 
-<h4>Buckets</h4>
-<div class="d-flex gap-2 align-items-end mb-2">
-    <div>
-        <label class="form-label">New bucket</label>
-        <input class="form-control" @bind="newBucket" />
-    </div>
-    <button class="btn btn-primary" @onclick="CreateBucketAsync">Create</button>
-    <button class="btn btn-secondary" @onclick="LoadBucketsAsync">Refresh</button>
-</div>
+    <!-- Buckets Section -->
+    <MudText Typo="Typo.h5" Class="mb-3">Buckets</MudText>
+    
+    <MudGrid Class="mb-3" Style="max-width: 900px;">
+        <MudItem xs="12" sm="8">
+            <MudTextField T="string" @bind-Value="newBucket" Label="New bucket name" 
+                          Variant="Variant.Outlined" />
+        </MudItem>
+        <MudItem xs="12" sm="4" Class="d-flex align-items-end gap-2">
+            <MudButton Variant="Variant.Filled" Color="Color.Primary" 
+                       OnClick="CreateBucketAsync" StartIcon="@Icons.Material.Filled.CreateNewFolder">
+                Create
+            </MudButton>
+            <MudButton Variant="Variant.Outlined" Color="Color.Default" 
+                       OnClick="LoadBucketsAsync" StartIcon="@Icons.Material.Filled.Refresh">
+                Refresh
+            </MudButton>
+        </MudItem>
+    </MudGrid>
 
-@if (bucketError is not null)
-{
-    <p class="text-danger">@bucketError</p>
-}
+    @if (bucketError is not null)
+    {
+        <MudAlert Severity="Severity.Error" ShowCloseIcon="true" CloseIconClicked="@(() => bucketError = null)" Class="mb-3" Style="max-width: 900px;">
+            @bucketError
+        </MudAlert>
+    }
 
-<table class="table table-sm" style="max-width: 900px" >
-    <thead>
-        <tr>
-            <th>Bucket</th>
-            <th></th>
-        </tr>
-    </thead>
-    <tbody>
-        @if (buckets is null)
-        {
-            <tr><td colspan="2"><em>Load buckets…</em></td></tr>
-        }
-        else if (buckets.Count == 0)
-        {
-            <tr><td colspan="2"><em>No buckets</em></td></tr>
-        }
-        else
-        {
-            @foreach (var b in buckets)
+    <MudTable T="string" Items="@buckets" Hover="true" Dense="true" Striped="true" 
+              Style="max-width: 900px;" Class="mb-4" Elevation="2">
+        <HeaderContent>
+            <MudTh>Bucket</MudTh>
+            <MudTh Style="text-align: right;">Actions</MudTh>
+        </HeaderContent>
+        <RowTemplate>
+            <MudTd DataLabel="Bucket">@context</MudTd>
+            <MudTd DataLabel="Actions" Style="text-align: right;">
+                <MudButton Variant="Variant.Outlined" Color="Color.Error" Size="Size.Small" 
+                           OnClick="@(() => DeleteBucketAsync(context))" 
+                           StartIcon="@Icons.Material.Filled.Delete">
+                    Delete
+                </MudButton>
+            </MudTd>
+        </RowTemplate>
+        <NoRecordsContent>
+            @if (buckets is null)
             {
-                <tr>
-                    <td>@b</td>
-                    <td class="text-end">
-                        <button class="btn btn-outline-danger btn-sm" title="Delete bucket" @onclick="() => DeleteBucketAsync(b)">Delete</button>
-                    </td>
-                </tr>
+                <MudText Typo="Typo.body2" Color="Color.Secondary">Load buckets…</MudText>
             }
-        }
-    </tbody>
-    
-    
-</table>
+            else
+            {
+                <MudText Typo="Typo.body2" Color="Color.Secondary">No buckets</MudText>
+            }
+        </NoRecordsContent>
+    </MudTable>
 
-<hr />
+    <MudDivider Class="my-4" />
 
-<h4>Objects (presigned upload + HEAD)</h4>
-<div class="row g-3" style="max-width: 900px">
-    <div class="col-md-4">
-        <label class="form-label">Bucket</label>
-        <input class="form-control" @bind="objBucket" />
-    </div>
-    <div class="col-md-8">
-        <label class="form-label">Key</label>
-        <input class="form-control" @bind="objKey" />
-    </div>
-    <div class="col-md-6">
-        <label class="form-label">Prefix (list objects)</label>
-        <input class="form-control" @bind="objPrefix" />
-    </div>
-    <div class="col-md-6 d-flex align-items-end">
-        <button class="btn btn-outline-secondary me-2" @onclick="ListObjectsAsync">List objects</button>
-        <button class="btn btn-outline-secondary" @onclick="() => { objItems = null; }">Clear list</button>
-    </div>
-    <div class="col-md-6">
-        <label class="form-label">Select file to upload</label>
-        <InputFile OnChange="HandleSelected" class="form-control" />
-        <small class="text-muted">Uses a presigned anonymous PUT with media-type enforcement.</small>
-    </div>
-    <div class="col-md-3">
-        <label class="form-label">Max bytes (optional)</label>
-        <input class="form-control" type="number" @bind="presignMaxBytes" />
-    </div>
-    <div class="col-md-3 d-flex align-items-end">
-        <button class="btn btn-primary w-100" disabled="@(!canUpload)" @onclick="UploadPresignedAsync">Upload</button>
-    </div>
-    
-    <div class="col-md-12">
-        <button class="btn btn-outline-secondary" @onclick="HeadAsync">HEAD (metadata)</button>
-    </div>
+    <!-- Objects Section -->
+    <MudText Typo="Typo.h5" Class="mb-3">Objects (presigned upload + HEAD)</MudText>
 
-    @if (!string.IsNullOrEmpty(objStatus))
-    {
-        <div class="col-12"><pre>@objStatus</pre></div>
-    }
+    <MudGrid Style="max-width: 900px;">
+        <MudItem xs="12" md="4">
+            <MudTextField T="string" @bind-Value="objBucket" Label="Bucket" Variant="Variant.Outlined" />
+        </MudItem>
+        <MudItem xs="12" md="8">
+            <MudTextField T="string" @bind-Value="objKey" Label="Key" Variant="Variant.Outlined" />
+        </MudItem>
 
-    @if (!string.IsNullOrEmpty(objError))
-    {
-        <div class="col-12 text-danger">@objError</div>
-    }
+        <MudItem xs="12" md="6">
+            <MudTextField T="string" @bind-Value="objPrefix" Label="Prefix (list objects)" Variant="Variant.Outlined" />
+        </MudItem>
+        <MudItem xs="12" md="6" Class="d-flex align-items-end gap-2">
+            <MudButton Variant="Variant.Outlined" Color="Color.Default" 
+                       OnClick="ListObjectsAsync" StartIcon="@Icons.Material.Filled.List">
+                List objects
+            </MudButton>
+            <MudButton Variant="Variant.Outlined" Color="Color.Default" 
+                       OnClick="@(() => { objItems = null; })" StartIcon="@Icons.Material.Filled.Clear">
+                Clear list
+            </MudButton>
+        </MudItem>
 
-    @if (objItems is not null)
-    {
-        <div class="col-12">
-            <table class="table table-sm">
-                <thead>
-                    <tr>
-                        <th>Key</th>
-                        <th>ETag</th>
-                        <th>Length</th>
-                        <th>Content-Type</th>
-                        <th>Last Modified</th>
-                        <th></th>
-                    </tr>
-                </thead>
-                <tbody>
-                    @if (objItems.Count == 0)
-                    {
-                        <tr><td colspan="6"><em>No objects</em></td></tr>
-                    }
-                    else
-                    {
-                        @foreach (var it in objItems)
+        <MudItem xs="12" md="6">
+            <MudFileUpload T="IBrowserFile" Accept="*" OnFilesChanged="HandleSelected" MaximumFileCount="1">
+                <ActivatorContent>
+                    <MudButton Variant="Variant.Outlined" Color="Color.Default" 
+                               StartIcon="@Icons.Material.Filled.AttachFile" FullWidth="true">
+                        @if (selectedFile is null)
                         {
-                            <tr>
-                                <td>@it.Key</td>
-                                <td><code>@(string.IsNullOrWhiteSpace(it.ETag) ? "" : it.ETag)</code></td>
-                                <td>@it.Length</td>
-                                <td>@it.ContentType</td>
-                                <td>@it.LastModified?.ToString("u")</td>
-                                <td class="text-end">
-                                    <button class="btn btn-outline-danger btn-sm" @onclick="() => DeleteObjectAsync(objBucket, it.Key)">Delete</button>
-                                </td>
-                            </tr>
+                            <span>Select file to upload</span>
                         }
-                    }
-                </tbody>
-            </table>
-        </div>
-    }
-</div>
+                        else
+                        {
+                            <span>@selectedFile.Name (@selectedFile.Size bytes)</span>
+                        }
+                    </MudButton>
+                </ActivatorContent>
+            </MudFileUpload>
+            <MudText Typo="Typo.caption" Color="Color.Secondary" Class="mt-1">
+                Uses a presigned anonymous PUT with media-type enforcement.
+            </MudText>
+        </MudItem>
+
+        <MudItem xs="12" md="3">
+            <MudNumericField T="long?" @bind-Value="presignMaxBytes" Label="Max bytes (optional)" 
+                             Min="0" Variant="Variant.Outlined" />
+        </MudItem>
+
+        <MudItem xs="12" md="3" Class="d-flex align-items-end">
+            <MudButton Variant="Variant.Filled" Color="Color.Primary" FullWidth="true" 
+                       Disabled="@(!canUpload)" OnClick="UploadPresignedAsync" 
+                       StartIcon="@Icons.Material.Filled.CloudUpload">
+                Upload
+            </MudButton>
+        </MudItem>
+
+        <MudItem xs="12">
+            <MudButton Variant="Variant.Outlined" Color="Color.Default" 
+                       OnClick="HeadAsync" StartIcon="@Icons.Material.Filled.Info">
+                HEAD (metadata)
+            </MudButton>
+        </MudItem>
+
+        @if (!string.IsNullOrEmpty(objStatus))
+        {
+            <MudItem xs="12">
+                <MudPaper Elevation="1" Class="pa-3">
+                    <pre style="margin: 0; white-space: pre-wrap;">@objStatus</pre>
+                </MudPaper>
+            </MudItem>
+        }
+
+        @if (!string.IsNullOrEmpty(objError))
+        {
+            <MudItem xs="12">
+                <MudAlert Severity="Severity.Error" ShowCloseIcon="true" CloseIconClicked="@(() => objError = null)">
+                    @objError
+                </MudAlert>
+            </MudItem>
+        }
+
+        @if (objItems is not null)
+        {
+            <MudItem xs="12">
+                <MudTable T="ObjectItem" Items="@objItems" Hover="true" Dense="true" Striped="true" Elevation="2">
+                    <HeaderContent>
+                        <MudTh>Key</MudTh>
+                        <MudTh>ETag</MudTh>
+                        <MudTh>Length</MudTh>
+                        <MudTh>Content-Type</MudTh>
+                        <MudTh>Last Modified</MudTh>
+                        <MudTh Style="text-align: right;">Actions</MudTh>
+                    </HeaderContent>
+                    <RowTemplate>
+                        <MudTd DataLabel="Key">@context.Key</MudTd>
+                        <MudTd DataLabel="ETag">
+                            @if (!string.IsNullOrWhiteSpace(context.ETag))
+                            {
+                                <code>@context.ETag</code>
+                            }
+                        </MudTd>
+                        <MudTd DataLabel="Length">@context.Length</MudTd>
+                        <MudTd DataLabel="Content-Type">@context.ContentType</MudTd>
+                        <MudTd DataLabel="Last Modified">@context.LastModified?.ToString("u")</MudTd>
+                        <MudTd DataLabel="Actions" Style="text-align: right;">
+                            <MudButton Variant="Variant.Outlined" Color="Color.Error" Size="Size.Small" 
+                                       OnClick="@(() => DeleteObjectAsync(objBucket, context.Key))" 
+                                       StartIcon="@Icons.Material.Filled.Delete">
+                                Delete
+                            </MudButton>
+                        </MudTd>
+                    </RowTemplate>
+                    <NoRecordsContent>
+                        <MudText Typo="Typo.body2" Color="Color.Secondary">No objects</MudText>
+                    </NoRecordsContent>
+                </MudTable>
+            </MudItem>
+        }
+    </MudGrid>
+</MudContainer>
 
 @code {
     private string tenantId = "acme-dev";
@@ -189,7 +242,7 @@
     {
         await LoadUsageAsync();
         await LoadBucketsAsync();
-    }
+    } // End of Method OnInitializedAsync
 
     private async Task LoadUsageAsync()
     {
@@ -204,7 +257,7 @@
             }
         }
         catch { /* ignore */ }
-    }
+    } // End of Method LoadUsageAsync
 
     private async Task LoadBucketsAsync()
     {
@@ -228,7 +281,7 @@
             bucketError = ex.Message;
             buckets = new();
         }
-    }
+    } // End of Method LoadBucketsAsync
 
     private async Task CreateBucketAsync()
     {
@@ -253,7 +306,7 @@
         {
             bucketError = ex.Message;
         }
-    }
+    } // End of Method CreateBucketAsync
 
     private async Task DeleteBucketAsync(string bucket)
     {
@@ -273,12 +326,12 @@
         {
             bucketError = ex.Message;
         }
-    }
+    } // End of Method DeleteBucketAsync
 
     private void HandleSelected(InputFileChangeEventArgs e)
     {
         selectedFile = e.FileCount > 0 ? e.File : null;
-    }
+    } // End of Method HandleSelected
 
     private async Task UploadPresignedAsync()
     {
@@ -335,7 +388,7 @@
         {
             objError = ex.Message;
         }
-    }
+    } // End of Method UploadPresignedAsync
 
     private async Task HeadAsync()
     {
@@ -355,7 +408,7 @@
         {
             objError = ex.Message;
         }
-    }
+    } // End of Method HeadAsync
 
     private async Task ListObjectsAsync()
     {
@@ -387,7 +440,7 @@
             objError = ex.Message;
             objItems = new();
         }
-    }
+    } // End of Method ListObjectsAsync
 
     private async Task DeleteObjectAsync(string bucket, string key)
     {
@@ -407,10 +460,9 @@
         {
             objError = ex.Message;
         }
-    }
+    } // End of Method DeleteObjectAsync
 
-    
-
+    // DTOs
     private sealed class PresignReq
     {
         public string Method { get; set; } = "PUT";
@@ -419,8 +471,14 @@
         public int? ExpirySeconds { get; set; }
         public long? MaxBytes { get; set; }
         public string? ContentType { get; set; }
-    }
-    private sealed class PresignResp { public string url { get; set; } = string.Empty; public long expires { get; set; } }
+    } // End of Class PresignReq
+
+    private sealed class PresignResp 
+    { 
+        public string url { get; set; } = string.Empty; 
+        public long expires { get; set; } 
+    } // End of Class PresignResp
+
     private sealed class UsageDto
     {
         public long totalBytes { get; set; }
@@ -428,7 +486,8 @@
         public long? maxTotalBytes { get; set; }
         public int? maxObjectCount { get; set; }
         public long? maxObjectSizeBytes { get; set; }
-    }
+    } // End of Class UsageDto
+
     private sealed class ObjectItem
     {
         public string Key { get; set; } = string.Empty;
@@ -436,5 +495,5 @@
         public long Length { get; set; }
         public string? ContentType { get; set; }
         public DateTimeOffset? LastModified { get; set; }
-    }
-}
+    } // End of Class ObjectItem
+} // End of Class Storage

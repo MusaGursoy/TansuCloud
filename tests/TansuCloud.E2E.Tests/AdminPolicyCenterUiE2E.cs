@@ -54,12 +54,12 @@ public class AdminPolicyCenterUiE2E : IAsyncLifetime
         // Wait for page to load
         await _page.WaitForSelectorAsync("h2:text('Policy Center')", new() { Timeout = 10_000 });
 
-        // Verify create button exists
-        var createButton = await _page.QuerySelectorAsync("button:text('Create Policy')");
+        // Verify create button exists (MudBlazor button with data-testid)
+        var createButton = await _page.QuerySelectorAsync("[data-testid='btn-create-policy']");
         createButton.Should().NotBeNull("create policy button should be visible");
 
-        // Verify filter controls exist
-        var typeFilter = await _page.QuerySelectorAsync("select");
+        // Verify filter controls exist (MudSelect with data-testid)
+        var typeFilter = await _page.QuerySelectorAsync("[data-testid='filter-type']");
         typeFilter.Should().NotBeNull("filter dropdown should exist");
     } // End of Method AdminUi_PolicyCenter_PageRenders
 

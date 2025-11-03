@@ -52,6 +52,13 @@ docker ps && docker logs signoz-init
 
 **That's it!** No manual image building required - all images are pre-built and published to GitHub Container Registry (ghcr.io).
 
+**Multi-Architecture Support:** TansuCloud images are built for both **x86_64/AMD64** and **ARM64/AARCH64** architectures. Docker automatically selects the correct architecture for your system:
+
+- ✅ Intel/AMD servers (x86_64)
+- ✅ Apple Silicon Macs (M1/M2/M3)
+- ✅ Raspberry Pi 4/5 (ARM64, 8GB recommended)
+- ✅ AWS Graviton, Oracle Ampere, Azure Cobalt
+
 **For developers who want to build from source:**
 See the [Building from Source](#building-from-source-optional) section below.
 
@@ -62,6 +69,7 @@ See the [Building from Source](#building-from-source-optional) section below.
 ### Production Security Model
 
 **Exposed to Internet (via Gateway):**
+
 - ✅ Gateway (port 80/443) - Only entry point
 - ✅ Dashboard (via Gateway at `/dashboard`)
 - ✅ Identity (via Gateway at `/identity`)
@@ -69,6 +77,7 @@ See the [Building from Source](#building-from-source-optional) section below.
 - ✅ Storage API (via Gateway at `/storage`)
 
 **Internal Docker Network Only:**
+
 - 🔒 PostgreSQL (no host port)
 - 🔒 Redis/Garnet (no host port)
 - 🔒 PgCat (no host port)
@@ -77,12 +86,14 @@ See the [Building from Source](#building-from-source-optional) section below.
 - 🔒 OpenTelemetry Collector (no host port)
 
 **Why SigNoz is Internal-Only:**
+
 1. **Security:** Observability data can contain sensitive information
 2. **Authentication:** Dashboard handles authentication, then calls SigNoz API
 3. **User Experience:** End users see observability through Dashboard UI
 4. **Network Isolation:** Reduces attack surface
 
 **Data Flow:**
+
 ```
 User Browser → Gateway (80/443) → Dashboard (8080)
                                       ↓
@@ -105,6 +116,7 @@ TansuCloud requires:
 - **2 GB RAM minimum** (4 GB recommended for production)
 - **20 GB disk space minimum** (50 GB recommended for production)
 - **Linux kernel 3.10+** (4.0+ recommended)
+- **Architecture:** x86_64 (Intel/AMD) or ARM64 (Apple Silicon, Raspberry Pi, AWS Graviton)
 
 ---
 
@@ -432,10 +444,12 @@ docker compose -f docker-compose.prod.yml --profile observability up -d
 ```
 
 **What happens:**
+
 1. Docker pulls pre-built images from GitHub Container Registry (ghcr.io)
-2. First time takes 5-10 minutes to download ~2-3 GB of images
-3. Subsequent starts are instant (images cached locally)
-4. No building required!
+2. Docker automatically selects the correct architecture (x86_64 or ARM64) for your system
+3. First time takes 5-10 minutes to download ~2-3 GB of images
+4. Subsequent starts are instant (images cached locally)
+5. No building required!
 
 ### Development Mode
 
@@ -525,7 +539,7 @@ curl http://localhost:8080/dashboard/admin/observability/traces
 curl http://localhost:8080/identity/.well-known/openid-configuration
 ```
 
-**Note:** In production, SigNoz UI (port 3301) is **NOT exposed** to the host. Access observability data through the Dashboard instead.
+**Note:** By default, SigNoz UI is **NOT exposed** externally. All observability features are available through the Dashboard at `/dashboard/admin/observability/*`. Advanced users can optionally enable direct SigNoz UI access by adding `ports: ["3301:8080"]` to the signoz service in docker-compose.yml.
 
 ---
 
@@ -562,6 +576,7 @@ curl -X POST http://localhost:8080/db/api/provisioning/tenants \
 **Important:** In production (`docker-compose.prod.yml`), SigNoz UI is **NOT exposed** to the host for security reasons. It's only accessible within the Docker network.
 
 **For Production (Recommended Approach):**
+
 - Use the **TansuCloud Dashboard** at `http://your-domain.com/dashboard/admin/observability`
 - Dashboard embeds SigNoz data via internal API calls (traces, metrics, logs)
 - No direct SigNoz UI access needed for end users
@@ -570,6 +585,7 @@ curl -X POST http://localhost:8080/db/api/provisioning/tenants \
 If you need direct SigNoz UI access in production (e.g., for deep troubleshooting), you have two options:
 
 **Option 1: SSH Tunnel (Recommended for temporary access)**
+
 ```bash
 # From your local machine, create SSH tunnel to server
 ssh -L 3301:localhost:3301 user@your-server.com
@@ -585,12 +601,14 @@ docker run --rm -p 3301:3301 --network tansucloud-network \
 
 **Option 2: Expose SigNoz Port (Not recommended for production)**
 Edit `docker-compose.prod.yml` and add ports to signoz service:
+
 ```yaml
 signoz:
   profiles: [observability]
   ports:
     - "3301:8080"  # Add this line
 ```
+
 Then restart: `docker compose -f docker-compose.prod.yml --profile observability restart signoz`
 
 ⚠️ **Security Warning:** Only expose SigNoz UI if protected by firewall/VPN. The Dashboard's embedded observability is the recommended approach for production.
@@ -766,6 +784,7 @@ sudo crontab -e
 ### 6. Set Up Monitoring
 
 **Access Observability via TansuCloud Dashboard:**
+
 ```bash
 # Navigate to Dashboard observability section
 http://your-domain.com/dashboard/admin/observability
@@ -777,11 +796,13 @@ http://your-domain.com/dashboard/admin/observability
 ```
 
 **Dashboard automatically:**
+
 - Authenticates with SigNoz API using credentials from `.env`
 - Displays traces, metrics, and logs in embedded UI
 - No direct SigNoz UI access needed
 
 **For advanced debugging (optional):**
+
 - Use SSH tunnel to access SigNoz UI directly (see "Access SigNoz" section above)
 - Configure alerts and dashboards in SigNoz
 - Set up notification channels (email, Slack, PagerDuty, etc.)
@@ -793,6 +814,7 @@ http://your-domain.com/dashboard/admin/observability
 **Most users don't need this section!** TansuCloud provides pre-built images on GitHub Container Registry.
 
 This section is for:
+
 - Developers contributing to TansuCloud
 - Users who want to modify the source code
 - Organizations that require building from source for security/compliance
@@ -830,6 +852,7 @@ docker compose -f docker-compose.prod.yml build gateway
 ```
 
 **What gets built:**
+
 - Gateway (YARP reverse proxy)
 - Identity (OIDC authentication)
 - Dashboard (Blazor UI)
@@ -856,6 +879,7 @@ services:
 ```
 
 Or tag your local builds:
+
 ```bash
 docker tag tansucloud-gateway ghcr.io/musagursoy/tansucloud-gateway:latest
 ```
@@ -884,6 +908,7 @@ docker push ghcr.io/musagursoy/tansucloud-gateway:v1.0.0
 ### Image Pull Failures
 
 **Cannot pull images from ghcr.io:**
+
 ```bash
 # Check if you can reach GitHub Container Registry
 curl -I https://ghcr.io
@@ -898,6 +923,7 @@ docker pull ghcr.io/musagursoy/tansucloud-gateway:latest
 ```
 
 **Slow image downloads:**
+
 ```bash
 # Check your internet connection
 curl -o /dev/null https://ghcr.io/v2/ -w "Speed: %{speed_download} bytes/sec\n"
@@ -906,6 +932,7 @@ curl -o /dev/null https://ghcr.io/v2/ -w "Speed: %{speed_download} bytes/sec\n"
 ```
 
 **Image not found (404):**
+
 ```bash
 # Verify image exists
 curl -H "Authorization: Bearer $(echo $GITHUB_TOKEN)" \
@@ -917,6 +944,7 @@ curl -H "Authorization: Bearer $(echo $GITHUB_TOKEN)" \
 ### Build Failures (For Developers)
 
 **PostgreSQL Image Build Failed:**
+
 ```bash
 # Check if Dockerfile exists
 ls -l dev/Dockerfile.citus-pgvector
@@ -930,6 +958,7 @@ docker build -f dev/Dockerfile.citus-pgvector -t tansu/citus-pgvector:local . 2>
 ```
 
 **Application Build Failed:**
+
 ```bash
 # Check Docker Compose file syntax
 docker compose -f docker-compose.prod.yml config
@@ -947,6 +976,7 @@ docker compose -f docker-compose.prod.yml build gateway
 ```
 
 **Out of Disk Space During Build:**
+
 ```bash
 # Check disk usage
 df -h
@@ -1120,6 +1150,7 @@ docker compose -f docker-compose.prod.yml --profile observability logs -f
 ```
 
 **What gets updated:**
+
 - ✅ Latest TansuCloud images from ghcr.io
 - ✅ Configuration changes from updated docker-compose files
 - ✅ Updated .env settings (preserve your passwords!)
@@ -1169,23 +1200,27 @@ docker compose -f docker-compose.prod.yml up -d
 
 ### Pre-Built Images (Recommended)
 
-TansuCloud publishes official images to **GitHub Container Registry (ghcr.io)**:
+TansuCloud publishes official **multi-architecture images** to **GitHub Container Registry (ghcr.io)**:
 
 ```bash
 # Check pulled images
 docker images | grep ghcr.io/musagursoy
 
 # Expected images (pulled automatically):
-# ghcr.io/musagursoy/tansucloud-postgres:latest    - PostgreSQL + Citus + pgvector
-# ghcr.io/musagursoy/tansucloud-gateway:latest     - YARP reverse proxy
-# ghcr.io/musagursoy/tansucloud-identity:latest    - OIDC authentication
-# ghcr.io/musagursoy/tansucloud-dashboard:latest   - Blazor admin UI
-# ghcr.io/musagursoy/tansucloud-db:latest          - Database provisioning API
-# ghcr.io/musagursoy/tansucloud-storage:latest     - File storage service
-# ghcr.io/musagursoy/tansucloud-telemetry:latest   - Usage reporting
+# ghcr.io/musagursoy/tansucloud-postgres:latest    - PostgreSQL + Citus + pgvector (x86_64, ARM64)
+# ghcr.io/musagursoy/tansucloud-gateway:latest     - YARP reverse proxy (x86_64, ARM64)
+# ghcr.io/musagursoy/tansucloud-identity:latest    - OIDC authentication (x86_64, ARM64)
+# ghcr.io/musagursoy/tansucloud-dashboard:latest   - Blazor admin UI (x86_64, ARM64)
+# ghcr.io/musagursoy/tansucloud-db:latest          - Database provisioning API (x86_64, ARM64)
+# ghcr.io/musagursoy/tansucloud-storage:latest     - File storage service (x86_64, ARM64)
+# ghcr.io/musagursoy/tansucloud-telemetry:latest   - Usage reporting (x86_64, ARM64)
 ```
 
+**Architecture Support:**
+All TansuCloud images include both **linux/amd64** (x86_64) and **linux/arm64** (AARCH64) variants. Docker automatically pulls the correct architecture for your system.
+
 **Third-Party Images (Also Pulled Automatically):**
+
 ```bash
 # clickhouse/clickhouse-server:latest
 # bitnami/zookeeper:latest
@@ -1247,25 +1282,28 @@ docker rmi -f tansucloud-gateway:old-tag
 
 ### Small Deployment (1-100 users)
 
-- **CPU:** 2 cores
+- **CPU:** 2 cores (x86_64 or ARM64)
 - **RAM:** 4 GB
 - **Disk:** 50 GB SSD
 - **Network:** 10 Mbps
+- **Examples:** Raspberry Pi 4 (8GB), small VPS, entry-level cloud VM
 
 ### Medium Deployment (100-1000 users)
 
-- **CPU:** 4 cores
+- **CPU:** 4 cores (x86_64 or ARM64)
 - **RAM:** 8 GB
 - **Disk:** 200 GB SSD
 - **Network:** 100 Mbps
+- **Examples:** AWS t4g.large (Graviton), mid-tier VPS, dedicated server
 
 ### Large Deployment (1000+ users)
 
-- **CPU:** 8+ cores
+- **CPU:** 8+ cores (x86_64 or ARM64)
 - **RAM:** 16+ GB
 - **Disk:** 500 GB+ SSD (NVMe recommended)
 - **Network:** 1 Gbps
 - **Consider:** Separate database server, load balancer, CDN
+- **Examples:** AWS c7g instances (Graviton), high-performance dedicated servers
 
 ---
 

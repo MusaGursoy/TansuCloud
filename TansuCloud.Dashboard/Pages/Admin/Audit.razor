@@ -1,148 +1,300 @@
 @page "/admin/audit"
 @layout TansuCloud.Dashboard.Pages.Admin.AdminLayout
 @attribute [Microsoft.AspNetCore.Authorization.Authorize(Policy = "AdminOnly")]
+@using MudBlazor
+@implements IDisposable
 
-<h3>Audit</h3>
+<PageTitle>Audit Log | TansuCloud Admin</PageTitle>
 
-<div class="mb-3">
-    <div class="row g-2">
-        <div class="col-auto">
-            <label class="form-label">Start (UTC)</label>
-            <input type="datetime-local" class="form-control form-control-sm" @bind="startLocal" />
-        </div>
-        <div class="col-auto">
-            <label class="form-label">End (UTC)</label>
-            <input type="datetime-local" class="form-control form-control-sm" @bind="endLocal" />
-        </div>
-        <div class="col-auto">
-            <label class="form-label">Tenant</label>
-            <input class="form-control form-control-sm" @bind="tenantId" />
-        </div>
-        <div class="col-auto">
-            <label class="form-label">Subject</label>
-            <input class="form-control form-control-sm" @bind="subject" />
-        </div>
-        <div class="col-auto">
-            <label class="form-label">Category</label>
-            <input class="form-control form-control-sm" @bind="category" />
-        </div>
-        <div class="col-auto">
-            <label class="form-label">Action</label>
-            <input class="form-control form-control-sm" @bind="action" />
-        </div>
-        <div class="col-auto">
-            <label class="form-label">Service</label>
-            <input class="form-control form-control-sm" @bind="service" />
-        </div>
-        <div class="col-auto">
-            <label class="form-label">Outcome</label>
-            <input class="form-control form-control-sm" @bind="outcome" />
-        </div>
-        <div class="col-auto">
-            <label class="form-label">Correlation</label>
-            <input class="form-control form-control-sm" @bind="correlationId" />
-        </div>
-        <div class="col-auto form-check mt-4">
-            <input type="checkbox" class="form-check-input" id="impOnly" @bind="impersonationOnly" />
-            <label class="form-check-label" for="impOnly">Impersonation only</label>
-        </div>
-        <div class="col-auto align-self-end">
-            <button class="btn btn-sm btn-primary" @onclick="SearchAsync">Search</button>
-            <button class="btn btn-sm btn-outline-secondary ms-1" @onclick="ResetFilters">Reset</button>
-        </div>
-    </div>
-</div>
+<MudContainer MaxWidth="MaxWidth.ExtraExtraLarge" Class="py-4">
+    <MudText Typo="Typo.h4" Class="mb-2">Audit Log</MudText>
+    <MudText Typo="Typo.body2" Color="Color.Secondary" Class="mb-4">
+        Query and export audit entries from the Database service with filtering and detail inspection.
+    </MudText>
 
-<div class="d-flex justify-content-between align-items-center mb-2">
-    <div>
-        <button class="btn btn-sm btn-secondary" @onclick="LoadMoreAsync" disabled="@string.IsNullOrEmpty(nextPageToken)">Load more</button>
-        <span class="ms-2 text-muted">@items.Count item(s)</span>
-    </div>
-    <div>
-        <button class="btn btn-sm btn-outline-success" @onclick="ExportCsvAsync">Export CSV</button>
-        <button class="btn btn-sm btn-outline-info ms-1" @onclick="ExportJsonAsync">Export JSON</button>
-    </div>
-    
-</div>
+    <!-- Filters Card -->
+    <MudCard Elevation="2" Class="mb-4">
+        <MudCardHeader>
+            <CardHeaderContent>
+                <MudText Typo="Typo.h6">Filters</MudText>
+            </CardHeaderContent>
+            <CardHeaderActions>
+                <MudButton Variant="Variant.Outlined" 
+                           Color="Color.Default" 
+                           Size="Size.Small"
+                           StartIcon="@Icons.Material.Filled.RestartAlt"
+                           OnClick="ResetFilters">
+                    Reset
+                </MudButton>
+            </CardHeaderActions>
+        </MudCardHeader>
+        <MudCardContent>
+            <MudGrid Spacing="2">
+                <MudItem xs="12" sm="6" md="3">
+                    <MudTextField T="DateTime"
+                                  @bind-Value="startLocal"
+                                  Label="Start (UTC)"
+                                  InputType="InputType.DateTimeLocal"
+                                  Variant="Variant.Outlined"
+                                  Margin="Margin.Dense" />
+                </MudItem>
+                <MudItem xs="12" sm="6" md="3">
+                    <MudTextField T="DateTime"
+                                  @bind-Value="endLocal"
+                                  Label="End (UTC)"
+                                  InputType="InputType.DateTimeLocal"
+                                  Variant="Variant.Outlined"
+                                  Margin="Margin.Dense" />
+                </MudItem>
+                <MudItem xs="12" sm="6" md="3">
+                    <MudTextField T="string"
+                                  @bind-Value="tenantId"
+                                  Label="Tenant"
+                                  Variant="Variant.Outlined"
+                                  Margin="Margin.Dense"
+                                  Clearable="true" />
+                </MudItem>
+                <MudItem xs="12" sm="6" md="3">
+                    <MudTextField T="string"
+                                  @bind-Value="subject"
+                                  Label="Subject"
+                                  Variant="Variant.Outlined"
+                                  Margin="Margin.Dense"
+                                  Clearable="true" />
+                </MudItem>
+                <MudItem xs="12" sm="6" md="3">
+                    <MudTextField T="string"
+                                  @bind-Value="category"
+                                  Label="Category"
+                                  Variant="Variant.Outlined"
+                                  Margin="Margin.Dense"
+                                  Clearable="true" />
+                </MudItem>
+                <MudItem xs="12" sm="6" md="3">
+                    <MudTextField T="string"
+                                  @bind-Value="action"
+                                  Label="Action"
+                                  Variant="Variant.Outlined"
+                                  Margin="Margin.Dense"
+                                  Clearable="true" />
+                </MudItem>
+                <MudItem xs="12" sm="6" md="3">
+                    <MudTextField T="string"
+                                  @bind-Value="service"
+                                  Label="Service"
+                                  Variant="Variant.Outlined"
+                                  Margin="Margin.Dense"
+                                  Clearable="true" />
+                </MudItem>
+                <MudItem xs="12" sm="6" md="3">
+                    <MudTextField T="string"
+                                  @bind-Value="outcome"
+                                  Label="Outcome"
+                                  Variant="Variant.Outlined"
+                                  Margin="Margin.Dense"
+                                  Clearable="true" />
+                </MudItem>
+                <MudItem xs="12" sm="6" md="3">
+                    <MudTextField T="string"
+                                  @bind-Value="correlationId"
+                                  Label="Correlation ID"
+                                  Variant="Variant.Outlined"
+                                  Margin="Margin.Dense"
+                                  Clearable="true" />
+                </MudItem>
+                <MudItem xs="12" sm="6" md="3" Class="d-flex align-end">
+                    <MudCheckBox T="bool" @bind-Value="impersonationOnly" Label="Impersonation only" Color="Color.Primary" />
+                </MudItem>
+                <MudItem xs="12" sm="6" md="3" Class="d-flex align-end">
+                    <MudButton Variant="Variant.Filled" 
+                               Color="Color.Primary" 
+                               StartIcon="@Icons.Material.Filled.Search"
+                               OnClick="SearchAsync"
+                               FullWidth="true">
+                        Search
+                    </MudButton>
+                </MudItem>
+            </MudGrid>
+        </MudCardContent>
+    </MudCard>
 
-@if (error is not null)
-{
-    <div class="alert alert-danger">@error</div>
-}
-else if (loading)
-{
-    <div class="text-muted">Loading…</div>
-}
-else if (items.Count == 0)
-{
-    <div class="text-muted">No audit entries found for the selected range.</div>
-}
-else
-{
-    <div class="row">
-        <div class="col-7">
-            <table class="table table-sm table-striped">
-                <thead>
-                    <tr>
-                        <th>Time (UTC)</th>
-                        <th>Tenant</th>
-                        <th>Subject</th>
-                        <th>Category</th>
-                        <th>Action</th>
-                        <th>Service</th>
-                        <th>Outcome</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    @foreach (var it in items)
-                    {
-                        <tr class="@(selected?.Id == it.Id ? "table-primary" : null)" @onclick="() => Select(it)">
-                            <td>@it.WhenUtc.ToString("u")</td>
-                            <td>@it.TenantId</td>
-                            <td>@it.Subject</td>
-                            <td>@it.Category</td>
-                            <td>@it.Action</td>
-                            <td>@it.Service</td>
-                            <td>@(it.Outcome ?? "")</td>
-                        </tr>
-                    }
-                </tbody>
-            </table>
+    <!-- Actions Bar -->
+    <MudPaper Elevation="1" Class="pa-3 mb-4 d-flex justify-space-between align-center">
+        <div>
+            <MudButton Variant="Variant.Outlined" 
+                       Color="Color.Secondary" 
+                       StartIcon="@Icons.Material.Filled.ExpandMore"
+                       OnClick="LoadMoreAsync" 
+                       Disabled="@string.IsNullOrEmpty(nextPageToken)">
+                Load More
+            </MudButton>
+            <MudText Typo="Typo.body2" Color="Color.Secondary" Inline="true" Class="ml-3">
+                @items.Count item(s) loaded
+            </MudText>
         </div>
-        <div class="col-5">
-            @if (selected is null)
-            {
-                <div class="text-muted">Select a row to see details.</div>
-            }
-            else
-            {
-                <div class="card">
-                    <div class="card-header">
-                        <strong>@selected.Category</strong> / @selected.Action
-                    </div>
-                    <div class="card-body">
-                        <div><strong>When:</strong> @selected.WhenUtc.ToString("u")</div>
-                        <div><strong>Tenant:</strong> @selected.TenantId</div>
-                        <div><strong>Subject:</strong> @selected.Subject</div>
-                        <div><strong>Service:</strong> @selected.Service (@selected.Environment @selected.Version)</div>
-                        <div><strong>Outcome:</strong> @(selected.Outcome ?? "") (@(selected.ReasonCode ?? ""))</div>
-                        <div><strong>Route:</strong> @selected.RouteTemplate</div>
-                        <div><strong>CorrelationId:</strong> @selected.CorrelationId</div>
-                        <div><strong>Trace:</strong> @selected.TraceId / @selected.SpanId</div>
-                        <div><strong>Client:</strong> @selected.ClientIpHash; @selected.UserAgent</div>
-                        <div><strong>ImpersonatedBy:</strong> @(selected.ImpersonatedBy ?? "-")</div>
-                        <div class="mt-2"><strong>Details:</strong>
-                            <pre class="small" style="white-space:pre-wrap">@detailsText</pre>
-                        </div>
-                        <div class="mt-2">
-                            <a class="btn btn-sm btn-outline-secondary" href="@_sigNozBaseUrl" target="_blank" rel="noopener">Open SigNoz</a>
-                        </div>
-                    </div>
-                </div>
-            }
+        <div>
+            <MudButton Variant="Variant.Outlined" 
+                       Color="Color.Success" 
+                       StartIcon="@Icons.Material.Filled.Download"
+                       OnClick="ExportCsvAsync"
+                       Class="mr-2">
+                Export CSV
+            </MudButton>
+            <MudButton Variant="Variant.Outlined" 
+                       Color="Color.Info" 
+                       StartIcon="@Icons.Material.Filled.Download"
+                       OnClick="ExportJsonAsync">
+                Export JSON
+            </MudButton>
         </div>
-    </div>
-}
+    </MudPaper>
+
+    <!-- Error/Loading/Results -->
+    @if (error is not null)
+    {
+        <MudAlert Severity="Severity.Error" Variant="Variant.Filled" Class="mb-4">
+            @error
+        </MudAlert>
+    }
+    else if (loading)
+    {
+        <MudProgressCircular Color="Color.Primary" Size="Size.Large" Indeterminate="true" Class="my-8" />
+    }
+    else if (items.Count == 0)
+    {
+        <MudAlert Severity="Severity.Info" Variant="Variant.Outlined">
+            No audit entries found for the selected range.
+        </MudAlert>
+    }
+    else
+    {
+        <MudGrid Spacing="3">
+            <!-- Audit Table (Left) -->
+            <MudItem xs="12" md="7">
+                <MudCard Elevation="2">
+                    <MudCardContent Class="pa-0">
+                        <MudTable Items="@items" 
+                                  Hover="true" 
+                                  Dense="true" 
+                                  Striped="true"
+                                  SelectedItemChanged="@Select"
+                                  T="AuditItem">
+                            <HeaderContent>
+                                <MudTh>Time (UTC)</MudTh>
+                                <MudTh>Tenant</MudTh>
+                                <MudTh>Subject</MudTh>
+                                <MudTh>Category</MudTh>
+                                <MudTh>Action</MudTh>
+                                <MudTh>Service</MudTh>
+                                <MudTh>Outcome</MudTh>
+                            </HeaderContent>
+                            <RowTemplate>
+                                <MudTd DataLabel="Time (UTC)">
+                                    <MudText Typo="Typo.body2">@context.WhenUtc.ToString("u")</MudText>
+                                </MudTd>
+                                <MudTd DataLabel="Tenant">
+                                    <MudText Typo="Typo.body2">@context.TenantId</MudText>
+                                </MudTd>
+                                <MudTd DataLabel="Subject">
+                                    <MudText Typo="Typo.body2">@context.Subject</MudText>
+                                </MudTd>
+                                <MudTd DataLabel="Category">
+                                    <MudChip T="string" Size="Size.Small" Color="Color.Default">@context.Category</MudChip>
+                                </MudTd>
+                                <MudTd DataLabel="Action">
+                                    <MudText Typo="Typo.body2">@context.Action</MudText>
+                                </MudTd>
+                                <MudTd DataLabel="Service">
+                                    <MudText Typo="Typo.body2">@context.Service</MudText>
+                                </MudTd>
+                                <MudTd DataLabel="Outcome">
+                                    <MudChip T="string" 
+                                             Size="Size.Small" 
+                                             Color="@GetOutcomeColor(context.Outcome)">
+                                        @(context.Outcome ?? "-")
+                                    </MudChip>
+                                </MudTd>
+                            </RowTemplate>
+                        </MudTable>
+                    </MudCardContent>
+                </MudCard>
+            </MudItem>
+
+            <!-- Detail Panel (Right) -->
+            <MudItem xs="12" md="5">
+                @if (selected is null)
+                {
+                    <MudPaper Elevation="2" Class="pa-8 text-center">
+                        <MudIcon Icon="@Icons.Material.Filled.TouchApp" Size="Size.Large" Color="Color.Secondary" Class="mb-2" />
+                        <MudText Typo="Typo.body1" Color="Color.Secondary">
+                            Select a row to see details
+                        </MudText>
+                    </MudPaper>
+                }
+                else
+                {
+                    <MudCard Elevation="2">
+                        <MudCardHeader>
+                            <CardHeaderContent>
+                                <MudText Typo="Typo.h6">@selected.Category / @selected.Action</MudText>
+                            </CardHeaderContent>
+                        </MudCardHeader>
+                        <MudCardContent>
+                            <MudList T="string" Dense="true" DisablePadding="true">
+                                <MudListItem T="string">
+                                    <MudText Typo="Typo.body2"><strong>When:</strong> @selected.WhenUtc.ToString("u")</MudText>
+                                </MudListItem>
+                                <MudListItem T="string">
+                                    <MudText Typo="Typo.body2"><strong>Tenant:</strong> @selected.TenantId</MudText>
+                                </MudListItem>
+                                <MudListItem T="string">
+                                    <MudText Typo="Typo.body2"><strong>Subject:</strong> @selected.Subject</MudText>
+                                </MudListItem>
+                                <MudListItem T="string">
+                                    <MudText Typo="Typo.body2"><strong>Service:</strong> @selected.Service (@selected.Environment @selected.Version)</MudText>
+                                </MudListItem>
+                                <MudListItem T="string">
+                                    <MudText Typo="Typo.body2"><strong>Outcome:</strong> @(selected.Outcome ?? "") (@(selected.ReasonCode ?? ""))</MudText>
+                                </MudListItem>
+                                <MudListItem T="string">
+                                    <MudText Typo="Typo.body2"><strong>Route:</strong> @selected.RouteTemplate</MudText>
+                                </MudListItem>
+                                <MudListItem T="string">
+                                    <MudText Typo="Typo.body2"><strong>CorrelationId:</strong> @selected.CorrelationId</MudText>
+                                </MudListItem>
+                                <MudListItem T="string">
+                                    <MudText Typo="Typo.body2"><strong>Trace:</strong> @selected.TraceId / @selected.SpanId</MudText>
+                                </MudListItem>
+                                <MudListItem T="string">
+                                    <MudText Typo="Typo.body2"><strong>Client:</strong> @selected.ClientIpHash; @selected.UserAgent</MudText>
+                                </MudListItem>
+                                <MudListItem T="string">
+                                    <MudText Typo="Typo.body2"><strong>ImpersonatedBy:</strong> @(selected.ImpersonatedBy ?? "-")</MudText>
+                                </MudListItem>
+                            </MudList>
+
+                            <MudDivider Class="my-3" />
+
+                            <MudText Typo="Typo.subtitle2" Class="mb-2"><strong>Details:</strong></MudText>
+                            <MudPaper Elevation="0" Class="pa-2 mud-background-gray" Style="white-space:pre-wrap; font-family: monospace; font-size: 0.875rem; max-height: 300px; overflow-y: auto;">
+                                @detailsText
+                            </MudPaper>
+                        </MudCardContent>
+                        <MudCardActions>
+                            <MudButton Variant="Variant.Outlined" 
+                                       Color="Color.Secondary" 
+                                       StartIcon="@Icons.Material.Filled.OpenInNew"
+                                       Href="@_sigNozBaseUrl" 
+                                       Target="_blank">
+                                Open SigNoz
+                            </MudButton>
+                        </MudCardActions>
+                    </MudCard>
+                }
+            </MudItem>
+        </MudGrid>
+    }
+</MudContainer>
 
 @code {
     private List<AuditItem> items = new();
@@ -178,14 +330,25 @@ else
     [Inject] private HttpClient Http { get; set; } = default!;
     [Inject] private TansuCloud.Dashboard.Observability.SigNoz.SigNozMetricsCatalog Catalog { get; set; } = default!;
     [Inject] private Microsoft.Extensions.Options.IOptionsMonitor<TansuCloud.Dashboard.Observability.SigNoz.SigNozOptions> OptionsMonitor { get; set; } = default!;
+    [Inject] private Microsoft.JSInterop.IJSRuntime JS { get; set; } = default!;
 
     private string _sigNozBaseUrl = string.Empty;
     private IDisposable? _optionsReload;
 
+    protected override void OnInitialized()
+    {
+        _sigNozBaseUrl = Catalog.CreateCatalog().BaseUrl;
+        _optionsReload = OptionsMonitor.OnChange((_, _) =>
+        {
+            _sigNozBaseUrl = Catalog.CreateCatalog().BaseUrl;
+            _ = InvokeAsync(StateHasChanged);
+        });
+    } // End of Method OnInitialized
+
     protected override async Task OnInitializedAsync()
     {
         await SearchAsync();
-    }
+    } // End of Method OnInitializedAsync
 
     private async Task SearchAsync()
     {
@@ -195,12 +358,12 @@ else
             await LoadPageAsync();
         }
         finally { loading = false; }
-    }
+    } // End of Method SearchAsync
 
     private async Task LoadMoreAsync()
     {
         await LoadPageAsync();
-    }
+    } // End of Method LoadMoreAsync
 
     private async Task LoadPageAsync()
     {
@@ -230,19 +393,19 @@ else
             error = ex.Message;
         }
         StateHasChanged();
-    }
+    } // End of Method LoadPageAsync
 
     private async Task ExportCsvAsync()
     {
         var url = BuildExportUrl("csv");
         await JS.InvokeVoidAsync("open", url, "_blank");
-    }
+    } // End of Method ExportCsvAsync
 
     private async Task ExportJsonAsync()
     {
         var url = BuildExportUrl("json");
         await JS.InvokeVoidAsync("open", url, "_blank");
-    }
+    } // End of Method ExportJsonAsync
 
     private string BuildExportUrl(string kind)
     {
@@ -257,13 +420,13 @@ else
         if (!string.IsNullOrWhiteSpace(correlationId)) url.Append($"&correlationId={Uri.EscapeDataString(correlationId)}");
         if (impersonationOnly) url.Append("&impersonationOnly=true");
         return url.ToString();
-    }
+    } // End of Method BuildExportUrl
 
     private void Select(AuditItem it)
     {
         selected = it;
         detailsText = it.Details?.RootElement.GetRawText() ?? "(no details)";
-    }
+    } // End of Method Select
 
     private void ResetFilters()
     {
@@ -272,15 +435,31 @@ else
         tenantId = subject = category = action = service = outcome = correlationId = null;
         impersonationOnly = false;
         _ = SearchAsync();
-    }
+    } // End of Method ResetFilters
 
-    [Inject] private Microsoft.JSInterop.IJSRuntime JS { get; set; } = default!;
+    private Color GetOutcomeColor(string? outcome)
+    {
+        if (string.IsNullOrWhiteSpace(outcome)) return Color.Default;
+        
+        return outcome.ToLowerInvariant() switch
+        {
+            var o when o.Contains("success") => Color.Success,
+            var o when o.Contains("fail") || o.Contains("error") => Color.Error,
+            var o when o.Contains("warn") => Color.Warning,
+            _ => Color.Default
+        };
+    } // End of Method GetOutcomeColor
+
+    public void Dispose()
+    {
+        _optionsReload?.Dispose();
+    } // End of Method Dispose
 
     private sealed class QueryResult
     {
         public List<AuditItem> Items { get; set; } = new();
         public string? NextPageToken { get; set; }
-    }
+    } // End of Class QueryResult
 
     private sealed class AuditItem
     {
@@ -304,19 +483,5 @@ else
         public System.Text.Json.JsonDocument? Details { get; set; }
         public string? ImpersonatedBy { get; set; }
         public string? SourceHost { get; set; }
-    }
-    protected override void OnInitialized()
-    {
-        _sigNozBaseUrl = Catalog.CreateCatalog().BaseUrl;
-        _optionsReload = OptionsMonitor.OnChange((_, _) =>
-        {
-            _sigNozBaseUrl = Catalog.CreateCatalog().BaseUrl;
-            _ = InvokeAsync(StateHasChanged);
-        });
-    }
-
-    public void Dispose()
-    {
-        _optionsReload?.Dispose();
-    }
-}
+    } // End of Class AuditItem
+} // End of Class Audit

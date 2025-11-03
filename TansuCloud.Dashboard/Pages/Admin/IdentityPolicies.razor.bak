@@ -8,178 +8,178 @@
 
 <PageTitle>Identity Policies | TansuCloud Admin</PageTitle>
 
-<MudContainer MaxWidth="MaxWidth.Large" Class="mt-4">
-    <h2>Identity Policies</h2>
-    <MudText Typo="Typo.body1" Color="Color.Secondary" Class="mb-4">
-        Configure password requirements, lockout settings, and token lifetimes.
-    </MudText>
+<div class="container-fluid py-4">
+    <div class="row mb-4">
+        <div class="col">
+            <h2 class="mb-0">Identity Policies</h2>
+            <p class="text-muted">Configure password requirements, lockout settings, and token lifetimes.</p>
+        </div>
+    </div>
 
     @if (!string.IsNullOrWhiteSpace(_errorMessage))
     {
-        <MudAlert Severity="Severity.Error" ShowCloseIcon="true" CloseIconClicked="@(() => _errorMessage = null)" Class="mb-4 alert-danger">
+        <div class="alert alert-danger alert-dismissible fade show" role="alert">
             <strong>Error:</strong> @_errorMessage
-        </MudAlert>
+            <button type="button" class="btn-close" @onclick="() => _errorMessage = null"></button>
+        </div>
     }
 
     @if (_loading)
     {
         <div class="d-flex justify-content-center py-5">
-            <MudProgressCircular Color="Color.Primary" Indeterminate="true" Size="Size.Large" />
+            <div class="spinner-border text-primary" role="status">
+                <span class="visually-hidden">Loading...</span>
+            </div>
         </div>
     }
     else if (_config != null)
     {
-        <MudGrid>
+        <div class="row">
             <!-- Password Policy -->
-            <MudItem xs="12" lg="6">
-                <MudCard Elevation="2">
-                    <MudCardHeader Style="background-color: var(--mud-palette-primary); color: white;">
-                        <CardHeaderContent>
-                            <MudText Typo="Typo.h6">Password Policy</MudText>
-                        </CardHeaderContent>
-                    </MudCardHeader>
-                    <MudCardContent>
-                        <MudNumericField T="int" Label="Minimum Length" 
-                                         Value="@_editConfig.Password.RequiredLength"
-                                         ValueChanged="@((int value) => _editConfig.Password.RequiredLength = value)"
-                                         Min="1" Max="128" 
-                                         Disabled="@(!_editMode)"
-                                         HelperText="Minimum number of characters required (1-128)"
-                                         Variant="Variant.Outlined" Class="mb-3"
-                                         id="passwordLength" />
+            <div class="col-lg-6 mb-4">
+                <div class="card">
+                    <div class="card-header bg-primary text-white">
+                        <h5 class="mb-0">Password Policy</h5>
+                    </div>
+                    <div class="card-body">
+                        <div class="mb-3">
+                            <label for="passwordLength" class="form-label">Minimum Length</label>
+                            <input type="number" class="form-control" id="passwordLength" 
+                                   @bind="_editConfig.Password.RequiredLength" min="1" max="128" disabled="@(!_editMode)" />
+                            <small class="form-text text-muted">Minimum number of characters required (1-128)</small>
+                        </div>
 
-                        <MudCheckBox T="bool" @bind-Value="_editConfig.Password.RequireDigit" 
-                                     Disabled="@(!_editMode)" Color="Color.Primary" Class="mb-2">
-                            Require digit (0-9)
-                        </MudCheckBox>
+                        <div class="form-check mb-2">
+                            <input class="form-check-input" type="checkbox" id="requireDigit" 
+                                   @bind="_editConfig.Password.RequireDigit" disabled="@(!_editMode)" />
+                            <label class="form-check-label" for="requireDigit">
+                                Require digit (0-9)
+                            </label>
+                        </div>
 
-                        <MudCheckBox T="bool" @bind-Value="_editConfig.Password.RequireUppercase" 
-                                     Disabled="@(!_editMode)" Color="Color.Primary" Class="mb-2">
-                            Require uppercase letter (A-Z)
-                        </MudCheckBox>
+                        <div class="form-check mb-2">
+                            <input class="form-check-input" type="checkbox" id="requireUppercase" 
+                                   @bind="_editConfig.Password.RequireUppercase" disabled="@(!_editMode)" />
+                            <label class="form-check-label" for="requireUppercase">
+                                Require uppercase letter (A-Z)
+                            </label>
+                        </div>
 
-                        <MudCheckBox T="bool" @bind-Value="_editConfig.Password.RequireLowercase" 
-                                     Disabled="@(!_editMode)" Color="Color.Primary" Class="mb-2">
-                            Require lowercase letter (a-z)
-                        </MudCheckBox>
+                        <div class="form-check mb-2">
+                            <input class="form-check-input" type="checkbox" id="requireLowercase" 
+                                   @bind="_editConfig.Password.RequireLowercase" disabled="@(!_editMode)" />
+                            <label class="form-check-label" for="requireLowercase">
+                                Require lowercase letter (a-z)
+                            </label>
+                        </div>
 
-                        <MudCheckBox T="bool" @bind-Value="_editConfig.Password.RequireNonAlphanumeric" 
-                                     Disabled="@(!_editMode)" Color="Color.Primary">
-                            Require special character (!@@##$$%%^^&&*...)
-                        </MudCheckBox>
-                    </MudCardContent>
-                </MudCard>
-            </MudItem>
+                        <div class="form-check">
+                            <input class="form-check-input" type="checkbox" id="requireNonAlphanumeric" 
+                                   @bind="_editConfig.Password.RequireNonAlphanumeric" disabled="@(!_editMode)" />
+                            <label class="form-check-label" for="requireNonAlphanumeric">
+                                Require special character (!@@##$$%%^^&&*...)
+                            </label>
+                        </div>
+                    </div>
+                </div>
+            </div>
 
             <!-- Lockout Policy -->
-            <MudItem xs="12" lg="6">
-                <MudCard Elevation="2">
-                    <MudCardHeader Style="background-color: var(--mud-palette-warning); color: white;">
-                        <CardHeaderContent>
-                            <MudText Typo="Typo.h6">Account Lockout</MudText>
-                        </CardHeaderContent>
-                    </MudCardHeader>
-                    <MudCardContent>
-                        <MudCheckBox T="bool" @bind-Value="_editConfig.Lockout.Enabled" 
-                                     Disabled="@(!_editMode)" Color="Color.Primary" Class="mb-3">
-                            Enable account lockout after failed attempts
-                        </MudCheckBox>
+            <div class="col-lg-6 mb-4">
+                <div class="card">
+                    <div class="card-header bg-warning">
+                        <h5 class="mb-0">Account Lockout</h5>
+                    </div>
+                    <div class="card-body">
+                        <div class="form-check mb-3">
+                            <input class="form-check-input" type="checkbox" id="lockoutEnabled" 
+                                   @bind="_editConfig.Lockout.Enabled" disabled="@(!_editMode)" />
+                            <label class="form-check-label" for="lockoutEnabled">
+                                Enable account lockout after failed attempts
+                            </label>
+                        </div>
 
-                        <MudNumericField T="int" Label="Max Failed Attempts" 
-                                         Value="@_editConfig.Lockout.MaxFailedAttempts"
-                                         ValueChanged="@((int value) => _editConfig.Lockout.MaxFailedAttempts = value)"
-                                         Min="1" Max="100" 
-                                         Disabled="@(!_editMode || !_editConfig.Lockout.Enabled)"
-                                         HelperText="Number of failed sign-in attempts before lockout"
-                                         Variant="Variant.Outlined" Class="mb-3" />
+                        <div class="mb-3">
+                            <label for="maxAttempts" class="form-label">Max Failed Attempts</label>
+                            <input type="number" class="form-control" id="maxAttempts" 
+                                   @bind="_editConfig.Lockout.MaxFailedAttempts" min="1" max="100" 
+                                   disabled="@(!_editMode || !_editConfig.Lockout.Enabled)" />
+                            <small class="form-text text-muted">Number of failed sign-in attempts before lockout</small>
+                        </div>
 
-                        <MudNumericField T="int" Label="Lockout Duration (minutes)" 
-                                         Value="@_editConfig.Lockout.DurationMinutes"
-                                         ValueChanged="@((int value) => _editConfig.Lockout.DurationMinutes = value)"
-                                         Min="1" Max="43200" 
-                                         Disabled="@(!_editMode || !_editConfig.Lockout.Enabled)"
-                                         HelperText="How long users are locked out (1-43200 minutes = 1 month)"
-                                         Variant="Variant.Outlined" />
-                    </MudCardContent>
-                </MudCard>
-            </MudItem>
+                        <div class="mb-3">
+                            <label for="lockoutMinutes" class="form-label">Lockout Duration (minutes)</label>
+                            <input type="number" class="form-control" id="lockoutMinutes" 
+                                   @bind="_editConfig.Lockout.DurationMinutes" min="1" max="43200" 
+                                   disabled="@(!_editMode || !_editConfig.Lockout.Enabled)" />
+                            <small class="form-text text-muted">How long users are locked out (1-43200 minutes = 1 month)</small>
+                        </div>
+                    </div>
+                </div>
+            </div>
 
             <!-- Token Lifetimes -->
-            <MudItem xs="12">
-                <MudCard Elevation="2">
-                    <MudCardHeader Style="background-color: var(--mud-palette-info); color: white;">
-                        <CardHeaderContent>
-                            <MudText Typo="Typo.h6">Token Lifetimes</MudText>
-                        </CardHeaderContent>
-                    </MudCardHeader>
-                    <MudCardContent>
-                        <MudGrid>
-                            <MudItem xs="12" md="6">
-                                <MudNumericField T="int" Label="Access Token Lifetime (seconds)" 
-                                                 Value="@_editConfig.Tokens.AccessTokenLifetimeSeconds"
-                                                 ValueChanged="@((int value) => _editConfig.Tokens.AccessTokenLifetimeSeconds = value)"
-                                                 Min="60" Max="86400" 
-                                                 Disabled="@(!_editMode)"
-                                                 HelperText="How long access tokens are valid (60s - 24h)"
-                                                 Variant="Variant.Outlined" />
-                            </MudItem>
+            <div class="col-lg-12 mb-4">
+                <div class="card">
+                    <div class="card-header bg-info text-white">
+                        <h5 class="mb-0">Token Lifetimes</h5>
+                    </div>
+                    <div class="card-body">
+                        <div class="row">
+                            <div class="col-md-6 mb-3">
+                                <label for="accessTokenLifetime" class="form-label">Access Token Lifetime (seconds)</label>
+                                <input type="number" class="form-control" id="accessTokenLifetime" 
+                                       @bind="_editConfig.Tokens.AccessTokenLifetimeSeconds" min="60" max="86400" disabled="@(!_editMode)" />
+                                <small class="form-text text-muted">How long access tokens are valid (60s - 24h)</small>
+                            </div>
 
-                            <MudItem xs="12" md="6">
-                                <MudNumericField T="int" Label="Refresh Token Lifetime (seconds)" 
-                                                 Value="@_editConfig.Tokens.RefreshTokenLifetimeSeconds"
-                                                 ValueChanged="@((int value) => _editConfig.Tokens.RefreshTokenLifetimeSeconds = value)"
-                                                 Min="3600" Max="7776000" 
-                                                 Disabled="@(!_editMode)"
-                                                 HelperText="How long refresh tokens are valid (1h - 90d)"
-                                                 Variant="Variant.Outlined" />
-                            </MudItem>
-                        </MudGrid>
-                    </MudCardContent>
-                </MudCard>
-            </MudItem>
-        </MudGrid>
+                            <div class="col-md-6 mb-3">
+                                <label for="refreshTokenLifetime" class="form-label">Refresh Token Lifetime (seconds)</label>
+                                <input type="number" class="form-control" id="refreshTokenLifetime" 
+                                       @bind="_editConfig.Tokens.RefreshTokenLifetimeSeconds" min="3600" max="7776000" disabled="@(!_editMode)" />
+                                <small class="form-text text-muted">How long refresh tokens are valid (1h - 90d)</small>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
 
         <!-- Action Buttons -->
-        <MudPaper Elevation="0" Class="mt-4">
-            <MudAlert Severity="Severity.Info" Class="mb-4">
-                <strong>Note:</strong> Changes to identity policies require an Identity service restart to take effect. 
-                After modifying these settings in the configuration, restart the service to apply changes.
-            </MudAlert>
+        <div class="row">
+            <div class="col">
+                <div class="alert alert-info">
+                    <strong>Note:</strong> Changes to identity policies require an Identity service restart to take effect. 
+                    After modifying these settings in the configuration, restart the service to apply changes.
+                </div>
 
-            @if (!_editMode)
-            {
-                <MudButton Variant="Variant.Filled" Color="Color.Primary" 
-                           OnClick="EnableEditMode" Disabled="@_saving"
-                           StartIcon="@Icons.Material.Filled.Edit">
-                    Edit Policies
-                </MudButton>
-            }
-            else
-            {
-                <MudButton Variant="Variant.Filled" Color="Color.Success" 
-                           OnClick="SaveChanges" Disabled="@_saving" Class="me-2"
-                           StartIcon="@Icons.Material.Filled.CheckCircle">
-                    @if (_saving)
-                    {
-                        <MudProgressCircular Size="Size.Small" Indeterminate="true" Class="me-1" />
-                    }
-                    Save Changes
-                </MudButton>
-                <MudButton Variant="Variant.Filled" Color="Color.Default" 
-                           OnClick="CancelEdit" Disabled="@_saving"
-                           StartIcon="@Icons.Material.Filled.Cancel">
-                    Cancel
-                </MudButton>
-            }
+                @if (!_editMode)
+                {
+                    <button class="btn btn-primary" @onclick="EnableEditMode" disabled="@_saving">
+                        <i class="bi bi-pencil"></i> Edit Policies (View Only)
+                    </button>
+                }
+                else
+                {
+                    <button class="btn btn-success me-2" @onclick="SaveChanges" disabled="@_saving">
+                        @if (_saving)
+                        {
+                            <span class="spinner-border spinner-border-sm me-1" role="status" aria-hidden="true"></span>
+                        }
+                        <i class="bi bi-check-circle"></i> Save Changes (Requires Restart)
+                    </button>
+                    <button class="btn btn-secondary" @onclick="CancelEdit" disabled="@_saving">
+                        <i class="bi bi-x-circle"></i> Cancel
+                    </button>
+                }
 
-            <MudButton Variant="Variant.Outlined" Color="Color.Default" 
-                       OnClick="RefreshConfig" Disabled="@(_saving || _editMode)" Class="ms-2"
-                       StartIcon="@Icons.Material.Filled.Refresh">
-                Refresh
-            </MudButton>
-        </MudPaper>
+                <button class="btn btn-outline-secondary ms-2" @onclick="RefreshConfig" disabled="@_saving || _editMode">
+                    <i class="bi bi-arrow-clockwise"></i> Refresh
+                </button>
+            </div>
+        </div>
     }
-</MudContainer>
+</div>
 
 @code {
     private bool _loading = true;

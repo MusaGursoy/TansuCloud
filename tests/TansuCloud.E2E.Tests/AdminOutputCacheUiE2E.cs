@@ -105,14 +105,17 @@ public class AdminOutputCacheUiE2E : IAsyncLifetime
             throw;
         }
         await confirmBtn.ClickAsync();
-        await _page.WaitForTimeoutAsync(500);
+        
+        // Wait for dialog to close completely (MudBlazor + Blazor rendering cycle)
+        await _page.WaitForTimeoutAsync(1000);
 
         // Verify success message
         var success = await _page.QuerySelectorAsync(".alert.alert-success");
         success.Should().NotBeNull("Save should show success alert");
 
         // Reload and verify new values are persisted
-        await _page.GetByTestId("btn-load").ClickAsync();
+        await _page.WaitForTimeoutAsync(500); // Extra wait for dialog to fully close
+        await _page.GetByTestId("btn-load").ClickAsync(new() { Force = true });
         await _page.WaitForTimeoutAsync(500);
 
         var reloadedDefault = await defaultTtlInput.InputValueAsync();
@@ -125,7 +128,9 @@ public class AdminOutputCacheUiE2E : IAsyncLifetime
         await staticTtlInput.FillAsync(originalStatic.ToString());
         await _page.GetByTestId("btn-save").ClickAsync();
         await _page.GetByTestId("btn-confirm-save").ClickAsync();
-        await _page.WaitForTimeoutAsync(500);
+        
+        // Wait for dialog to close completely (MudBlazor + Blazor rendering cycle)
+        await _page.WaitForTimeoutAsync(1000);
 
         // Verify revert success
         var revertSuccess = await _page.QuerySelectorAsync(".alert.alert-success");

@@ -2,45 +2,72 @@
 @layout TansuCloud.Dashboard.Pages.Admin.AdminLayout
 @attribute [Microsoft.AspNetCore.Authorization.Authorize(Policy = "AdminOnly")]
 @inject HttpClient Http
+@using MudBlazor
 
-<h3>Security Events</h3>
+<PageTitle>Security Events | TansuCloud Admin</PageTitle>
 
-@if (error is not null)
-{
-    <p class="text-danger">@error</p>
-}
-else if (events is null)
-{
-    <p>Loading...</p>
-}
-else
-{
-    <table class="table">
-        <thead>
-            <tr>
-                <th>Id</th>
-                <th>Type</th>
-                <th>User</th>
-                <th>Tenant</th>
-                <th>Actor</th>
-                <th>At</th>
-            </tr>
-        </thead>
-        <tbody>
-            @foreach (var e in events)
-            {
-                <tr>
-                    <td>@e.id</td>
-                    <td>@e.type</td>
-                    <td>@e.userId</td>
-                    <td>@e.tenantId</td>
-                    <td>@e.actorId</td>
-                    <td>@e.createdAt</td>
-                </tr>
-            }
-        </tbody>
-    </table>
-}
+<MudContainer MaxWidth="MaxWidth.ExtraLarge" Class="py-4">
+    <MudText Typo="Typo.h4" Class="mb-2">Security Events</MudText>
+    <MudText Typo="Typo.body2" Color="Color.Secondary" Class="mb-4">
+        Recent security-related events from the Identity service (last 100 events).
+    </MudText>
+
+    @if (error is not null)
+    {
+        <MudAlert Severity="Severity.Error" Variant="Variant.Filled" Class="mb-4">
+            @error
+        </MudAlert>
+    }
+    else if (events is null)
+    {
+        <MudProgressCircular Color="Color.Primary" Size="Size.Large" Indeterminate="true" Class="my-8" />
+    }
+    else if (events.Any())
+    {
+        <MudCard Elevation="2">
+            <MudCardContent Class="pa-0">
+                <MudTable Items="@events" Hover="true" Striped="true" Dense="true">
+                    <HeaderContent>
+                        <MudTh>ID</MudTh>
+                        <MudTh>Type</MudTh>
+                        <MudTh>User ID</MudTh>
+                        <MudTh>Tenant ID</MudTh>
+                        <MudTh>Actor ID</MudTh>
+                        <MudTh>Created At</MudTh>
+                    </HeaderContent>
+                    <RowTemplate>
+                        <MudTd DataLabel="ID">
+                            <MudText Typo="Typo.body2">@context.id</MudText>
+                        </MudTd>
+                        <MudTd DataLabel="Type">
+                            <MudChip T="string" Size="Size.Small" Color="@GetEventTypeColor(context.type)">
+                                @context.type
+                            </MudChip>
+                        </MudTd>
+                        <MudTd DataLabel="User ID">
+                            <MudText Typo="Typo.body2">@(context.userId ?? "-")</MudText>
+                        </MudTd>
+                        <MudTd DataLabel="Tenant ID">
+                            <MudText Typo="Typo.body2">@(context.tenantId ?? "-")</MudText>
+                        </MudTd>
+                        <MudTd DataLabel="Actor ID">
+                            <MudText Typo="Typo.body2">@(context.actorId ?? "-")</MudText>
+                        </MudTd>
+                        <MudTd DataLabel="Created At">
+                            <MudText Typo="Typo.body2">@context.createdAt.ToString("yyyy-MM-dd HH:mm:ss")</MudText>
+                        </MudTd>
+                    </RowTemplate>
+                </MudTable>
+            </MudCardContent>
+        </MudCard>
+    }
+    else
+    {
+        <MudAlert Severity="Severity.Info" Variant="Variant.Outlined">
+            No security events found.
+        </MudAlert>
+    }
+</MudContainer>
 
 @code {
     private List<SecEvent>? events;
@@ -60,5 +87,16 @@ else
         {
             error = $"Failed to load security events: {ex.Message}";
         }
-    }
-}
+    } // End of Method OnInitializedAsync
+
+    private Color GetEventTypeColor(string eventType)
+    {
+        return eventType.ToLowerInvariant() switch
+        {
+            var e when e.Contains("failed") || e.Contains("blocked") || e.Contains("denied") => Color.Error,
+            var e when e.Contains("lockout") || e.Contains("disabled") || e.Contains("warning") => Color.Warning,
+            var e when e.Contains("success") || e.Contains("login") || e.Contains("signin") => Color.Success,
+            _ => Color.Default
+        };
+    } // End of Method GetEventTypeColor
+} // End of Class SecurityEvents

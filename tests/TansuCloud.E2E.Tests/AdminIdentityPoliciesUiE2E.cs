@@ -72,8 +72,8 @@ public class AdminIdentityPoliciesUiE2E : IAsyncLifetime
         var lengthValue = await passwordLengthInput!.InputValueAsync();
         lengthValue.Should().NotBeNullOrEmpty("password length should have a value");
 
-        // Verify edit button is present
-        var editButton = await _page.QuerySelectorAsync("button:text('Edit Policies')");
+        // Verify edit button is present (MudBlazor button - use text content search)
+        var editButton = await _page.GetByRole(AriaRole.Button, new() { Name = "Edit Policies" }).ElementHandleAsync();
         editButton.Should().NotBeNull("edit button should be visible");
     } // End of Method AdminUi_IdentityPolicies_DisplaysConfiguration
 
@@ -98,20 +98,20 @@ public class AdminIdentityPoliciesUiE2E : IAsyncLifetime
         // Wait for page to load
         await _page.WaitForSelectorAsync("h2:text('Identity Policies')", new() { Timeout = 10_000 });
 
-        // Click edit button
-        var editButton = await _page.QuerySelectorAsync("button:text('Edit Policies')");
+        // Click edit button (MudBlazor button)
+        var editButton = await _page.GetByRole(AriaRole.Button, new() { Name = "Edit Policies" }).ElementHandleAsync();
         editButton.Should().NotBeNull("edit button should exist");
-        await editButton!.ClickAsync();
+        await _page.GetByRole(AriaRole.Button, new() { Name = "Edit Policies" }).ClickAsync();
 
         // Wait for edit mode to activate
         await Task.Delay(500);
 
-        // Verify save button appears
-        var saveButton = await _page.QuerySelectorAsync("button:text('Save Changes')");
+        // Verify save button appears (MudBlazor button)
+        var saveButton = await _page.GetByRole(AriaRole.Button, new() { Name = "Save Changes" }).ElementHandleAsync();
         saveButton.Should().NotBeNull("save button should appear in edit mode");
 
         // Click save
-        await saveButton!.ClickAsync();
+        await _page.GetByRole(AriaRole.Button, new() { Name = "Save Changes" }).ClickAsync();
 
         // Wait for error message
         await Task.Delay(1000);

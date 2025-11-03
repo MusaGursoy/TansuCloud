@@ -46,13 +46,13 @@ public class AdminObservabilityConfigUiE2E : IAsyncLifetime
         }
 
         // Navigate and ensure session
-        var adminUrl = baseUrl.TrimEnd('/') + "/dashboard/admin/observability-config";
+        var adminUrl = baseUrl.TrimEnd('/') + "/dashboard/admin/observability/config";
         await _page!.GotoAsync(adminUrl, new() { WaitUntil = WaitUntilState.DOMContentLoaded });
 
         await EnsureSignedInAsync(baseUrl);
 
-        // Wait for page to load
-        await _page.WaitForSelectorAsync("h2:text('Observability Governance')", new() { Timeout = 10_000 });
+        // Wait for page to load - MudBlazor uses h4 for page title
+        await _page.WaitForSelectorAsync("text='Observability Configuration'", new() { Timeout = 10_000 });
 
         // Verify retention section exists
         var retentionHeader = await _page.QuerySelectorAsync("text='Retention Periods'");
@@ -66,27 +66,30 @@ public class AdminObservabilityConfigUiE2E : IAsyncLifetime
         var alertHeader = await _page.QuerySelectorAsync("text='Alert SLO Templates'");
         alertHeader.Should().NotBeNull("alert SLOs section should be visible");
 
-        // Verify retention inputs exist and have values
-        var tracesInput = await _page.QuerySelectorAsync("#retentionTraces");
-        tracesInput.Should().NotBeNull("traces retention input should exist");
-        var tracesValue = await tracesInput!.InputValueAsync();
+        // Verify retention inputs exist by label (Playwright's best practice)
+        var tracesInput = _page.GetByLabel("Traces (days)");
+        await tracesInput.WaitForAsync(new() { Timeout = 5_000 });
+        var tracesValue = await tracesInput.InputValueAsync();
         tracesValue.Should().NotBeNullOrEmpty("traces retention should have a value");
 
-        var logsInput = await _page.QuerySelectorAsync("#retentionLogs");
-        logsInput.Should().NotBeNull("logs retention input should exist");
+        var logsInput = _page.GetByLabel("Logs (days)");
+        await logsInput.WaitForAsync(new() { Timeout = 5_000 });
 
-        var metricsInput = await _page.QuerySelectorAsync("#retentionMetrics");
-        metricsInput.Should().NotBeNull("metrics retention input should exist");
+        var metricsInput = _page.GetByLabel("Metrics (days)");
+        await metricsInput.WaitForAsync(new() { Timeout = 5_000 });
 
         // Verify sampling input exists
-        var samplingInput = await _page.QuerySelectorAsync("#samplingRatio");
-        samplingInput.Should().NotBeNull("sampling ratio input should exist");
-        var samplingValue = await samplingInput!.InputValueAsync();
+        var samplingInput = _page.GetByLabel("Trace Sampling Ratio");
+        await samplingInput.WaitForAsync(new() { Timeout = 5_000 });
+        var samplingValue = await samplingInput.InputValueAsync();
         samplingValue.Should().NotBeNullOrEmpty("sampling ratio should have a value");
 
-        // Verify refresh button is present
-        var refreshButton = await _page.QuerySelectorAsync("button:text('Refresh Configuration')");
+        // Verify buttons are present (MudButton components)
+        var refreshButton = await _page.QuerySelectorAsync("button:has-text('Refresh')");
         refreshButton.Should().NotBeNull("refresh button should be visible");
+        
+        var saveButton = await _page.QuerySelectorAsync("button:has-text('Save Configuration')");
+        saveButton.Should().NotBeNull("save button should be visible");
     } // End of Method AdminUi_ObservabilityConfig_DisplaysSettings
 
     [Fact(DisplayName = "Admin UI: ObservabilityConfig navigation link works")]
@@ -116,12 +119,12 @@ public class AdminObservabilityConfigUiE2E : IAsyncLifetime
         navLink.Should().NotBeNull("observability config nav link should exist");
         await navLink!.ClickAsync();
 
-        // Wait for page to load
-        await _page.WaitForSelectorAsync("h2:text('Observability Governance')", new() { Timeout = 10_000 });
+        // Wait for page to load - MudBlazor uses h4 for page title
+        await _page.WaitForSelectorAsync("text='Observability Configuration'", new() { Timeout = 10_000 });
 
         // Verify we're on the right page
         var url = _page.Url;
-        url.Should().Contain("/dashboard/admin/observability-config", "should navigate to observability config page");
+        url.Should().Contain("/dashboard/admin/observability/config", "should navigate to observability config page");
     } // End of Method AdminUi_ObservabilityConfig_NavigationWorks
 
     [Fact(DisplayName = "Admin UI: ObservabilityConfig displays alert SLO details")]
@@ -137,28 +140,28 @@ public class AdminObservabilityConfigUiE2E : IAsyncLifetime
             return;
         }
 
-        var adminUrl = baseUrl.TrimEnd('/') + "/dashboard/admin/observability-config";
+        var adminUrl = baseUrl.TrimEnd('/') + "/dashboard/admin/observability/config";
         await _page!.GotoAsync(adminUrl, new() { WaitUntil = WaitUntilState.DOMContentLoaded });
 
         await EnsureSignedInAsync(baseUrl);
 
-        // Wait for page to load
-        await _page.WaitForSelectorAsync("h2:text('Observability Governance')", new() { Timeout = 10_000 });
+        // Wait for page to load - MudBlazor uses h4 for page title
+        await _page.WaitForSelectorAsync("text='Observability Configuration'", new() { Timeout = 10_000 });
 
         // Wait a bit for data to load
         await Task.Delay(1000);
 
-        // Check if alert SLO details table is present
+        // Check if alert SLO details section is present (MudDataGrid)
         var detailsHeader = await _page.QuerySelectorAsync("text='Alert SLO Details'");
         
         if (detailsHeader != null)
         {
-            // If the table exists, verify it has content
-            var table = await _page.QuerySelectorAsync("table");
-            table.Should().NotBeNull("alert SLO details table should exist");
+            // Verify MudDataGrid is present (table structure may differ from plain HTML)
+            var dataGridRoot = await _page.QuerySelectorAsync(".mud-table-root");
+            dataGridRoot.Should().NotBeNull("alert SLO details grid should exist");
 
-            // Verify table has headers
-            var headers = await _page.QuerySelectorAllAsync("th");
+            // Verify table has headers (column headers in MudDataGrid)
+            var headers = await _page.QuerySelectorAllAsync(".mud-table-head th");
             headers.Should().HaveCountGreaterThan(0, "table should have column headers");
         }
     } // End of Method AdminUi_ObservabilityConfig_DisplaysAlertSLOs

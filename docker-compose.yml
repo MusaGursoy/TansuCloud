@@ -67,6 +67,7 @@ services:
       interval: 30s
       timeout: 5s
       retries: 5
+      start_period: 60s  # Allow 1 minute for ZooKeeper startup before marking unhealthy
     volumes:
       - signoz-zookeeper-data:/bitnami/zookeeper
     networks:
@@ -94,6 +95,7 @@ services:
       interval: 30s
       timeout: 5s
       retries: 5
+      start_period: 90s  # Allow 90 seconds for ClickHouse startup before marking unhealthy
     volumes:
       - signoz-clickhouse-data:/var/lib/clickhouse
       - ./dev/clickhouse/cluster.xml:/etc/clickhouse-server/config.d/cluster.xml:ro
@@ -125,15 +127,14 @@ services:
       # Disable API authentication - safe since SigNoz API is only accessible within Docker network
       - SIGNOZ_DISABLE_FRONTEND_AUTH=true
     user: "0:0"
-    # NOTE: SigNoz listens on 8080 internally. To avoid clashing with our Gateway's host mapping,
-    # we publish it on host port 3301 while keeping the container default port. Access: http://127.0.0.1:3301/
-    ports:
-      - "3301:8080"
+    # NOTE: SigNoz is accessible only within the Docker network via http://signoz:8080
+    # All observability access goes through the Dashboard API - no direct external port exposure
     healthcheck:
       test: ["CMD", "/bin/busybox", "wget", "-q", "-O", "-", "http://localhost:8080/"]
       interval: 30s
       timeout: 5s
       retries: 10
+      start_period: 180s  # Allow 3 minutes for initial startup (ClickHouse connection + migrations) before marking unhealthy
     depends_on:
       - clickhouse
     networks:
@@ -428,13 +429,16 @@ services:
       Cache__Redis: redis:6379
       # Route audit writes via PgCat; avoid localhost inside container
       Audit__ConnectionString: "Host=pgcat;Port=6432;Database=postgres;Username=${POSTGRES_USER};Password=${POSTGRES_PASSWORD}"
-      # SigNoz Query Service API (inside container network, port 8080; host-mapped as 3301)
+      # SigNoz Query Service API (inside container network, port 8080)
+      # External port 3301 removed - access observability through Dashboard only
+      # Advanced users can optionally expose with: ports: ["3301:8080"]
       SigNozQuery__ApiBaseUrl: http://signoz:8080
-      SigNozQuery__SigNozUiBaseUrl: http://127.0.0.1:3301
+      SigNozQuery__SigNozUiBaseUrl: http://signoz:8080
       SigNozQuery__Email: ${SIGNOZ_API_EMAIL}
       SigNozQuery__Password: ${SIGNOZ_API_PASSWORD}
       Oidc__Authority: ${PUBLIC_BASE_URL}/identity
-      # Use in-cluster gateway for backchannel discovery; browser-facing Authority follows PUBLIC_BASE_URL
+      # Use gateway for backchannel discovery (containers can't reach 127.0.0.1)
+      # Gateway now passes through Identity's issuer unchanged
       Oidc__MetadataAddress: ${GATEWAY_BASE_URL}/identity/.well-known/openid-configuration
       Oidc__RequireHttpsMetadata: false
       Oidc__ClientId: tansu-dashboard
