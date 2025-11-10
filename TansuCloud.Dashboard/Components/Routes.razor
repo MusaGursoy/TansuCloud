@@ -1,13 +1,14 @@
 ﻿<CascadingAuthenticationState>
     <!-- MudBlazor providers at root level for prerendering compatibility -->
+    <MudThemeProvider Theme="@_theme" />
     <MudPopoverProvider />
     <MudDialogProvider />
     <MudSnackbarProvider />
     <Router AppAssembly="@typeof(Program).Assembly">
         <Found Context="routeData">
-            <AuthorizeRouteView RouteData="routeData" DefaultLayout="typeof(Layout.AdminLayout)">
+            <AuthorizeRouteView RouteData="routeData" DefaultLayout="typeof(TansuCloud.Dashboard.Pages.Admin.AdminLayout)">
                 <NotAuthorized>
-                    <LayoutView Layout="typeof(Layout.AdminLayout)">
+                    <LayoutView Layout="typeof(TansuCloud.Dashboard.Pages.Admin.AdminLayout)">
                         <MudContainer Class="mt-8">
                             <MudProgressCircular Color="Color.Primary" Indeterminate="true" />
                             <MudText Typo="Typo.h6" Class="ml-4">Authorizing…</MudText>
@@ -15,7 +16,7 @@
                     </LayoutView>
                 </NotAuthorized>
                 <Authorizing>
-                    <LayoutView Layout="typeof(Layout.AdminLayout)">
+                    <LayoutView Layout="typeof(TansuCloud.Dashboard.Pages.Admin.AdminLayout)">
                         <MudContainer Class="mt-8">
                             <MudProgressCircular Color="Color.Primary" Indeterminate="true" />
                             <MudText Typo="Typo.h6" Class="ml-4">Loading…</MudText>
@@ -26,7 +27,7 @@
             <FocusOnNavigate RouteData="routeData" Selector="h1" />
         </Found>
         <NotFound>
-            <LayoutView Layout="typeof(Layout.AdminLayout)">
+            <LayoutView Layout="typeof(TansuCloud.Dashboard.Pages.Admin.AdminLayout)">
                 <MudContainer Class="mt-8">
                     <MudAlert Severity="Severity.Warning">
                         Page not found. <MudLink Href="/">Return to Dashboard</MudLink>
@@ -36,3 +37,37 @@
         </NotFound>
     </Router>
 </CascadingAuthenticationState>
+
+@code {
+    private readonly MudTheme _theme = new()
+    {
+        PaletteLight = new PaletteLight
+        {
+            Primary = "#014F86",           // TansuCloud brand teal-blue
+            Secondary = "#2A6F97",         // Secondary teal
+            Tertiary = "#61A5C2",          // Light blue accent
+            AppbarBackground = "#012A4A",  // Deep navy top bar
+            Background = "#F5F5F5",        // Light gray page background
+            Surface = "#FFFFFF",           // White card/paper surfaces
+            DrawerBackground = "#013A63",  // Dark teal sidebar
+            DrawerText = "#E0F4FF",        // Very light blue text (higher contrast)
+            DrawerIcon = "#C5E8FF",        // Light blue icons (higher contrast)
+            TextPrimary = "#000000",       // Black text
+            TextSecondary = "rgba(0,0,0,0.6)"
+        },
+        PaletteDark = new PaletteDark
+        {
+            Primary = "#61A5C2",           // Light blue for dark mode
+            Secondary = "#89C2D9",         // Lighter blue accent
+            Tertiary = "#A9D6E5",          // Lightest blue
+            AppbarBackground = "#012A4A",  // Deep navy
+            Background = "#01497C",        // Dark teal background
+            Surface = "#013A63",           // Dark teal surfaces
+            DrawerBackground = "#012A4A",  // Deep navy sidebar
+            DrawerText = "#E0F4FF",        // Very light blue text (higher contrast)
+            DrawerIcon = "#C5E8FF",        // Light blue icons (higher contrast)
+            TextPrimary = "#FFFFFF",       // White text
+            TextSecondary = "rgba(255,255,255,0.7)"
+        }
+    };
+}

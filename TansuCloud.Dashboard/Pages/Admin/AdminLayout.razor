@@ -89,6 +89,12 @@
                 <MudNavLink Href="/admin/storage" Icon="@Icons.Material.Filled.Folder" data-testid="nav-storage">Storage</MudNavLink>
             </MudNavGroup>
 
+            <!-- Tenants -->
+            <MudNavGroup Title="Tenants" Icon="@Icons.Material.Filled.Business" Expanded="@_expandAllGroups">
+                <MudNavLink Href="/admin/tenants" Icon="@Icons.Material.Filled.Apartment" data-testid="nav-tenants">Tenant List</MudNavLink>
+                <MudNavLink Href="/admin/provisioning" Icon="@Icons.Material.Filled.AddBusiness" data-testid="nav-provisioning">Provisioning</MudNavLink>
+            </MudNavGroup>
+
             <!-- ML -->
             <MudNavGroup Title="Machine Learning" Icon="@Icons.Material.Filled.Memory" Expanded="@_expandAllGroups">
                 <MudNavLink Href="/admin/ml" Icon="@Icons.Material.Filled.Psychology" data-testid="nav-ml">ML Management</MudNavLink>
@@ -124,4 +130,4 @@
     {
         _drawerOpen = !_drawerOpen;
     }
-} // End of Code Block
+}

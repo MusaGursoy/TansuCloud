@@ -573,45 +573,281 @@ curl -X POST http://localhost:8080/db/api/provisioning/tenants \
 
 ### Access SigNoz (Observability)
 
-**Important:** In production (`docker-compose.prod.yml`), SigNoz UI is **NOT exposed** to the host for security reasons. It's only accessible within the Docker network.
+**For 99% of Users (Recommended):**
 
-**For Production (Recommended Approach):**
+Use the **TansuCloud Dashboard** at `http://your-domain.com/dashboard/admin/observability`:
 
-- Use the **TansuCloud Dashboard** at `http://your-domain.com/dashboard/admin/observability`
-- Dashboard embeds SigNoz data via internal API calls (traces, metrics, logs)
-- No direct SigNoz UI access needed for end users
+- ✅ Secure by design - No direct SigNoz UI exposure
+- ✅ User-friendly curated views (Overview, Traces, Logs, Configuration)
+- ✅ Dashboard authenticates with SigNoz API internally
+- ✅ Suitable for production deployments without additional security configuration
 
-**For Development/Debugging Only:**
-If you need direct SigNoz UI access in production (e.g., for deep troubleshooting), you have two options:
+**For Advanced Users (~1% of deployments):**
 
-**Option 1: SSH Tunnel (Recommended for temporary access)**
+If you need deep troubleshooting, custom dashboards, or advanced SigNoz features not yet exposed in the Dashboard UI, you can optionally enable direct access to the full SigNoz UI.
+
+---
+
+#### Option 1: SSH Tunnel (Recommended for temporary access)
+
+**Best for:** Occasional debugging, troubleshooting production issues, creating custom dashboards
 
 ```bash
-# From your local machine, create SSH tunnel to server
+# From your local machine, create SSH tunnel to production server
 ssh -L 3301:localhost:3301 user@your-server.com
 
-# In another terminal on the server, temporarily expose SigNoz
+# On the server, temporarily forward to SigNoz container
 docker run --rm -p 3301:3301 --network tansucloud-network \
   alpine/socat TCP-LISTEN:3301,fork TCP:signoz:8080
 
-# Now access from your local browser: http://localhost:3301
-# Login: admin@your-domain.com / Your SIGNOZ_API_PASSWORD
-# Close tunnel when done
+# Access from local browser: http://localhost:3301
+# Login credentials (from .env):
+#   Email: SIGNOZ_API_EMAIL (e.g., admin@your-domain.com)
+#   Password: SIGNOZ_API_PASSWORD
+# Close tunnel when done (Ctrl+C in both terminals)
 ```
 
-**Option 2: Expose SigNoz Port (Not recommended for production)**
-Edit `docker-compose.prod.yml` and add ports to signoz service:
+**Advantages:**
+
+- ✅ No permanent firewall changes
+- ✅ No configuration file edits required
+- ✅ Automatically secure (requires SSH access)
+- ✅ Easy to enable/disable on demand
+
+---
+
+#### Option 2: Permanent Port Exposure (Development/Staging)
+
+**Best for:** Development environments, staging servers with restricted network access
+
+Edit `docker-compose.yml` (dev) or `docker-compose.prod.yml` (staging):
 
 ```yaml
 signoz:
   profiles: [observability]
   ports:
     - "3301:8080"  # Add this line
+  # ... rest of config unchanged
 ```
 
-Then restart: `docker compose -f docker-compose.prod.yml --profile observability restart signoz`
+Then restart SigNoz:
 
-⚠️ **Security Warning:** Only expose SigNoz UI if protected by firewall/VPN. The Dashboard's embedded observability is the recommended approach for production.
+```bash
+# Development
+docker compose restart signoz
+
+# Staging/Production
+docker compose -f docker-compose.prod.yml --profile observability restart signoz
+```
+
+Access SigNoz UI at:
+
+- Development: `http://127.0.0.1:3301`
+- Staging: `http://staging-server.com:3301`
+
+**⚠️ Production Warning:** If exposing port 3301 in production, you MUST:
+
+1. Configure firewall to restrict access (see firewall rules below)
+2. Use reverse proxy with TLS (see Option 3)
+3. Consider IP allowlisting for additional security
+
+---
+
+#### Option 3: Production with Reverse Proxy (Advanced)
+
+**Best for:** Production environments where multiple advanced users need regular SigNoz UI access
+
+**Step 1: Expose SigNoz port internally only**
+
+In `docker-compose.prod.yml`:
+
+```yaml
+signoz:
+  profiles: [observability]
+  # Do NOT add ports here - keep SigNoz internal
+  # Reverse proxy will access via Docker network
+```
+
+**Step 2: Configure Nginx Reverse Proxy**
+
+```bash
+# Create Nginx configuration
+sudo nano /etc/nginx/sites-available/signoz
+```
+
+Add configuration:
+
+```nginx
+# SigNoz UI (Advanced Users Only)
+server {
+    listen 443 ssl http2;
+    server_name signoz.your-domain.com;
+    
+    # TLS configuration
+    ssl_certificate /etc/letsencrypt/live/your-domain.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/your-domain.com/privkey.pem;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_ciphers HIGH:!aNULL:!MD5;
+    
+    # IP Allowlisting (IMPORTANT FOR SECURITY)
+    # Option A: Allow specific office/VPN network
+    allow 10.0.0.0/8;        # Internal network
+    allow 203.0.113.0/24;    # Office network
+    deny all;
+    
+    # Option B: Or allow specific admin IPs only
+    # allow 203.0.113.5;     # Admin 1
+    # allow 203.0.113.10;    # Admin 2
+    # deny all;
+    
+    # Proxy to SigNoz (internal Docker network)
+    location / {
+        # If nginx is on host, use localhost:
+        # proxy_pass http://localhost:3301;
+        
+        # If nginx is in Docker network:
+        proxy_pass http://signoz:8080;
+        
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        
+        # WebSocket support (for SigNoz live updates)
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+    }
+}
+
+# Redirect HTTP to HTTPS
+server {
+    listen 80;
+    server_name signoz.your-domain.com;
+    return 301 https://$server_name$request_uri;
+}
+```
+
+**Step 3: Enable and test**
+
+```bash
+# Enable site
+sudo ln -s /etc/nginx/sites-available/signoz /etc/nginx/sites-enabled/
+
+# Test configuration
+sudo nginx -t
+
+# Reload Nginx
+sudo systemctl reload nginx
+
+# Obtain SSL certificate (if not already done)
+sudo certbot --nginx -d signoz.your-domain.com
+```
+
+**Step 4: Configure firewall**
+
+```bash
+# Allow HTTPS for SigNoz subdomain
+sudo ufw allow 443/tcp comment "SigNoz HTTPS"
+
+# Verify firewall rules
+sudo ufw status numbered
+```
+
+Access SigNoz at: `https://signoz.your-domain.com`
+
+**Advantages:**
+
+- ✅ HTTPS/TLS encryption
+- ✅ IP-based access control
+- ✅ Centralized authentication (can add HTTP Basic Auth if needed)
+- ✅ Proper subdomain with SSL certificate
+- ✅ WebSocket support for real-time updates
+
+---
+
+#### Firewall Rules for Direct Access
+
+If using Option 2 (permanent port exposure), configure firewall:
+
+```bash
+# Ubuntu/Debian (ufw)
+# Allow only from specific network
+sudo ufw allow from 10.0.0.0/8 to any port 3301 comment "SigNoz UI (internal network only)"
+
+# Or allow from specific IP
+sudo ufw allow from 203.0.113.5 to any port 3301 comment "SigNoz UI (admin IP)"
+
+# CentOS/RHEL/Rocky (firewalld)
+# Create rich rule for IP restriction
+sudo firewall-cmd --permanent --add-rich-rule='rule family="ipv4" source address="10.0.0.0/8" port port="3301" protocol="tcp" accept'
+sudo firewall-cmd --reload
+
+# Verify rules
+sudo ufw status numbered           # Ubuntu/Debian
+sudo firewall-cmd --list-all       # CentOS/RHEL
+```
+
+---
+
+#### When to Use Direct SigNoz UI Access
+
+**✅ Use direct SigNoz UI when you need to:**
+
+- Create custom dashboards with complex PromQL/SQL queries
+- Set up advanced alerts with multi-condition logic
+- Debug OpenTelemetry Collector pipeline configuration
+- Analyze query performance and cardinality issues
+- Configure retention policies beyond governance defaults
+- Access experimental/beta SigNoz features
+- Perform deep-dive trace analysis with custom filters
+- Configure sampling rules for high-traffic services
+
+**❌ You do NOT need direct SigNoz UI for:**
+
+- Viewing service health and request rates (use Dashboard Overview)
+- Browsing distributed traces (use Dashboard Traces page)
+- Checking logs (use Dashboard Logs page - coming soon)
+- Basic alerting (use Dashboard Configuration page)
+- Day-to-day observability (use Dashboard curated views)
+
+---
+
+#### Security Best Practices
+
+**⚠️ CRITICAL SECURITY WARNINGS:**
+
+1. **Never expose SigNoz directly to the public internet**
+   - Observability data can contain sensitive information (API keys, user data, internal architecture, PII)
+   - Always use firewall rules, VPN, or IP allowlisting
+
+2. **Always use HTTPS/TLS in production**
+   - Use nginx/caddy reverse proxy with Let's Encrypt certificates
+   - Never send SigNoz credentials over unencrypted HTTP
+
+3. **Rotate credentials regularly**
+   - Change `SIGNOZ_API_PASSWORD` in `.env` every 90 days
+   - Use password manager to generate strong passwords (12+ characters)
+
+4. **Monitor access logs**
+   - Review nginx/caddy access logs for SigNoz subdomain
+   - Set up alerts for unusual access patterns
+
+5. **Principle of least privilege**
+   - Only enable direct SigNoz access for users who absolutely need it
+   - Consider creating read-only SigNoz users for developers
+
+6. **Audit trail**
+   - SigNoz logs all UI actions - review periodically
+   - Track who has access to SigNoz credentials
+
+**Authentication:**
+
+- Login credentials are defined in `.env`:
+  - Email: `SIGNOZ_API_EMAIL` (default: `admin@your-domain.com`)
+  - Password: `SIGNOZ_API_PASSWORD` (minimum 12 characters with uppercase, lowercase, number, symbol)
+- Credentials are automatically configured by `signoz-init` container on first startup
+- To change password: Edit `.env`, run `docker compose restart signoz-init signoz`
 
 ---
 

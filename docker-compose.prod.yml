@@ -173,7 +173,7 @@ services:
       # Production issuer visible to browsers
       Oidc__Issuer: ${PUBLIC_BASE_URL}/identity/
       # OTLP exporter endpoint - defaults to internal collector when observability profile is active
-      OpenTelemetry__Otlp__Endpoint: ${OTLP_ENDPOINT:-http://signoz-otel-collector:4317}
+      OpenTelemetry__Otlp__Endpoint: ${OTLP_ENDPOINT:-http://otel-collector:4317}
       # Dashboard client credentials
       Oidc__Dashboard__ClientSecret: ${DASHBOARD_CLIENT_SECRET}
       # Optional: override redirect URIs if not derived automatically
@@ -221,7 +221,7 @@ services:
       Oidc__ClientId: tansu-dashboard
       Oidc__ClientSecret: ${DASHBOARD_CLIENT_SECRET}
       # OTLP exporter endpoint - defaults to internal collector when observability profile is active
-      OpenTelemetry__Otlp__Endpoint: ${OTLP_ENDPOINT:-http://signoz-otel-collector:4317}
+      OpenTelemetry__Otlp__Endpoint: ${OTLP_ENDPOINT:-http://otel-collector:4317}
       Cache__Redis: redis:6379
       # Route audit writes via PgCat; override via env in real deployments
       Audit__ConnectionString: "Host=pgcat;Port=6432;Database=postgres;Username=${POSTGRES_USER};Password=${POSTGRES_PASSWORD}"
@@ -272,7 +272,7 @@ services:
       # In production, prefer discovery at the public origin (HTTPS)
       Oidc__MetadataAddress: ${PUBLIC_BASE_URL}/identity/.well-known/openid-configuration
       # OTLP exporter endpoint - defaults to internal collector when observability profile is active
-      OpenTelemetry__Otlp__Endpoint: ${OTLP_ENDPOINT:-http://signoz-otel-collector:4317}
+      OpenTelemetry__Otlp__Endpoint: ${OTLP_ENDPOINT:-http://otel-collector:4317}
       Cache__Redis: redis:6379
       Outbox__RedisConnection: redis:6379
       Outbox__Channel: tansu.outbox
@@ -325,7 +325,7 @@ services:
       # In production, prefer discovery at the public origin (HTTPS)
       Oidc__MetadataAddress: ${PUBLIC_BASE_URL}/identity/.well-known/openid-configuration
       # OTLP exporter endpoint - defaults to internal collector when observability profile is active
-      OpenTelemetry__Otlp__Endpoint: ${OTLP_ENDPOINT:-http://signoz-otel-collector:4317}
+      OpenTelemetry__Otlp__Endpoint: ${OTLP_ENDPOINT:-http://otel-collector:4317}
       Cache__Redis: redis:6379
       Storage__RootPath: /data
       # Consider providing a strong presign secret via environment/secrets manager in real deployments
@@ -371,7 +371,7 @@ services:
       Services__StorageBaseUrl: http://storage:8080
       Services__SigNozBaseUrl: http://signoz:8080
       # OTLP exporter endpoint - defaults to internal collector when observability profile is active
-      OpenTelemetry__Otlp__Endpoint: ${OTLP_ENDPOINT:-http://signoz-otel-collector:4317}
+      OpenTelemetry__Otlp__Endpoint: ${OTLP_ENDPOINT:-http://otel-collector:4317}
       Cache__Redis: redis:6379
       Gateway__TrustForwardedHeaders: "true"
       # Route audit writes via PgCat
@@ -525,10 +525,10 @@ services:
       - ./dev/tools:/tools:ro
     command: ["pwsh", "-NoProfile", "-File", "/tools/signoz-init.ps1", "-SigNozUrl", "http://signoz:8080"]
 
-  signoz-otel-collector:
+  otel-collector:
     profiles: [observability]
-    image: signoz/signoz-otel-collector:latest
-    container_name: signoz-otel-collector
+    image: signoz/otel-collector:latest
+    container_name: otel-collector
     restart: unless-stopped
     deploy:
       resources:
@@ -544,7 +544,7 @@ services:
       - "4317" # OTLP gRPC
       - "4318" # OTLP HTTP
     volumes:
-      - ./dev/signoz-otel-collector-config.yaml:/etc/otel-collector-config.yaml:ro
+      - ./dev/otel-collector-config.yaml:/etc/otel-collector-config.yaml:ro
     depends_on:
       - signoz
       - signoz-schema-migrator-sync
@@ -643,6 +643,74 @@ services:
     networks:
       - tansucloud-network
 
+  # =====================
+  # PGTL Stack - Phase 1: Prometheus Metrics
+  # (SigNoz services above will be removed in Task 47 Phase 6)
+  # =====================
+
+  # OpenTelemetry Collector - Routes telemetry to PGTL stack
+  otel-collector:
+    profiles: [observability]
+    image: otel/opentelemetry-collector-contrib:0.114.0
+    container_name: tansu-otel-collector
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 512M
+    command: ["--config=/etc/otel-collector-config.yaml"]
+    volumes:
+      - ./dev/otel-collector-config.yaml:/etc/otel-collector-config.yaml:ro
+    expose:
+      - "4317" # OTLP gRPC
+      - "4318" # OTLP HTTP
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:13133/"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    depends_on:
+      prometheus:
+        condition: service_started
+    networks:
+      - tansucloud-network
+
+  prometheus:
+    profiles: [observability]
+    image: prom/prometheus:v3.0.1
+    container_name: tansu-prometheus
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 512M
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--storage.tsdb.retention.time=7d'
+      - '--web.console.libraries=/usr/share/prometheus/console_libraries'
+      - '--web.console.templates=/usr/share/prometheus/consoles'
+      - '--web.enable-lifecycle'
+    volumes:
+      - ./dev/prometheus-config.yml:/etc/prometheus/prometheus.yml:ro
+      - tansu-prometheus-data:/prometheus
+    # NOTE: Prometheus is accessible only within the Docker network via http://prometheus:9090
+    # All observability access goes through the Dashboard API - no direct external port exposure
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:9090/-/healthy"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    depends_on:
+      telemetry:
+        condition: service_started
+    networks:
+      - tansucloud-network
+
 
 networks:
   tansucloud-network:
@@ -658,6 +726,8 @@ volumes:
   tansu-gateway-keys:
     driver: local
   tansu-dashboard-keys:
+    driver: local
+  tansu-prometheus-data:
     driver: local
   signoz-clickhouse-data:
     driver: local

@@ -46,251 +46,67 @@ services:
     networks:
       - tansucloud-network
 
-  zookeeper:
-    image: bitnami/zookeeper:latest
-    container_name: signoz-zookeeper
+  # ========================================
+  # PGTL Stack - Phase 1: Prometheus Metrics
+  # ========================================
+  
+  # OpenTelemetry Collector - Routes telemetry to PGTL stack
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.114.0
+    container_name: tansu-otel-collector
     restart: unless-stopped
-    deploy:
-      resources:
-        limits:
-          cpus: "1.0"
-          memory: 2G
-    environment:
-      - ZOO_SERVER_ID=1
-      - ALLOW_ANONYMOUS_LOGIN=yes
-      - ZOO_AUTOPURGE_INTERVAL=1
-      - ZOO_ENABLE_PROMETHEUS_METRICS=yes
-      - ZOO_4LW_COMMANDS_WHITELIST=ruok
-    healthcheck:
-      # Use AdminServer HTTP endpoint for health probing to avoid 4lw TCP restrictions
-      test: ["CMD", "/bin/bash", "-lc", "wget -q -O - http://127.0.0.1:8080/commands/ruok | grep imok"]
-      interval: 30s
-      timeout: 5s
-      retries: 5
-      start_period: 60s  # Allow 1 minute for ZooKeeper startup before marking unhealthy
-    volumes:
-      - signoz-zookeeper-data:/bitnami/zookeeper
-    networks:
-      - tansucloud-network
-
-  clickhouse:
-    image: clickhouse/clickhouse-server:latest
-    container_name: signoz-clickhouse
-    restart: unless-stopped
-    deploy:
-      resources:
-        limits:
-          cpus: "1.0"
-          memory: 2G
-    environment:
-      CLICKHOUSE_DB: signoz
-      CLICKHOUSE_USER: admin
-      CLICKHOUSE_PASSWORD: admin
-    ulimits:
-      nofile:
-        soft: 262144
-        hard: 262144
-    healthcheck:
-      test: ["CMD", "wget", "--spider", "-q", "0.0.0.0:8123/ping"]
-      interval: 30s
-      timeout: 5s
-      retries: 5
-      start_period: 90s  # Allow 90 seconds for ClickHouse startup before marking unhealthy
-    volumes:
-      - signoz-clickhouse-data:/var/lib/clickhouse
-      - ./dev/clickhouse/cluster.xml:/etc/clickhouse-server/config.d/cluster.xml:ro
-      - ./dev/clickhouse/zookeeper.xml:/etc/clickhouse-server/config.d/zookeeper.xml:ro
-    ports:
-      - "8123:8123" # Expose ClickHouse HTTP interface for E2E tests; host port fixed to 8123 for local tooling compatibility
-    depends_on:
-      - zookeeper
-    networks:
-      - tansucloud-network
-
-  # SigNoz UI / query service (exposes the web UI)
-  signoz:
-    image: signoz/signoz:latest
-    container_name: signoz
-    restart: unless-stopped
-    deploy:
-      resources:
-        limits:
-          cpus: "1.0"
-          memory: 2G
-    environment:
-      - SIGNOZ_TELEMETRYSTORE_PROVIDER=clickhouse
-      - SIGNOZ_TELEMETRYSTORE_CLICKHOUSE_DSN=tcp://admin:admin@clickhouse:9000
-      # Enable distributed tables on the single-node cluster named "cluster"
-      - SIGNOZ_TELEMETRYSTORE_CLICKHOUSE_CLUSTER=cluster
-      - SIGNOZ_ALERTMANAGER_PROVIDER=signoz
-      - SIGNOZ_JWT_SECRET=dev-signoz-jwt-secret-change-me
-      # Disable API authentication - safe since SigNoz API is only accessible within Docker network
-      - SIGNOZ_DISABLE_FRONTEND_AUTH=true
-    user: "0:0"
-    # NOTE: SigNoz is accessible only within the Docker network via http://signoz:8080
-    # All observability access goes through the Dashboard API - no direct external port exposure
-    healthcheck:
-      test: ["CMD", "/bin/busybox", "wget", "-q", "-O", "-", "http://localhost:8080/"]
-      interval: 30s
-      timeout: 5s
-      retries: 10
-      start_period: 180s  # Allow 3 minutes for initial startup (ClickHouse connection + migrations) before marking unhealthy
-    depends_on:
-      - clickhouse
-    networks:
-      - tansucloud-network
-    volumes:
-      - signoz-data:/var/lib/signoz
-
-  # SigNoz initialization (automatic admin user registration)
-  signoz-init:
-    image: mcr.microsoft.com/powershell:latest
-    container_name: signoz-init
-    restart: on-failure
     deploy:
       resources:
         limits:
           cpus: "0.5"
-          memory: 256M
-    environment:
-      SIGNOZ_API_EMAIL: ${SIGNOZ_API_EMAIL}
-      SIGNOZ_API_PASSWORD: ${SIGNOZ_API_PASSWORD}
+          memory: 512M
+    command: ["--config=/etc/otel-collector-config.yaml"]
+    volumes:
+      - ./dev/otel-collector-config.yaml:/etc/otel-collector-config.yaml:ro
+    ports:
+      - "4317:4317" # OTLP gRPC
+      - "4318:4318" # OTLP HTTP
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:13133/"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
     depends_on:
-      signoz:
-        condition: service_healthy
+      prometheus:
+        condition: service_started
     networks:
       - tansucloud-network
-    volumes:
-      - ./dev/tools:/tools:ro
-    command: ["pwsh", "-NoProfile", "-File", "/tools/signoz-init.ps1", "-SigNozUrl", "http://signoz:8080"]
-
-  # SigNoz OpenTelemetry collector (receives OTLP from all services)
-  signoz-otel-collector:
-    image: signoz/signoz-otel-collector:latest
-    container_name: signoz-otel-collector
+  
+  prometheus:
+    image: prom/prometheus:v3.0.1
+    container_name: tansu-prometheus
     restart: unless-stopped
     deploy:
       resources:
         limits:
-          cpus: "1.0"
-          memory: 2G
+          cpus: "0.5"
+          memory: 512M
     command:
-      - --config=/etc/otel-collector-config.yaml
-    environment:
-      - OTEL_RESOURCE_ATTRIBUTES=host.name=signoz-host,os.type=linux
-      - LOW_CARDINAL_EXCEPTION_GROUPING=false
-      - POSTGRES_USER=${POSTGRES_USER}
-      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
-    # Expose OTLP endpoints to the host for local tests and readiness checks
-    ports:
-      - "4317:4317" # OTLP gRPC
-      - "4318:4318" # OTLP HTTP
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--storage.tsdb.retention.time=7d'
+      - '--web.console.libraries=/usr/share/prometheus/console_libraries'
+      - '--web.console.templates=/usr/share/prometheus/consoles'
+      - '--web.enable-lifecycle'
     volumes:
-      - ./dev/signoz-otel-collector-config.yaml:/etc/otel-collector-config.yaml:ro
-    depends_on:
-      - signoz
-      - schema-migrator-sync
+      - ./dev/prometheus-config.yml:/etc/prometheus/prometheus.yml:ro
+      - tansu-prometheus-data:/prometheus
+    # NOTE: Prometheus is accessible only within the Docker network via http://prometheus:9090
+    # All observability access goes through the Dashboard API - no direct external port exposure
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:9090/-/healthy"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
     networks:
       - tansucloud-network
-
-  # SigNoz ClickHouse schema migrators (create/update signoz_* databases)
-  schema-migrator-sync:
-    image: signoz/signoz-schema-migrator:latest
-    container_name: signoz-schema-migrator-sync
-    # In single-node dev, run all migrations once and exit successfully.
-    # Avoid --dev to prevent skipping squashed migrations in local runs.
-    command: ["sync", "--dsn=tcp://admin:admin@clickhouse:9000"]
-    restart: on-failure
-    deploy:
-      resources:
-        limits:
-          cpus: "1.0"
-          memory: 2G
-    environment:
-      # Ensure migrator creates distributed_* objects using the same cluster name
-      - SIGNOZ_TELEMETRYSTORE_CLICKHOUSE_CLUSTER=cluster
-    depends_on:
-      clickhouse:
-        condition: service_healthy
-      clickhouse-prepatch:
-        condition: service_completed_successfully
-      clickhouse-compat-init:
-        condition: service_completed_successfully
-    networks:
-      - tansucloud-network
-
-  schema-migrator-async:
-    image: signoz/signoz-schema-migrator:latest
-    container_name: signoz-schema-migrator-async
-    # Background worker; in dev, it can stay running, but should not crash-loop.
-    # Avoid --dev to prevent skipping squashed migrations in local runs.
-    command: ["async", "--dsn=tcp://admin:admin@clickhouse:9000"]
-    restart: on-failure
-    deploy:
-      resources:
-        limits:
-          cpus: "1.0"
-          memory: 2G
-    environment:
-      # Ensure migrator creates distributed_* objects using the same cluster name
-      - SIGNOZ_TELEMETRYSTORE_CLICKHOUSE_CLUSTER=cluster
-    depends_on:
-      clickhouse:
-        condition: service_healthy
-      schema-migrator-sync:
-        condition: service_completed_successfully
-    networks:
-      - tansucloud-network
-
-  # Dev-only prepatch job to create minimal tables/views required by migrator and collector
-  clickhouse-prepatch:
-    image: clickhouse/clickhouse-server:latest
-    container_name: signoz-clickhouse-prepatch
-    restart: on-failure
-    deploy:
-      resources:
-        limits:
-          cpus: "1.0"
-          memory: 1G
-    depends_on:
-      clickhouse:
-        condition: service_healthy
-    networks:
-      - tansucloud-network
-    entrypoint: ["bash","-lc"]
-    volumes:
-      - ./dev/clickhouse/prepatches:/prepatches:ro
-    command:
-      - >-
-        bash /prepatches/run-prepatches.sh
-
-  # Dev-only compatibility init for SigNoz traces API
-  # Ensures the view signoz_traces.distributed_top_level_operations exists, which
-  # some SigNoz query paths rely on for the Services page. Idempotent and safe.
-  clickhouse-compat-init:
-    image: clickhouse/clickhouse-client:latest
-    container_name: signoz-clickhouse-compat-init
-    restart: on-failure
-    deploy:
-      resources:
-        limits:
-          cpus: "1.0"
-          memory: 2G
-    depends_on:
-      clickhouse:
-        condition: service_healthy
-      clickhouse-prepatch:
-        condition: service_completed_successfully
-    networks:
-      - tansucloud-network
-    entrypoint: ["bash","-c"]
-    volumes:
-      - ./dev/clickhouse/patches:/patches:ro
-    command: |
-      set -euo pipefail
-      clickhouse-client --host clickhouse --port 9000 --user admin --password admin -q "CREATE MATERIALIZED VIEW IF NOT EXISTS signoz_traces.root_operations ON CLUSTER cluster AS SELECT DISTINCT name, resource_string_service\$\$name AS serviceName FROM signoz_traces.signoz_index_v3 WHERE parent_span_id = ''"
-      clickhouse-client --host clickhouse --port 9000 --user admin --password admin -q "CREATE MATERIALIZED VIEW IF NOT EXISTS signoz_traces.distributed_top_level_operations ON CLUSTER cluster AS SELECT name, serviceName, toDateTime(timestamp) AS time FROM signoz_traces.distributed_signoz_index_v3 WHERE parent_span_id = '' OR length(parent_span_id) = 0"
-      for f in /patches/*.sql; do echo "Applying patch: $f"; clickhouse-client --host clickhouse --port 9000 --user admin --password admin -n < "$f"; done
 
   redis:
     image: ghcr.io/microsoft/garnet:latest
@@ -392,7 +208,8 @@ services:
       Oidc__Dashboard__ClientSecret: ${DASHBOARD_CLIENT_SECRET:-dev-secret}
       Oidc__Dashboard__PostLogoutRedirectUri: ${PUBLIC_BASE_URL}/dashboard/signout-callback-oidc
       Oidc__Dashboard__PostLogoutRedirectUriRoot: ${PUBLIC_BASE_URL}/signout-callback-oidc
-      OpenTelemetry__Otlp__Endpoint: http://signoz-otel-collector:4317
+      OpenTelemetry__Otlp__Enabled: true
+      OpenTelemetry__Otlp__Endpoint: http://otel-collector:4317
       ConnectionStrings__Default: "Host=pgcat;Port=6432;Database=tansu_identity;Username=${POSTGRES_USER};Password=${POSTGRES_PASSWORD}"
       Cache__Redis: redis:6379
       Audit__ConnectionString: "Host=pgcat;Port=6432;Database=postgres;Username=${POSTGRES_USER};Password=${POSTGRES_PASSWORD}"
@@ -425,7 +242,8 @@ services:
     environment:
       ASPNETCORE_ENVIRONMENT: Development
       PublicBaseUrl: ${PUBLIC_BASE_URL}
-      OpenTelemetry__Otlp__Endpoint: http://signoz-otel-collector:4317
+      OpenTelemetry__Otlp__Enabled: true
+      OpenTelemetry__Otlp__Endpoint: http://otel-collector:4317
       Cache__Redis: redis:6379
       # Route audit writes via PgCat; avoid localhost inside container
       Audit__ConnectionString: "Host=pgcat;Port=6432;Database=postgres;Username=${POSTGRES_USER};Password=${POSTGRES_PASSWORD}"
@@ -434,6 +252,7 @@ services:
       # Advanced users can optionally expose with: ports: ["3301:8080"]
       SigNozQuery__ApiBaseUrl: http://signoz:8080
       SigNozQuery__SigNozUiBaseUrl: http://signoz:8080
+      # SigNoz API authentication (required even with SIGNOZ_DISABLE_FRONTEND_AUTH=true)
       SigNozQuery__Email: ${SIGNOZ_API_EMAIL}
       SigNozQuery__Password: ${SIGNOZ_API_PASSWORD}
       Oidc__Authority: ${PUBLIC_BASE_URL}/identity
@@ -488,7 +307,8 @@ services:
       GatewayBaseUrl: ${GATEWAY_BASE_URL}
       Oidc__Issuer: ${PUBLIC_BASE_URL}/identity/
       Oidc__MetadataAddress: ${GATEWAY_BASE_URL}/identity/.well-known/openid-configuration
-      OpenTelemetry__Otlp__Endpoint: http://signoz-otel-collector:4317
+      OpenTelemetry__Otlp__Enabled: true
+      OpenTelemetry__Otlp__Endpoint: http://otel-collector:4317
       Outbox__RedisConnection: redis:6379
       Outbox__Channel: tansu.outbox
       Outbox__PollSeconds: 2
@@ -540,7 +360,8 @@ services:
       GatewayBaseUrl: ${GATEWAY_BASE_URL}
       Oidc__Issuer: ${PUBLIC_BASE_URL}/identity/
       Oidc__MetadataAddress: ${GATEWAY_BASE_URL}/identity/.well-known/openid-configuration
-      OpenTelemetry__Otlp__Endpoint: http://signoz-otel-collector:4317
+      OpenTelemetry__Otlp__Enabled: true
+      OpenTelemetry__Otlp__Endpoint: http://otel-collector:4317
       Cache__Redis: redis:6379
       # Use a writable path for filesystem-backed storage inside the container
       Storage__RootPath: /data
@@ -576,7 +397,8 @@ services:
           memory: 1G
     environment:
       ASPNETCORE_ENVIRONMENT: Development
-      OpenTelemetry__Otlp__Endpoint: http://signoz-otel-collector:4317
+      OpenTelemetry__Otlp__Enabled: true
+      OpenTelemetry__Otlp__Endpoint: http://otel-collector:4317
       Telemetry__Ingestion__ApiKey: "${TELEMETRY__INGESTION__APIKEY:-dev-telemetry-api-key-1234567890}"
       Telemetry__Admin__ApiKey: "${TELEMETRY__ADMIN__APIKEY:-dev-telemetry-admin-key-9876543210}"
       Telemetry__Database__FilePath: /var/opt/tansu/telemetry/telemetry.db
@@ -592,7 +414,7 @@ services:
       retries: 15
       start_period: 25s
     depends_on:
-      signoz-otel-collector:
+      otel-collector:
         condition: service_started
     networks:
       - tansucloud-network
@@ -621,7 +443,8 @@ services:
       Services__DatabaseBaseUrl: http://db:8080
       Services__StorageBaseUrl: http://storage:8080
       Services__SigNozBaseUrl: http://signoz:8080
-      OpenTelemetry__Otlp__Endpoint: http://signoz-otel-collector:4317
+      OpenTelemetry__Otlp__Enabled: true
+      OpenTelemetry__Otlp__Endpoint: http://otel-collector:4317
       Cache__Redis: redis:6379
       Gateway__TrustForwardedHeaders: "true"
       Dev__ProvisionBypassKey: letmein
@@ -646,7 +469,7 @@ services:
         condition: service_healthy
       storage:
         condition: service_healthy
-      signoz-otel-collector:
+      otel-collector:
         condition: service_started
     networks:
       - tansucloud-network
@@ -666,11 +489,7 @@ volumes:
     driver: local
   tansu-dashboard-keys:
     driver: local
-  signoz-clickhouse-data:
-    driver: local
-  signoz-zookeeper-data:
-    driver: local
-  signoz-data:
+  tansu-prometheus-data:
     driver: local
   tansu-telemetrydata:
     driver: local

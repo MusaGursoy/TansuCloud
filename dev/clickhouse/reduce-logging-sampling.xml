@@ -1,0 +1,21 @@
+<clickhouse>
+    <!-- Reduce system log sampling to 10% in development to minimize overhead -->
+    <!-- Default 100% logging causes continuous memory allocation and log growth -->
+    
+    <profiles>
+        <default>
+            <!-- Keep queries enabled but sample only 10% -->
+            <log_queries>1</log_queries>
+            <log_queries_probability>0.1</log_queries_probability>
+            
+            <!-- Disable processor profiling (heavy overhead, saves ~53MB per 7 hours) -->
+            <log_processors_profiles>0</log_processors_profiles>
+            
+            <!-- Keep profile events for the 10% that are logged -->
+            <log_profile_events>1</log_profile_events>
+            
+            <!-- Still log view queries -->
+            <log_query_views>1</log_query_views>
+        </default>
+    </profiles>
+</clickhouse>

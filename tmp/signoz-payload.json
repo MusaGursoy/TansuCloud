@@ -1,0 +1,23 @@
+{
+  "schemaVersion": "v1",
+  "start": 1762159055237,
+  "end": 1762245455237,
+  "requestType": "raw",
+  "compositeQuery": {
+    "queries": [{
+      "type": "builder_query",
+      "spec": {
+        "name": "A",
+        "signal": "logs",
+        "disabled": false,
+        "aggregations": [],
+        "filter": { "expression": "" },
+        "limit": 100,
+        "offset": 0,
+        "having": { "expression": "" }
+      }
+    }]
+  },
+  "formatOptions": { "formatTableResultForUI": true, "fillGaps": false },
+  "variables": {}
+}

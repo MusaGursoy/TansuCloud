@@ -1,0 +1,100 @@
+# Prometheus configuration for TansuCloud
+# Receives OTLP metrics from services via OpenTelemetry Collector
+# Scrapes Prometheus-native metrics from services
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    cluster: 'tansucloud-dev'
+    environment: 'development'
+
+# Alertmanager configuration (optional, can be added later)
+# alerting:
+#   alertmanagers:
+#     - static_configs:
+#         - targets: []
+
+# Load rules once and periodically evaluate them
+# rule_files:
+#   - "rules/*.yml"
+
+scrape_configs:
+  # Scrape Prometheus itself
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+        labels:
+          service: 'prometheus'
+
+  # Scrape Gateway service
+  - job_name: 'gateway'
+    static_configs:
+      - targets: ['gateway:8080']
+        labels:
+          service: 'gateway'
+    metrics_path: '/metrics'
+    scrape_interval: 30s
+
+  # Scrape Identity service
+  - job_name: 'identity'
+    static_configs:
+      - targets: ['identity:5001']
+        labels:
+          service: 'identity'
+    metrics_path: '/metrics'
+    scrape_interval: 30s
+
+  # Scrape Dashboard service
+  - job_name: 'dashboard'
+    static_configs:
+      - targets: ['dashboard:5002']
+        labels:
+          service: 'dashboard'
+    metrics_path: '/metrics'
+    scrape_interval: 30s
+
+  # Scrape Database service
+  - job_name: 'database'
+    static_configs:
+      - targets: ['db:5003']
+        labels:
+          service: 'database'
+    metrics_path: '/metrics'
+    scrape_interval: 30s
+
+  # Scrape Storage service
+  - job_name: 'storage'
+    static_configs:
+      - targets: ['storage:5004']
+        labels:
+          service: 'storage'
+    metrics_path: '/metrics'
+    scrape_interval: 30s
+
+  # Scrape Telemetry service (OTLP Collector)
+  - job_name: 'telemetry'
+    static_configs:
+      - targets: ['telemetry:8889']
+        labels:
+          service: 'telemetry'
+    metrics_path: '/metrics'
+    scrape_interval: 30s
+
+  # Scrape PostgreSQL exporter (if added later)
+  # - job_name: 'postgres'
+  #   static_configs:
+  #     - targets: ['postgres-exporter:9187']
+  #       labels:
+  #         service: 'postgres'
+
+  # Scrape Redis exporter (if added later)
+  # - job_name: 'redis'
+  #   static_configs:
+  #     - targets: ['redis-exporter:9121']
+  #       labels:
+  #         service: 'redis'
+
+# Remote write configuration (optional, for long-term storage)
+# remote_write:
+#   - url: "http://tempo:9090/api/v1/write"

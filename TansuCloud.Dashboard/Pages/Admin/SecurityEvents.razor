@@ -87,7 +87,7 @@
         {
             error = $"Failed to load security events: {ex.Message}";
         }
-    } // End of Method OnInitializedAsync
+    }
 
     private Color GetEventTypeColor(string eventType)
     {
@@ -98,5 +98,5 @@
             var e when e.Contains("success") || e.Contains("login") || e.Contains("signin") => Color.Success,
             _ => Color.Default
         };
-    } // End of Method GetEventTypeColor
-} // End of Class SecurityEvents
+    }
+}

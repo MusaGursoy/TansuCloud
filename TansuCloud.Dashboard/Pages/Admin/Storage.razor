@@ -242,7 +242,7 @@
     {
         await LoadUsageAsync();
         await LoadBucketsAsync();
-    } // End of Method OnInitializedAsync
+    }
 
     private async Task LoadUsageAsync()
     {
@@ -257,7 +257,7 @@
             }
         }
         catch { /* ignore */ }
-    } // End of Method LoadUsageAsync
+    }
 
     private async Task LoadBucketsAsync()
     {
@@ -281,7 +281,7 @@
             bucketError = ex.Message;
             buckets = new();
         }
-    } // End of Method LoadBucketsAsync
+    }
 
     private async Task CreateBucketAsync()
     {
@@ -306,7 +306,7 @@
         {
             bucketError = ex.Message;
         }
-    } // End of Method CreateBucketAsync
+    }
 
     private async Task DeleteBucketAsync(string bucket)
     {
@@ -326,12 +326,12 @@
         {
             bucketError = ex.Message;
         }
-    } // End of Method DeleteBucketAsync
+    }
 
     private void HandleSelected(InputFileChangeEventArgs e)
     {
         selectedFile = e.FileCount > 0 ? e.File : null;
-    } // End of Method HandleSelected
+    }
 
     private async Task UploadPresignedAsync()
     {
@@ -388,7 +388,7 @@
         {
             objError = ex.Message;
         }
-    } // End of Method UploadPresignedAsync
+    }
 
     private async Task HeadAsync()
     {
@@ -408,7 +408,7 @@
         {
             objError = ex.Message;
         }
-    } // End of Method HeadAsync
+    }
 
     private async Task ListObjectsAsync()
     {
@@ -440,7 +440,7 @@
             objError = ex.Message;
             objItems = new();
         }
-    } // End of Method ListObjectsAsync
+    }
 
     private async Task DeleteObjectAsync(string bucket, string key)
     {
@@ -460,7 +460,7 @@
         {
             objError = ex.Message;
         }
-    } // End of Method DeleteObjectAsync
+    }
 
     // DTOs
     private sealed class PresignReq
@@ -471,29 +471,26 @@
         public int? ExpirySeconds { get; set; }
         public long? MaxBytes { get; set; }
         public string? ContentType { get; set; }
-    } // End of Class PresignReq
-
-    private sealed class PresignResp 
+    }
+private sealed class PresignResp 
     { 
         public string url { get; set; } = string.Empty; 
         public long expires { get; set; } 
-    } // End of Class PresignResp
-
-    private sealed class UsageDto
+    }
+private sealed class UsageDto
     {
         public long totalBytes { get; set; }
         public int objectCount { get; set; }
         public long? maxTotalBytes { get; set; }
         public int? maxObjectCount { get; set; }
         public long? maxObjectSizeBytes { get; set; }
-    } // End of Class UsageDto
-
-    private sealed class ObjectItem
+    }
+private sealed class ObjectItem
     {
         public string Key { get; set; } = string.Empty;
         public string? ETag { get; set; }
         public long Length { get; set; }
         public string? ContentType { get; set; }
         public DateTimeOffset? LastModified { get; set; }
-    } // End of Class ObjectItem
-} // End of Class Storage
+    }
+}

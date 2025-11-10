@@ -12,7 +12,7 @@ namespace TansuCloud.Dashboard.Services;
 
 /// <summary>
 /// Implementation of ISigNozLogsService for querying logs from SigNoz.
-/// Uses SigNoz v3 query_range API for structured log search and filtering.
+/// Uses SigNoz v5 query_range API for structured log search and filtering.
 /// </summary>
 public class SigNozLogsService : ISigNozLogsService
 {
@@ -46,6 +46,7 @@ public class SigNozLogsService : ISigNozLogsService
     {
         try
         {
+            _logger.LogError("===== SEARCH LOGS CALLED =====");
             _logger.LogInformation(
                 "Searching logs: service={Service}, severity={Severity}, search={Search}, time={Start}-{End}",
                 request.ServiceName,
@@ -58,17 +59,29 @@ public class SigNozLogsService : ISigNozLogsService
             var queryPayload = BuildLogSearchQuery(request);
             var jsonPayload = JsonSerializer.Serialize(queryPayload);
 
+            // DEBUG: Log the actual query being sent
+            _logger.LogInformation("Log query payload: {Payload}", jsonPayload);
+
             var httpRequest = await CreateAuthenticatedRequestAsync(
                 HttpMethod.Post,
-                "/api/v3/query_range",
+                "/api/v5/query_range",
                 jsonPayload,
                 cancellationToken
             );
             var response = await _httpClient.SendAsync(httpRequest, cancellationToken);
 
+            // DEBUG: Log response status
+            _logger.LogInformation("Log search response: {StatusCode}", response.StatusCode);
+
+            var responseContent = await response.Content.ReadAsStringAsync(cancellationToken);
+
             if (!response.IsSuccessStatusCode)
             {
-                _logger.LogWarning("Log search failed: {StatusCode}", response.StatusCode);
+                _logger.LogWarning(
+                    "Log search failed: {StatusCode}, Response: {Response}",
+                    response.StatusCode,
+                    responseContent
+                );
                 return new LogSearchResult
                 {
                     Logs = new(),
@@ -77,7 +90,12 @@ public class SigNozLogsService : ISigNozLogsService
                 };
             }
 
-            var responseContent = await response.Content.ReadAsStringAsync(cancellationToken);
+            // DEBUG: Log response content
+            _logger.LogInformation(
+                "Log search response content (first 500 chars): {Content}",
+                responseContent.Length > 500 ? responseContent.Substring(0, 500) : responseContent
+            );
+
             var result = ParseLogSearchResponse(responseContent, request.Limit);
 
             _logger.LogInformation(
@@ -165,29 +183,71 @@ public class SigNozLogsService : ISigNozLogsService
     {
         try
         {
-            _logger.LogInformation("Getting available services from logs");
+            _logger.LogInformation("Getting available services from logs (v5 API)");
 
-            // Query for distinct service names from logs
-            var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() * 1_000_000;
-            var oneHourAgo = now - (3600L * 1_000_000_000);
+            // Use v5 API with groupBy to get distinct service names
+            var now = DateTimeOffset.UtcNow;
+            var oneHourAgo = now.AddHours(-1);
 
-            var request = new LogSearchRequest
+            var queryPayload = new
             {
-                StartTimeNano = oneHourAgo,
-                EndTimeNano = now,
-                Limit = 1000 // Get enough logs to capture all services
+                schemaVersion = "v1",
+                start = oneHourAgo.ToUnixTimeMilliseconds(),
+                end = now.ToUnixTimeMilliseconds(),
+                requestType = "scalar",
+                compositeQuery = new
+                {
+                    queries = new[]
+                    {
+                        new
+                        {
+                            type = "builder_query",
+                            spec = new
+                            {
+                                name = "A",
+                                signal = "logs",
+                                disabled = false,
+                                aggregations = new[] { new { expression = "count()" } },
+                                filter = new { expression = "" },
+                                groupBy = new[]
+                                {
+                                    new { name = "service.name", fieldContext = "resource" }
+                                },
+                                limit = 1000,
+                                having = new { expression = "" }
+                            }
+                        }
+                    }
+                },
+                formatOptions = new { formatTableResultForUI = true, fillGaps = false },
+                variables = new { }
             };
 
-            var result = await SearchLogsAsync(request, cancellationToken);
-            var services = result
-                .Logs.Select(l => l.ServiceName)
-                .Where(s => !string.IsNullOrWhiteSpace(s))
-                .Distinct()
-                .OrderBy(s => s)
-                .ToList();
+            var jsonPayload = JsonSerializer.Serialize(queryPayload);
+            var httpRequest = await CreateAuthenticatedRequestAsync(
+                HttpMethod.Post,
+                "/api/v5/query_range",
+                jsonPayload,
+                cancellationToken
+            );
 
-            _logger.LogInformation("Found {Count} distinct services", services.Count);
-            return services;
+            var response = await _httpClient.SendAsync(httpRequest, cancellationToken);
+            if (!response.IsSuccessStatusCode)
+            {
+                var errorBody = await response.Content.ReadAsStringAsync(cancellationToken);
+                _logger.LogWarning(
+                    "SigNoz get services failed: {StatusCode}, {ErrorBody}",
+                    response.StatusCode,
+                    errorBody
+                );
+                return new List<string>();
+            }
+
+            var jsonResponse = await response.Content.ReadFromJsonAsync<JsonElement>(
+                cancellationToken: cancellationToken
+            );
+
+            return ParseServiceList(jsonResponse);
         }
         catch (Exception ex)
         {
@@ -196,203 +256,163 @@ public class SigNozLogsService : ISigNozLogsService
         }
     } // End of Method GetServicesAsync
 
+    private List<string> ParseServiceList(JsonElement response)
+    {
+        var services = new List<string>();
+
+        try
+        {
+            // V5 API response structure (scalar with groupBy):
+            // { "status": "success", "data": { "data": { "results": [ { "columns": [...], "data": [[...]] } ] } } }
+
+            if (!response.TryGetProperty("data", out var outerData))
+                return services;
+
+            if (!outerData.TryGetProperty("data", out var innerData))
+                return services;
+
+            if (
+                !innerData.TryGetProperty("results", out var results)
+                || results.ValueKind != JsonValueKind.Array
+            )
+                return services;
+
+            foreach (var result in results.EnumerateArray())
+            {
+                // Find the "service.name" column index
+                if (!result.TryGetProperty("columns", out var columns))
+                    continue;
+
+                int serviceNameIndex = -1;
+                int columnIndex = 0;
+                foreach (var column in columns.EnumerateArray())
+                {
+                    if (
+                        column.TryGetProperty("name", out var colName)
+                        && colName.GetString() == "service.name"
+                    )
+                    {
+                        serviceNameIndex = columnIndex;
+                        break;
+                    }
+                    columnIndex++;
+                }
+
+                if (serviceNameIndex < 0)
+                    continue;
+
+                // Extract service names from data arrays
+                if (!result.TryGetProperty("data", out var dataRows))
+                    continue;
+
+                foreach (var dataRow in dataRows.EnumerateArray())
+                {
+                    // Each row is an array: ["service-name", count]
+                    if (dataRow.GetArrayLength() > serviceNameIndex)
+                    {
+                        var serviceNameElement = dataRow[serviceNameIndex];
+                        if (serviceNameElement.ValueKind == JsonValueKind.String)
+                        {
+                            var serviceName = serviceNameElement.GetString();
+                            if (!string.IsNullOrWhiteSpace(serviceName))
+                                services.Add(serviceName);
+                        }
+                    }
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Error parsing service list response (v5)");
+        }
+
+        return services.Distinct().OrderBy(s => s).ToList();
+    } // End of Method ParseServiceList
+
     private object BuildLogSearchQuery(LogSearchRequest request)
     {
-        var filters = new List<object>();
-
-        // Time range filter (required)
-        filters.Add(
-            new
-            {
-                items = new[]
-                {
-                    new
-                    {
-                        key = new
-                        {
-                            key = "timestamp",
-                            dataType = "int64",
-                            type = "tag",
-                            isColumn = true
-                        },
-                        op = ">=",
-                        value = request.StartTimeNano.ToString()
-                    },
-                    new
-                    {
-                        key = new
-                        {
-                            key = "timestamp",
-                            dataType = "int64",
-                            type = "tag",
-                            isColumn = true
-                        },
-                        op = "<=",
-                        value = request.EndTimeNano.ToString()
-                    }
-                },
-                op = "AND"
-            }
-        );
+        // Build filter expression for v5 API
+        var filterParts = new List<string>();
 
         // Service name filter
         if (!string.IsNullOrWhiteSpace(request.ServiceName))
         {
-            filters.Add(
-                new
-                {
-                    items = new[]
-                    {
-                        new
-                        {
-                            key = new
-                            {
-                                key = "service_name",
-                                dataType = "string",
-                                type = "resource"
-                            },
-                            op = "=",
-                            value = request.ServiceName
-                        }
-                    },
-                    op = "AND"
-                }
-            );
+            filterParts.Add($"serviceName = '{request.ServiceName}'");
         }
 
         // Severity filter
         if (!string.IsNullOrWhiteSpace(request.SeverityText))
         {
-            filters.Add(
-                new
-                {
-                    items = new[]
-                    {
-                        new
-                        {
-                            key = new
-                            {
-                                key = "severity_text",
-                                dataType = "string",
-                                type = "tag",
-                                isColumn = true
-                            },
-                            op = "=",
-                            value = request.SeverityText
-                        }
-                    },
-                    op = "AND"
-                }
-            );
+            filterParts.Add($"severity_text = '{request.SeverityText}'");
         }
 
-        // Text search filter
+        // Text search filter (body contains)
         if (!string.IsNullOrWhiteSpace(request.SearchText))
         {
-            filters.Add(
-                new
-                {
-                    items = new[]
-                    {
-                        new
-                        {
-                            key = new
-                            {
-                                key = "body",
-                                dataType = "string",
-                                type = "tag",
-                                isColumn = true
-                            },
-                            op = "contains",
-                            value = request.SearchText
-                        }
-                    },
-                    op = "AND"
-                }
-            );
+            // Escape single quotes in search text
+            var escapedSearch = request.SearchText.Replace("'", "''");
+            filterParts.Add($"body like '%{escapedSearch}%'");
         }
 
         // TraceId filter for correlation
         if (!string.IsNullOrWhiteSpace(request.TraceId))
         {
-            filters.Add(
-                new
-                {
-                    items = new[]
-                    {
-                        new
-                        {
-                            key = new
-                            {
-                                key = "trace_id",
-                                dataType = "string",
-                                type = "tag",
-                                isColumn = true
-                            },
-                            op = "=",
-                            value = request.TraceId
-                        }
-                    },
-                    op = "AND"
-                }
-            );
+            filterParts.Add($"trace_id = '{request.TraceId}'");
         }
 
         // SpanId filter for correlation
         if (!string.IsNullOrWhiteSpace(request.SpanId))
         {
-            filters.Add(
-                new
-                {
-                    items = new[]
-                    {
-                        new
-                        {
-                            key = new
-                            {
-                                key = "span_id",
-                                dataType = "string",
-                                type = "tag",
-                                isColumn = true
-                            },
-                            op = "=",
-                            value = request.SpanId
-                        }
-                    },
-                    op = "AND"
-                }
-            );
+            filterParts.Add($"span_id = '{request.SpanId}'");
         }
 
+        var filterExpression = filterParts.Count > 0 ? string.Join(" AND ", filterParts) : "";
+
+        // Convert nanoseconds to milliseconds for v5 API
+        var startMs = request.StartTimeNano / 1_000_000;
+        var endMs = request.EndTimeNano / 1_000_000;
+
+        // DEBUG: Log time range for troubleshooting
+        _logger.LogInformation(
+            "Building log query: StartNano={StartNano}, EndNano={EndNano}, StartMs={StartMs}, EndMs={EndMs}, Filter='{Filter}'",
+            request.StartTimeNano,
+            request.EndTimeNano,
+            startMs,
+            endMs,
+            filterExpression
+        );
+
+        // v5 API format based on SigNoz error response testing:
+        // For requestType="raw" (list view), orderBy is NOT supported in v5 API
+        // SigNoz error: "unknown field \"orderBy\" in query spec"
         return new
         {
-            start = request.StartTimeNano,
-            end = request.EndTimeNano,
-            step = 60,
+            schemaVersion = "v1",
+            start = startMs,
+            end = endMs,
+            requestType = "raw",
             compositeQuery = new
             {
-                builderQueries = new Dictionary<string, object>
+                queries = new object[]
                 {
-                    ["A"] = new
+                    new
                     {
-                        dataSource = "logs",
-                        queryName = "A",
-                        aggregateOperator = "noop",
-                        aggregateAttribute = new { },
-                        filters = new { items = filters, op = "AND" },
-                        expression = "A",
-                        disabled = false,
-                        limit = request.Limit,
-                        offset = request.Offset,
-                        orderBy = new[]
+                        type = "builder_query",
+                        spec = new
                         {
-                            new { columnName = "timestamp", order = request.OrderBy }
+                            name = "A",
+                            signal = "logs",
+                            disabled = false,
+                            filter = new { expression = filterExpression },
+                            groupBy = new object[] { },
+                            limit = request.Limit,
+                            offset = request.Offset
                         }
                     }
-                },
-                queryType = "builder",
-                panelType = "list"
-            }
+                }
+            },
+            formatOptions = new { formatTableResultForUI = false, fillGaps = false },
+            variables = new { }
         };
     } // End of Method BuildLogSearchQuery
 
@@ -403,12 +423,42 @@ public class SigNozLogsService : ISigNozLogsService
             using var doc = JsonDocument.Parse(responseContent);
             var root = doc.RootElement;
 
+            // DEBUG: Log response structure (using Warning level to ensure visibility)
+            _logger.LogWarning("=== LOG SEARCH RESPONSE STRUCTURE ===");
+            _logger.LogWarning(
+                "Response JSON (first 1000 chars): {Content}",
+                responseContent.Length > 1000 ? responseContent.Substring(0, 1000) : responseContent
+            );
+
+            var hasData = root.TryGetProperty("data", out var data);
+            _logger.LogWarning("Response has 'data': {HasData}", hasData);
+
+            if (hasData)
+            {
+                var hasResult = data.TryGetProperty("result", out var resultProp);
+                _logger.LogWarning(
+                    "Data has 'result': {HasResult}, length: {Length}",
+                    hasResult,
+                    hasResult ? resultProp.GetArrayLength() : 0
+                );
+
+                if (hasResult && resultProp.GetArrayLength() > 0)
+                {
+                    var first = resultProp[0];
+                    _logger.LogWarning(
+                        "First result has keys: {Keys}",
+                        string.Join(", ", first.EnumerateObject().Select(p => p.Name))
+                    );
+                }
+            }
+
             if (
-                !root.TryGetProperty("data", out var data)
+                !root.TryGetProperty("data", out data)
                 || !data.TryGetProperty("result", out var result)
                 || result.GetArrayLength() == 0
             )
             {
+                _logger.LogWarning("Response missing data/result or empty result array");
                 return new LogSearchResult
                 {
                     Logs = new(),
@@ -418,8 +468,12 @@ public class SigNozLogsService : ISigNozLogsService
             }
 
             var firstResult = result[0];
-            if (!firstResult.TryGetProperty("list", out var list))
+            
+            // v5 API returns logs in 'table' structure for raw queries
+            if (!firstResult.TryGetProperty("table", out var tableData))
             {
+                _logger.LogWarning("Response missing 'table' property. Available keys: {Keys}",
+                    string.Join(", ", firstResult.EnumerateObject().Select(p => p.Name)));
                 return new LogSearchResult
                 {
                     Logs = new(),
@@ -428,13 +482,55 @@ public class SigNozLogsService : ISigNozLogsService
                 };
             }
 
-            var logs = new List<Models.LogEntry>();
-            foreach (var item in list.EnumerateArray())
+            _logger.LogWarning("Table structure - ValueKind: {Kind}, Properties: {Props}",
+                tableData.ValueKind,
+                string.Join(", ", tableData.EnumerateObject().Select(p => $"{p.Name}={p.Value.ValueKind}")));
+
+            // Table should have 'columns' and 'rows'
+            if (!tableData.TryGetProperty("columns", out var columns) ||
+                !tableData.TryGetProperty("rows", out var rows))
             {
-                var logEntry = ParseLogEntry(item);
-                if (logEntry != null)
+                _logger.LogWarning("Table missing columns or rows");
+                return new LogSearchResult
                 {
-                    logs.Add(logEntry);
+                    Logs = new(),
+                    Total = 0,
+                    HasMore = false
+                };
+            }
+
+            _logger.LogWarning("Found {ColumnCount} columns and {RowCount} rows",
+                columns.GetArrayLength(), rows.GetArrayLength());
+
+            // Build column name to index mapping
+            var columnMap = new Dictionary<string, int>();
+            var columnIndex = 0;
+            foreach (var col in columns.EnumerateArray())
+            {
+                if (col.TryGetProperty("name", out var nameElement))
+                {
+                    columnMap[nameElement.GetString() ?? ""] = columnIndex;
+                }
+                columnIndex++;
+            }
+
+            _logger.LogWarning("Column mapping: {Columns}",
+                string.Join(", ", columnMap.Select(kvp => $"{kvp.Key}={kvp.Value}")));
+
+            var logs = new List<Models.LogEntry>();
+            foreach (var row in rows.EnumerateArray())
+            {
+                try
+                {
+                    var logEntry = ParseTableRow(row, columnMap);
+                    if (logEntry != null)
+                    {
+                        logs.Add(logEntry);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "Error parsing table row");
                 }
             }
 
@@ -461,8 +557,87 @@ public class SigNozLogsService : ISigNozLogsService
                 Total = 0,
                 HasMore = false
             };
-        }
+        };
     } // End of Method ParseLogSearchResponse
+
+    private Models.LogEntry? ParseTableRow(JsonElement row, Dictionary<string, int> columnMap)
+    {
+        try
+        {
+            // Extract values from row array using column mapping
+            var GetValue = (string columnName) =>
+            {
+                if (columnMap.TryGetValue(columnName, out var index) && index < row.GetArrayLength())
+                {
+                    return row[index];
+                }
+                return default(JsonElement);
+            };
+
+            // Extract timestamp
+            var timestampNano = 0L;
+            var tsElement = GetValue("timestamp");
+            if (tsElement.ValueKind == JsonValueKind.String)
+            {
+                long.TryParse(tsElement.GetString(), out timestampNano);
+            }
+            else if (tsElement.ValueKind == JsonValueKind.Number)
+            {
+                timestampNano = tsElement.GetInt64();
+            }
+
+            // Extract body
+            var bodyElement = GetValue("body");
+            var body = bodyElement.ValueKind == JsonValueKind.String ? bodyElement.GetString() ?? "" : "";
+
+            // Extract severity
+            var sevTextElement = GetValue("severity_text");
+            var severityText = sevTextElement.ValueKind == JsonValueKind.String ? sevTextElement.GetString() ?? "INFO" : "INFO";
+            
+            var sevNumElement = GetValue("severity_number");
+            var severityNumber = sevNumElement.ValueKind == JsonValueKind.Number ? sevNumElement.GetInt32() : 9;
+
+            // Extract service name
+            var serviceName = "";
+            var resourcesElement = GetValue("resources_string");
+            if (resourcesElement.ValueKind == JsonValueKind.Object)
+            {
+                if (resourcesElement.TryGetProperty("service.name", out var serviceNameElement))
+                {
+                    serviceName = serviceNameElement.GetString() ?? "";
+                }
+            }
+
+            // Extract trace/span IDs
+            var traceIdElement = GetValue("trace_id");
+            var traceId = traceIdElement.ValueKind == JsonValueKind.String ? traceIdElement.GetString() : null;
+            
+            var spanIdElement = GetValue("span_id");
+            var spanId = spanIdElement.ValueKind == JsonValueKind.String ? spanIdElement.GetString() : null;
+
+            // Generate log ID
+            var id = $"{timestampNano}_{serviceName}_{severityText}";
+
+            return new Models.LogEntry
+            {
+                Id = id,
+                TimestampNano = timestampNano,
+                Body = body,
+                SeverityText = severityText,
+                SeverityNumber = severityNumber,
+                ServiceName = serviceName,
+                TraceId = traceId,
+                SpanId = spanId,
+                ResourceAttributes = new Dictionary<string, string>(),
+                Attributes = new Dictionary<string, JsonElement>()
+            };
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error parsing table row");
+            return null;
+        }
+    } // End of Method ParseTableRow
 
     private Models.LogEntry? ParseLogEntry(JsonElement item)
     {

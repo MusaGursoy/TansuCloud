@@ -9,6 +9,7 @@
 - [ ] [44) BaaS Authentication - Per-Tenant Identity (Complete Isolation)](#task-44-baas-authentication-per-tenant-identity)
 - [ ] [45) Serverless Functions Service](#task-45-serverless-functions-service)
 - [ ] [46) Database Access Patterns - Direct PostgreSQL + Quota Management](#task-46-database-access-patterns-direct-postgresql-quota-management)
+- [ ] [47) Migration from SigNoz to PGTL Stack (Prometheus + Grafana + Tempo + Loki)](#task-47-migration-from-signoz-to-pgtl-stack)
 
 ---
 
@@ -1600,5 +1601,1117 @@ Unlike long-running services (Database, Gateway, Dashboard, Storage, Identity) t
 ---
 
 **Status**: Task 46 created — Documentation ✅ COMPLETED, Implementation PENDING ✅
+
+---
+
+### Task 47: Migration from SigNoz to PGTL Stack (Prometheus + Grafana + Tempo + Loki) {#task-47-migration-from-signoz-to-pgtl-stack}
+
+**Status**: DRAFT — Awaiting approval  
+**Decision Date**: 2025-11-10  
+**Owner**: TBD  
+**Priority**: HIGH  
+**Dependencies**: Task 8 (OpenTelemetry baseline), Task 19 (Observability pages), Task 36 (SigNoz dashboards), Task 39 (Instrumentation hardening)
+
+**Purpose**: Replace SigNoz with the PGTL stack (Prometheus + Grafana + Tempo + Loki) for unified observability. Address upstream SigNoz schema compatibility issues blocking data persistence. Provide a production-ready, resource-efficient observability solution integrated with TansuCloud Dashboard's Admin UI as the primary interface.
+
+**Background**: SigNoz v0.99.0 has persistent schema incompatibility between collector and ClickHouse (documented in `docs/SigNoz-Schema-Compatibility-Issue.md`). Multiple attempts to resolve via version pinning, volume cleanup, and schema patches have failed. The PGTL stack offers:
+
+- **Proven stability**: Netflix (Tempo/Loki), Shopify (Prometheus), thousands of production deployments
+- **Vendor-neutral**: OpenTelemetry OTLP protocol works with all PGTL components
+- **Resource efficiency**: Specialized components (vs. SigNoz's all-in-one ClickHouse)
+- **TansuCloud Storage integration**: Tempo and Loki can use existing Storage service for object storage
+
+**Current state gaps**:
+
+- ❌ SigNoz unable to persist traces/metrics/logs due to ClickHouse schema mismatch
+- ❌ Dashboard observability pages show empty data (no ClickHouse data)
+- ❌ Dashboard integration tightly coupled to SigNoz REST APIs (3 services: ISigNozQueryService, ISigNozTracesService, ISigNozLogsService)
+- ❌ No retention management (SigNoz governance.dev.json unused)
+- ❌ No sampling controls for logs/traces
+- ❌ Resource overhead: SigNoz stack (4 containers: signoz, collector, ClickHouse, ZooKeeper) uses ~8GB memory
+
+**Target state (PGTL-ready)**:
+
+- ✅ Prometheus for metrics (local TSDB, 7-day retention)
+- ✅ Grafana for visualization and dashboards (PostgreSQL backend, reuse tansu-postgres)
+- ✅ Tempo for distributed tracing (TansuCloud Storage service for traces)
+- ✅ Loki for log aggregation (TansuCloud Storage service for log chunks)
+- ✅ Dashboard Admin UI remains primary interface (new IPrometheusQueryService, ITempoTracesService, ILokiLogsService)
+- ✅ Optional direct access to Grafana UI (internal Docker network only, documented for advanced users)
+- ✅ Resource-efficient: Target <4GB total memory for PGTL stack (vs. 8GB for SigNoz)
+- ✅ Retention management: Admin Dashboard UI controls (7-day default, configurable via UI)
+- ✅ Sampling controls: Admin Dashboard UI for logs/traces sampling percentages
+- ✅ All PGTL services internal-only (no exposed host ports by default)
+
+**Design decisions**:
+
+1. **Storage strategy**:
+   - Prometheus: Local TSDB (`prometheus-data` volume), 7-day retention
+   - Grafana: PostgreSQL database (reuse `tansu-postgres` with `grafana` database)
+   - Tempo: TansuCloud Storage service (`/observability/tempo/` prefix) for trace blocks
+   - Loki: TansuCloud Storage service (`/observability/loki/` prefix) for log chunks, local BoltDB for index
+
+2. **Retention and sampling**:
+   - Default retention: 7 days (all components)
+   - Configurable via Dashboard Admin UI: `/admin/observability/config`
+   - Sampling: Logs 100% (no sampling by default), Traces 100% (adjustable for high-volume tenants)
+   - Dashboard UI persists settings in `tansu_identity` database (new `ObservabilitySettings` table)
+
+3. **Resource limits** (docker-compose):
+   - Prometheus: 512MB memory, 0.5 CPU
+   - Grafana: 256MB memory, 0.5 CPU
+   - Tempo: 1GB memory, 1 CPU (handles trace ingestion + queries)
+   - Loki: 1GB memory, 1 CPU (handles log ingestion + queries)
+   - Total: ~3GB (vs. SigNoz 8GB)
+
+4. **Network and access**:
+   - All PGTL services internal Docker network only (no host ports exposed by default)
+   - Dashboard Admin UI is primary interface (99% of users)
+   - Advanced users can optionally expose Grafana UI (documented in `Guide-For-Admins-and-Tenants.md`)
+   - Grafana access via Gateway reverse proxy: `/grafana/*` → `http://grafana:3000` (optional, disabled by default)
+
+5. **Docker image versions** (for docker-compose.prod.yml):
+   - Prometheus: `prom/prometheus:v3.0.1` (latest stable, Nov 2025 - major version with improved OTLP support)
+   - Grafana: `grafana/grafana:11.3.1` (latest stable, Nov 2025)
+   - Tempo: `grafana/tempo:2.6.1` (latest stable, Nov 2025)
+   - Loki: `grafana/loki:3.3.1` (latest stable, Nov 2025)
+   - OpenTelemetry Collector: `otel/opentelemetry-collector-contrib:0.114.0` (latest stable, Nov 2025)
+   - Dev (docker-compose.yml): Use `:latest` tags for fast iteration
+
+6. **Database initialization** (requirement #2):
+   - Grafana requires PostgreSQL schema initialization
+   - Leverage **TansuCloud.Database** service provisioning API to create `grafana` database
+   - Provisioning endpoint: `POST /db/api/provisioning/databases` with `{ "databaseName": "grafana", "purpose": "observability" }`
+   - Database created automatically on first Grafana startup via init script
+   - No manual SQL required - Grafana auto-creates tables on first connection
+   - Other PGTL components (Prometheus, Tempo, Loki) are schema-less (use filesystem/object storage)
+
+7. **Grafana dashboard embedding** (requirement #3):
+   - ✅ **Yes, we can embed Grafana dashboards in TansuCloud Admin Dashboard**
+   - Implementation via **Grafana iframe embedding** with authentication:
+     - Grafana anonymous access mode: `GF_AUTH_ANONYMOUS_ENABLED=true` with `viewer` role
+     - TansuCloud Dashboard Admin pages embed Grafana dashboards via `<iframe src="http://grafana:3000/d/{dashboardId}?kiosk">`
+     - Kiosk mode hides Grafana UI chrome (navigation, menus) for seamless embedding
+   - **Dashboard pages**:
+     - `/admin/observability` (Overview): Embed "TansuCloud System Overview" dashboard
+     - `/admin/observability/services`: Embed "Service Health" dashboard with `var-service={serviceName}` filter
+     - `/admin/observability/infrastructure`: Embed "Infrastructure Metrics" dashboard
+   - **Security**: Grafana on internal Docker network only, iframe accessible from Dashboard backend
+   - **Alternative approach** (more work, better UX): Query Prometheus/Tempo/Loki APIs directly from Dashboard and render charts with MudBlazor/ChartJS (like current SigNoz integration)
+   - **Recommendation**: Start with iframe embedding (Phase 4), migrate to native API queries in Phase 5 if needed
+
+---
+
+#### Phase 1: Prometheus Metrics Migration (1-2 weeks)
+
+**Goal**: Replace SigNoz metrics with Prometheus, update Dashboard to query Prometheus API.
+
+**Subtasks**:
+
+1. **Deploy Prometheus with OTLP receiver** (2 days)
+   - Add `prometheus` service to `docker-compose.yml` and `docker-compose.prod.yml`
+   - Image: `prom/prometheus:latest` (dev), `prom/prometheus:v3.0.1` (prod)
+   - Config: `dev/prometheus-config.yml` with OTLP receiver (port 4317/4318) and scrape jobs
+   - Scrape jobs:
+     - Existing: `postgres-exporter:9187`, `redis-exporter:9121`, `pgcat:9930`
+     - New: Prometheus self-monitoring `:9090/metrics`
+   - Storage: `prometheus-data` volume, 7-day retention (`--storage.tsdb.retention.time=7d`)
+   - Resources: `memory: 512M`, `cpus: 0.5`
+   - Health check: `wget --spider -q http://localhost:9090/-/healthy`
+   - Network: `tansucloud-network` internal only (no exposed ports by default)
+
+2. **Update all services to export metrics to Prometheus** (1 day)
+   - Change `OpenTelemetry__Otlp__Endpoint` from `http://signoz-otel-collector:4317` to `http://prometheus:4317`
+   - Verify: All 5 services (Gateway, Identity, Dashboard, Database, Storage) export metrics
+   - Test: Check Prometheus UI (internal) at `http://prometheus:9090/targets` shows all services "UP"
+
+3. **Implement IPrometheusQueryService** (3 days)
+   - New interface: `IPrometheusQueryService` in `TansuCloud.Dashboard/Observability/Prometheus/`
+   - Methods:
+     - `Task<PrometheusQueryResult> QueryAsync(string promQL, DateTime? time = null)`
+     - `Task<PrometheusRangeQueryResult> QueryRangeAsync(string promQL, DateTime start, DateTime end, string step)`
+     - `Task<List<PrometheusTarget>> GetTargetsAsync()` (scrape target health)
+     - `Task<List<string>> GetMetricNamesAsync()` (metadata)
+   - Implementation: `PrometheusQueryService` with HttpClient, HybridCache (2-5 min TTL), circuit breaker
+   - DTOs: `PrometheusQueryResult`, `PrometheusMetric`, `PrometheusValue`, `PrometheusTarget`
+   - Error handling: Graceful degradation, log errors, return empty results
+
+4. **Update ObservabilityOverview.razor for Prometheus** (3 days)
+   - Replace `ISigNozQueryService` with `IPrometheusQueryService`
+   - Update PromQL queries:
+     - Service health: `up{service_name=~"tansu.*"}`
+     - Error rate: `sum(rate(http_server_request_duration_count{http_response_status_code=~"5.."}[5m])) by (service_name)`
+     - Latency p95: `histogram_quantile(0.95, sum(rate(http_server_request_duration_bucket[5m])) by (service_name, le))`
+     - Throughput: `sum(rate(http_server_request_duration_count[5m])) by (service_name)`
+   - Update service cards: Keep existing MudCard layout, change data source only
+   - Test: Dashboard shows correct metrics from Prometheus
+
+5. **Add Prometheus health check to Dashboard** (1 day)
+   - Add Prometheus readiness check in Dashboard startup
+   - Verify Prometheus `/api/v1/query` endpoint is reachable
+   - Fail gracefully if Prometheus unavailable (show warning banner on observability pages)
+
+6. **Update documentation** (1 day)
+   - Update `Guide-For-Admins-and-Tenants.md` section 6.5: Observability (Admin)
+   - Document: Prometheus replaces SigNoz for metrics, internal-only access, 7-day retention
+   - Remove SigNoz references from metrics sections
+
+**Acceptance criteria**:
+
+- ✅ Prometheus deployed in both dev and prod compose files
+- ✅ All 5 services export metrics to Prometheus via OTLP
+- ✅ Dashboard ObservabilityOverview page shows metrics from Prometheus (no SigNoz dependency)
+- ✅ Prometheus targets page shows all services + exporters healthy
+- ✅ No regressions: Existing E2E tests pass (DashboardMetricsSmoke, HealthEndpointsE2E)
+- ✅ Prometheus uses <512MB memory (verified via `docker stats`)
+- ✅ Documentation updated
+
+**Tests**:
+
+```csharp
+// TansuCloud.E2E.Tests/PrometheusMetricsE2E.cs
+[Fact]
+public async Task Prometheus_Receives_Metrics_From_All_Services()
+{
+    var services = new[] { "tansu-gateway", "tansu-identity", "tansu-dashboard", "tansu-db", "tansu-storage" };
+    
+    foreach (var service in services)
+    {
+        var query = $"up{{service_name=\"{service}\"}}";
+        var result = await PrometheusQuery(query);
+        Assert.Contains(result.Data.Result, m => m.Value[1] == "1"); // UP
+    }
+}
+
+[Fact]
+public async Task Dashboard_Observability_Overview_Shows_Prometheus_Metrics()
+{
+    await LoginAsAdmin();
+    await NavigateTo("/admin/observability");
+    
+    // Wait for service cards to load
+    await WaitForElement("[data-testid='service-card-gateway']");
+    
+    // Verify error rate, latency, throughput displayed
+    var errorRate = await GetText("[data-testid='service-card-gateway'] [data-testid='error-rate']");
+    Assert.NotEmpty(errorRate);
+}
+```
+
+---
+
+#### Phase 2: Tempo Traces Migration (2-3 weeks)
+
+**Goal**: Replace SigNoz traces with Tempo, integrate with TansuCloud Storage service.
+
+**Subtasks**:
+
+1. **Deploy Tempo with Storage service backend** (3 days)
+   - Add `tempo` service to `docker-compose.yml` and `docker-compose.prod.yml`
+   - Image: `grafana/tempo:latest` (dev), `grafana/tempo:2.6.0` (prod)
+   - Config: `dev/tempo-config.yml` with:
+     - Receiver: OTLP gRPC (4317) and HTTP (4318)
+     - Storage: TansuCloud Storage service backend
+       - Backend type: `s3` (Storage service is S3-compatible)
+       - Endpoint: `http://storage:8080` (internal Docker network)
+       - Bucket: `observability-tempo`
+       - Prefix: `/traces/`
+       - Access: Use internal service-to-service auth (no public S3 credentials needed)
+     - Query: TraceQL enabled
+   - Resources: `memory: 1G`, `cpus: 1`
+   - Health check: `wget --spider -q http://localhost:3200/ready`
+   - Network: `tansucloud-network` internal only
+
+2. **Create observability bucket in Storage service** (1 day)
+   - Update Storage service provisioning to auto-create `observability-tempo` bucket on startup
+   - Set lifecycle: 7-day retention (delete traces older than 7 days)
+   - Internal-only: No tenant access (admin-owned bucket)
+
+3. **Update all services to export traces to Tempo** (1 day)
+   - Change `OpenTelemetry__Otlp__Endpoint` to `http://tempo:4317` (traces only, metrics stay in Prometheus)
+   - OR: Use OpenTelemetry Collector to route traces to Tempo, metrics to Prometheus (preferred)
+   - Verify: Traces appear in Tempo query API
+
+4. **Deploy OpenTelemetry Collector (optional but recommended)** (2 days)
+   - Add `otel-collector` service to route telemetry:
+     - Receivers: OTLP gRPC (4317), OTLP HTTP (4318)
+     - Exporters:
+       - Metrics → Prometheus OTLP receiver
+       - Traces → Tempo OTLP receiver
+       - Logs → Loki (Phase 3)
+     - Processors: Batch, resource detection, sampling (configurable)
+   - Image: `otel/opentelemetry-collector-contrib:latest` (dev), `otel/opentelemetry-collector-contrib:0.111.0` (prod)
+   - Config: `dev/otel-collector-config.yaml`
+   - All services point to collector: `http://otel-collector:4317`
+   - Resources: `memory: 512M`, `cpus: 0.5`
+
+5. **Implement ITempoTracesService** (4 days)
+   - New interface: `ITempoTracesService` in `TansuCloud.Dashboard/Observability/Tempo/`
+   - Methods:
+     - `Task<TempoTraceSearchResult> SearchTracesAsync(TempoSearchFilters filters)`
+     - `Task<TempoTrace> GetTraceByIdAsync(string traceId)`
+     - `Task<List<string>> GetServicesAsync()`
+   - Filters: Service, min/max duration, status (OK/ERROR), time range, TraceQL query
+   - Implementation: TraceQL queries via Tempo `/api/search` and `/api/traces/{traceId}` endpoints
+   - DTOs: `TempoTrace`, `TempoSpan`, `TempoSearchFilters`, `TempoSearchResult`
+   - Cache: HybridCache with 5-10 min TTL for traces (immutable once complete)
+
+6. **Update Traces.razor page for Tempo** (3 days)
+   - Replace `ISigNozTracesService` with `ITempoTracesService`
+   - Update UI: Keep existing MudBlazor layout (search filters, results table, span tree dialog)
+   - TraceQL support: Add "Advanced Query" text box for custom TraceQL (optional, for power users)
+   - Test: Trace search, trace detail view, span attributes, waterfall visualization (tree view)
+
+7. **Add Tempo health check to Dashboard** (1 day)
+   - Verify Tempo `/ready` endpoint before rendering Traces page
+   - Graceful degradation: Show error banner if Tempo unavailable
+
+8. **Update documentation** (1 day)
+   - Update `Guide-For-Admins-and-Tenants.md` section 6.6: Observability Traces
+   - Document: Tempo replaces SigNoz for traces, Storage service backend, 7-day retention
+
+**Acceptance criteria**:
+
+- ✅ Tempo deployed with TansuCloud Storage service backend
+- ✅ All services export traces to Tempo (via collector or direct)
+- ✅ Dashboard Traces page shows traces from Tempo (no SigNoz dependency)
+- ✅ Trace search filters work (service, duration, status, time range)
+- ✅ Trace detail view shows span tree with attributes
+- ✅ Storage service contains trace data in `observability-tempo` bucket
+- ✅ Tempo uses <1GB memory (verified via `docker stats`)
+- ✅ No regressions: Existing E2E tests pass
+- ✅ Documentation updated
+
+**Tests**:
+
+```csharp
+// TansuCloud.E2E.Tests/TempoTracesE2E.cs
+[Fact]
+public async Task Tempo_Receives_Traces_From_All_Services()
+{
+    // Trigger trace by making a request through Gateway → Database
+    var response = await HttpClient.GetAsync("/db/health/ready");
+    response.EnsureSuccessStatusCode();
+    
+    await Task.Delay(5000); // Wait for trace to be ingested
+    
+    // Query Tempo for traces from tansu-gateway
+    var traces = await TempoSearchTraces(service: "tansu-gateway", lookbackMinutes: 5);
+    Assert.NotEmpty(traces);
+}
+
+[Fact]
+public async Task Dashboard_Traces_Page_Shows_Tempo_Data()
+{
+    await LoginAsAdmin();
+    await NavigateTo("/admin/observability/traces");
+    
+    // Wait for traces table to load
+    await WaitForElement("[data-testid='traces-table']");
+    
+    // Verify at least one trace displayed
+    var traceCount = await GetElementCount("[data-testid='trace-row']");
+    Assert.True(traceCount > 0);
+}
+```
+
+---
+
+#### Phase 3: Loki Logs Migration (2-3 weeks)
+
+**Goal**: Replace SigNoz logs with Loki, integrate with TansuCloud Storage service.
+
+**Subtasks**:
+
+1. **Deploy Loki with Storage service backend** (3 days)
+   - Add `loki` service to `docker-compose.yml` and `docker-compose.prod.yml`
+   - Image: `grafana/loki:latest` (dev), `grafana/loki:3.2.0` (prod)
+   - Config: `dev/loki-config.yml` with:
+     - Receiver: OTLP HTTP (4318)
+     - Storage:
+       - Chunks: TansuCloud Storage service (S3-compatible)
+         - Endpoint: `http://storage:8080`
+         - Bucket: `observability-loki`
+         - Prefix: `/chunks/`
+       - Index: Local BoltDB (`/loki/index` volume) for fast queries
+     - Retention: 7 days (delete chunks older than 7 days)
+     - Limits: `max_query_series: 500`, `max_query_lookback: 7d`
+   - Resources: `memory: 1G`, `cpus: 1`
+   - Health check: `wget --spider -q http://localhost:3100/ready`
+   - Network: `tansucloud-network` internal only
+
+2. **Create observability bucket for Loki** (1 day)
+   - Update Storage service provisioning to auto-create `observability-loki` bucket
+   - Set lifecycle: 7-day retention (delete log chunks older than 7 days)
+   - Internal-only: No tenant access
+
+3. **Update OpenTelemetry Collector to route logs to Loki** (1 day)
+   - Update `otel-collector-config.yaml`:
+     - Receivers: OTLP (existing)
+     - Exporters: Add Loki OTLP exporter (`otlphttp/loki` → `http://loki:4318`)
+     - Pipelines: `logs` pipeline → Loki exporter
+   - Verify: Logs appear in Loki via LogQL queries
+
+4. **Implement ILokiLogsService** (4 days)
+   - New interface: `ILokiLogsService` in `TansuCloud.Dashboard/Observability/Loki/`
+   - Methods:
+     - `Task<LokiLogSearchResult> SearchLogsAsync(LokiSearchFilters filters)`
+     - `Task<LokiLog> GetLogByIdAsync(string id)` (if Loki supports, else remove)
+     - `Task<List<string>> GetLogFieldsAsync()` (labels)
+     - `Task<List<string>> GetServicesAsync()` (unique service names)
+   - Filters: Service, severity (TRACE/DEBUG/INFO/WARN/ERROR/FATAL), time range, full-text search
+   - Implementation: LogQL queries via Loki `/loki/api/v1/query_range` endpoint
+   - DTOs: `LokiLog`, `LokiStream`, `LokiSearchFilters`, `LokiSearchResult`
+   - Cache: HybridCache with 1-2 min TTL (logs change frequently)
+
+5. **Update Logs.razor page for Loki** (3 days)
+   - Replace `ISigNozLogsService` with `ILokiLogsService`
+   - Update UI: Keep existing MudBlazor layout (search filters, results table, detail dialog)
+   - LogQL support: Add "Advanced Query" text box for custom LogQL (optional)
+   - Test: Log search, log detail view, trace correlation, pagination
+
+6. **Add Loki health check to Dashboard** (1 day)
+   - Verify Loki `/ready` endpoint before rendering Logs page
+   - Graceful degradation: Show error banner if Loki unavailable
+
+7. **Update documentation** (1 day)
+   - Update `Guide-For-Admins-and-Tenants.md` section 6.7: Observability Logs
+   - Document: Loki replaces SigNoz for logs, Storage service backend, 7-day retention
+
+**Acceptance criteria**:
+
+- ✅ Loki deployed with TansuCloud Storage service backend
+- ✅ All services export logs to Loki (via OpenTelemetry Collector)
+- ✅ Dashboard Logs page shows logs from Loki (no SigNoz dependency)
+- ✅ Log search filters work (service, severity, time range, full-text)
+- ✅ Log detail view shows full message, attributes, trace correlation
+- ✅ Storage service contains log chunks in `observability-loki` bucket
+- ✅ Loki uses <1GB memory (verified via `docker stats`)
+- ✅ No regressions: Existing E2E tests pass
+- ✅ Documentation updated
+
+**Tests**:
+
+```csharp
+// TansuCloud.E2E.Tests/LokiLogsE2E.cs
+[Fact]
+public async Task Loki_Receives_Logs_From_All_Services()
+{
+    // Wait for logs to be ingested
+    await Task.Delay(5000);
+    
+    // Query Loki for logs from tansu-gateway
+    var logs = await LokiSearchLogs(service: "tansu-gateway", lookbackMinutes: 5);
+    Assert.NotEmpty(logs);
+}
+
+[Fact]
+public async Task Dashboard_Logs_Page_Shows_Loki_Data()
+{
+    await LoginAsAdmin();
+    await NavigateTo("/admin/observability/logs");
+    
+    // Wait for logs table to load
+    await WaitForElement("[data-testid='logs-table']");
+    
+    // Verify at least one log displayed
+    var logCount = await GetElementCount("[data-testid='log-row']");
+    Assert.True(logCount > 0);
+}
+```
+
+---
+
+#### Phase 4: Grafana Deployment and Dashboard Integration (1-2 weeks)
+
+**Goal**: Deploy Grafana as optional advanced UI, connect to Prometheus/Tempo/Loki data sources.
+
+**Subtasks**:
+
+1. **Provision Grafana database via TansuCloud.Database service** (1 day)
+   - **Leverage existing Database service provisioning API** (no manual SQL)
+   - Call provisioning endpoint during stack initialization:
+     ```bash
+     curl -X POST http://gateway:8080/db/api/provisioning/databases \
+       -H "X-Provision-Key: ${PROVISION_KEY}" \
+       -H "Content-Type: application/json" \
+       -d '{"databaseName": "grafana", "purpose": "observability", "owner": "platform"}'
+     ```
+   - Database service creates `grafana` database in `tansu-postgres` automatically
+   - Alternative: Add init container in compose that calls provisioning API before Grafana starts
+   - Verify: `docker exec tansu-postgres psql -U postgres -l | grep grafana`
+   - Note: Grafana auto-creates schema (tables, indexes) on first connection - no migrations needed
+
+2. **Deploy Grafana with PostgreSQL backend** (2 days)
+   - Add `grafana` service to `docker-compose.yml` and `docker-compose.prod.yml`
+   - Image: `grafana/grafana:latest` (dev), `grafana/grafana:11.3.1` (prod)
+   - Config:
+     - Database: PostgreSQL (reuse `tansu-postgres`, `grafana` database from subtask 1)
+       - `GF_DATABASE_TYPE=postgres`
+       - `GF_DATABASE_HOST=postgres:5432`
+       - `GF_DATABASE_NAME=grafana`
+       - `GF_DATABASE_USER=${POSTGRES_USER}`
+       - `GF_DATABASE_PASSWORD=${POSTGRES_PASSWORD}`
+     - Security:
+       - `GF_SECURITY_ADMIN_USER=admin`
+       - `GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD}` (from .env)
+       - `GF_AUTH_DISABLE_LOGIN_FORM=false`
+       - `GF_AUTH_ANONYMOUS_ENABLED=true` (for iframe embedding)
+       - `GF_AUTH_ANONYMOUS_ORG_ROLE=Viewer` (read-only for embedded dashboards)
+     - Server:
+       - `GF_SERVER_ROOT_URL=http://127.0.0.1:8080/grafana` (dev) or `${PUBLIC_BASE_URL}/grafana` (prod)
+       - `GF_SERVER_SERVE_FROM_SUB_PATH=true`
+   - Resources: `memory: 256M`, `cpus: 0.5`
+   - Health check: `wget --spider -q http://localhost:3000/api/health`
+   - Network: `tansucloud-network` internal only (no exposed ports by default)
+   - Depends on: `postgres`, `prometheus`, `tempo`, `loki`
+
+3. **Configure Grafana data sources** (2 days)
+   - Provisioning config: `dev/grafana/provisioning/datasources/datasources.yml`
+   - Data sources:
+     - Prometheus: `http://prometheus:9090` (default)
+     - Tempo: `http://tempo:3200`
+     - Loki: `http://loki:3100`
+   - All data sources: `access: proxy` (Grafana server-side queries, not browser)
+   - Test: Query Grafana API to verify data sources are healthy
+
+4. **Create default Grafana dashboards** (3 days)
+   - Provisioning config: `dev/grafana/provisioning/dashboards/dashboards.yml`
+   - Dashboards:
+     - **TansuCloud Overview**: Service health, request rates, error rates, latency percentiles (from Prometheus)
+     - **Service Details**: Per-service dashboard with RED metrics (Rate, Errors, Duration)
+     - **Traces Explorer**: Tempo traces with filters (service, duration, status)
+     - **Logs Browser**: Loki logs with filters (service, severity, time range)
+     - **Infrastructure**: PostgreSQL, Redis, PgCat metrics from exporters
+   - Dashboard JSON: Store in `dev/grafana/dashboards/*.json`
+   - Auto-import on Grafana startup
+
+5. **Embed Grafana dashboards in TansuCloud Admin Dashboard** (3 days)
+   - **Goal**: Show Grafana dashboards directly in Admin UI (no separate login/navigation)
+   - **Implementation**:
+     - Update `TansuCloud.Dashboard/Pages/Admin/ObservabilityOverview.razor`:
+       - Add `<iframe>` component pointing to `http://grafana:3000/d/{dashboardId}?kiosk&theme=light`
+       - Kiosk mode hides Grafana UI chrome (menus, navigation) for seamless embedding
+       - Dashboard loads via Grafana anonymous auth (configured in subtask 2)
+     - New pages with embedded dashboards:
+       - `/admin/observability` → "TansuCloud Overview" dashboard
+       - `/admin/observability/services` → "Service Details" dashboard with `var-service={serviceName}` filter
+       - `/admin/observability/infrastructure` → "Infrastructure Metrics" dashboard
+     - Add `GrafanaEmbedService` helper class:
+       - Generates iframe URLs with correct dashboard IDs and parameters
+       - Handles dashboard discovery via Grafana API (`GET /api/search?tag=tansucloud`)
+       - Fallback: Show link to Grafana UI if iframe fails to load
+   - **Security**: Grafana on internal network, only Dashboard backend can access (no direct browser → Grafana)
+   - **UX**: Dashboard pages feel native (no visible iframe borders, responsive height)
+   - **Alternative considered**: Query Prometheus/Tempo/Loki APIs directly and render with MudBlazor charts
+     - Deferred to future (more work, but better control and performance)
+     - Current iframe approach provides immediate value with minimal code
+
+6. **Optional: Gateway reverse proxy for Grafana** (2 days)
+   - **Default posture**: Grafana UI NOT exposed (internal Docker network only)
+   - **Optional**: Advanced users can enable Grafana UI access
+   - Implementation:
+     - Add `/grafana/*` route in Gateway YARP config
+     - Forward to `http://grafana:3000`
+     - Require authentication: `admin.full` scope or `Admin` role
+     - Set `X-Forwarded-Prefix: /grafana` header
+   - Documented in `Guide-For-Admins-and-Tenants.md` section "Advanced: Grafana UI Access"
+   - Environment variable gate: `GRAFANA_UI_ENABLED=false` (default), set to `true` to enable
+
+6. **Update documentation** (1 day)
+   - Update `Guide-For-Admins-and-Tenants.md`:
+     - Section 6.5.2: Grafana Dashboards (optional, for advanced users)
+     - Document: Internal-only by default, how to enable `/grafana` route, default credentials
+   - Update `Easy-installation.md`: Grafana setup steps (optional)
+
+**Acceptance criteria**:
+
+- ✅ Grafana deployed with PostgreSQL backend
+- ✅ Grafana connected to Prometheus, Tempo, Loki data sources (all healthy)
+- ✅ Default dashboards imported and functional (TansuCloud Overview, Service Details, etc.)
+- ✅ Grafana UI NOT exposed to host by default (internal Docker network only)
+- ✅ Optional Gateway reverse proxy documented (disabled by default)
+- ✅ Grafana uses <256MB memory (verified via `docker stats`)
+- ✅ Documentation updated
+
+**Tests**:
+
+```csharp
+// TansuCloud.E2E.Tests/GrafanaIntegrationE2E.cs
+[Fact]
+public async Task Grafana_Connects_To_Prometheus_Tempo_Loki()
+{
+    // Query Grafana API for data sources
+    var dataSources = await GrafanaApi_GetDataSources();
+    
+    Assert.Contains(dataSources, ds => ds.Type == "prometheus" && ds.Url.Contains("prometheus:9090"));
+    Assert.Contains(dataSources, ds => ds.Type == "tempo" && ds.Url.Contains("tempo:3200"));
+    Assert.Contains(dataSources, ds => ds.Type == "loki" && ds.Url.Contains("loki:3100"));
+}
+
+[Fact]
+public async Task Grafana_Default_Dashboards_Imported()
+{
+    var dashboards = await GrafanaApi_GetDashboards();
+    
+    Assert.Contains(dashboards, d => d.Title == "TansuCloud Overview");
+    Assert.Contains(dashboards, d => d.Title == "Service Details");
+}
+
+[Fact]
+public async Task Dashboard_Embeds_Grafana_Iframe()
+{
+    await Page.GotoAsync($"{BaseUrl}/admin/observability");
+    
+    // Check iframe element exists
+    var iframe = Page.Locator("iframe[src*='grafana']");
+    await Expect(iframe).ToBeVisibleAsync();
+    
+    // Verify iframe src contains kiosk mode
+    var src = await iframe.GetAttributeAsync("src");
+    Assert.Contains("kiosk", src);
+    Assert.Contains("/d/", src); // Dashboard UID
+}
+
+[Fact]
+public async Task Dashboard_Service_Page_Shows_Grafana_With_Filter()
+{
+    await Page.GotoAsync($"{BaseUrl}/admin/observability/services?service=gateway");
+    
+    // Check iframe has var-service filter
+    var iframe = Page.Locator("iframe[src*='grafana']");
+    var src = await iframe.GetAttributeAsync("src");
+    Assert.Contains("var-service=gateway", src);
+}
+```
+
+---
+
+#### Phase 5: Retention and Sampling Management UI (1 week)
+
+**Goal**: Admin Dashboard UI for managing retention policies and sampling rates.
+
+**Subtasks**:
+
+1. **Create ObservabilitySettings model** (1 day)
+   - New table: `ObservabilitySettings` in `tansu_identity` database (Gateway EF context)
+   - Columns:
+     - `Id` (int, PK)
+     - `Component` (string: "prometheus", "tempo", "loki") UNIQUE
+     - `RetentionDays` (int, default 7)
+     - `SamplingPercent` (int, default 100, 0-100 range)
+     - `Enabled` (bool, default true)
+     - `UpdatedAt` (DateTime)
+     - `UpdatedBy` (string, admin user email)
+   - EF migration: Add table and seed defaults
+
+2. **Implement ObservabilitySettings API** (2 days)
+   - Admin API endpoints in Gateway:
+     - `GET /api/admin/observability/settings` → List all settings
+     - `GET /api/admin/observability/settings/{component}` → Get single setting
+     - `PUT /api/admin/observability/settings/{component}` → Update setting
+   - Authorization: `admin.full` scope required
+   - Audit logging: Log all setting changes with old/new values
+   - Apply settings: Call Prometheus/Tempo/Loki admin APIs to update retention/sampling
+
+3. **Update Configuration.razor page** (2 days)
+   - Move from `/admin/observability-config` to `/admin/observability/config`
+   - UI:
+     - MudCard per component (Prometheus, Tempo, Loki)
+     - MudSwitch: Enabled/Disabled toggle
+     - MudNumericField: Retention Days (1-365 range)
+     - MudSlider: Sampling Percent (0-100 range, step 1)
+     - MudButton: "Save Changes" per component
+   - Validation: Retention 1-365 days, Sampling 0-100%
+   - Feedback: MudSnackbar success/error messages
+   - Test: Change settings, verify persisted in database and applied to components
+
+4. **Implement settings application logic** (2 days)
+   - Background worker in Gateway: `ObservabilitySettingsApplier`
+   - On settings change:
+     - Prometheus: Update retention via Prometheus admin API (if available) or require container restart with new `--storage.tsdb.retention.time` flag
+     - Tempo: Update compactor retention via Tempo runtime config (reload config file)
+     - Loki: Update retention via Loki runtime config (reload config file)
+     - Sampling: Update OpenTelemetry Collector sampling processor config (reload collector)
+   - Fallback: If admin APIs unavailable, log warning and require container restart
+
+5. **Add retention enforcement** (1 day)
+   - Prometheus: `--storage.tsdb.retention.time` flag set from `ObservabilitySettings` table on startup
+   - Tempo: Compactor deletes blocks older than retention days
+   - Loki: Retention enforcer deletes chunks older than retention days
+   - Storage service: Lifecycle policies on `observability-tempo` and `observability-loki` buckets
+
+6. **Update documentation** (1 day)
+   - Update `Guide-For-Admins-and-Tenants.md` section 6.5.3: Retention and Sampling
+   - Document: Default settings, how to change, restart requirements (if any)
+
+**Acceptance criteria**:
+
+- ✅ ObservabilitySettings table exists in `tansu_identity` database
+- ✅ Admin API endpoints functional for settings CRUD
+- ✅ Dashboard Configuration page allows editing retention and sampling
+- ✅ Settings changes applied to Prometheus, Tempo, Loki (verified via retention enforcement)
+- ✅ Audit logging captures setting changes
+- ✅ Documentation updated
+
+**Tests**:
+
+```csharp
+// TansuCloud.E2E.Tests/ObservabilitySettingsE2E.cs
+[Fact]
+public async Task Admin_Can_Update_Retention_Settings()
+{
+    await LoginAsAdmin();
+    await NavigateTo("/admin/observability/config");
+    
+    // Change Prometheus retention to 14 days
+    await SetNumericField("[data-testid='prometheus-retention']", 14);
+    await ClickButton("[data-testid='prometheus-save']");
+    
+    // Verify success message
+    await WaitForElement("[data-testid='snackbar-success']");
+    
+    // Verify persisted in database
+    var setting = await DbQuery<ObservabilitySetting>("SELECT * FROM ObservabilitySettings WHERE Component = 'prometheus'");
+    Assert.Equal(14, setting.RetentionDays);
+}
+
+[Fact]
+public async Task Sampling_Changes_Applied_To_Collector()
+{
+    await LoginAsAdmin();
+    await UpdateSampling("tempo", 50); // 50% trace sampling
+    
+    // Verify collector config updated
+    var collectorConfig = await ReadCollectorConfig();
+    Assert.Contains("sampling_percentage: 50", collectorConfig);
+}
+```
+
+---
+
+#### Phase 6: Complete SigNoz Removal and Validation (1 week)
+
+**Goal**: Remove **ALL** SigNoz code, dependencies, and references from codebase and documentation. After this phase, the repository must have zero SigNoz footprint except in historical task documentation (Tasks-M*.md files).
+
+**Critical Requirements**:
+- ✅ **Zero SigNoz code** in production codebase (services, models, config)
+- ✅ **Zero SigNoz references** in user-facing documentation (Guide, Easy-installation, Architecture)
+- ✅ **Zero SigNoz services** in docker-compose files
+- ✅ **Only exception**: Tasks-M*.md files may retain SigNoz mentions for historical development documentation
+
+**Subtasks**:
+
+1. **Remove SigNoz services from compose files** (1 day)
+   - **Delete from `docker-compose.yml` and `docker-compose.prod.yml`**:
+     - `signoz` service (main UI service)
+     - `signoz-otel-collector` service (collector with ClickHouse exporter)
+     - `clickhouse` service (SigNoz storage backend)
+     - `zookeeper` service (ClickHouse dependency)
+     - `signoz-init` service (initialization container)
+     - `signoz-schema-migrator-sync` service
+     - `signoz-schema-migrator-async` service
+     - `clickhouse-prepatch` service
+     - `clickhouse-compat-init` service
+   - **Delete SigNoz-specific volumes**:
+     - `signoz-data`
+     - `signoz-clickhouse-data`
+     - `signoz-zookeeper-data`
+   - **Delete SigNoz config files**:
+     - `dev/signoz-otel-collector-config.yaml`
+     - `dev/clickhouse/*.xml` (all ClickHouse config files)
+     - `SigNoz/governance.defaults.json` (if exists)
+     - Any `SigNoz/` directory contents
+   - **Remove SigNoz environment variables** from `.env` template:
+     - Any `SIGNOZ_*` prefixed variables
+     - Any `CLICKHOUSE_*` prefixed variables (if SigNoz-specific)
+   - **Validation**: Run `docker compose config` and verify no SigNoz services appear
+   - **Validation**: Search compose files for "signoz" (case-insensitive) and ensure zero matches
+
+2. **Remove SigNoz code from Dashboard service** (2 days)
+   - **Delete entire SigNoz directory**: `TansuCloud.Dashboard/Observability/SigNoz/`
+     - `ISigNozAuthenticationService.cs`
+     - `SigNozAuthenticationService.cs`
+     - `ISigNozQueryService.cs`
+     - `SigNozQueryService.cs`
+     - `ISigNozTracesService.cs`
+     - `SigNozTracesService.cs`
+     - `ISigNozLogsService.cs`
+     - `SigNozLogsService.cs`
+     - All SigNoz DTOs: `SigNozServiceDto.cs`, `SigNozTraceDto.cs`, `SigNozLogDto.cs`, etc.
+     - All SigNoz options classes: `SigNozQueryOptions.cs`, `SigNozAuthOptions.cs`
+   - **Remove from `TansuCloud.Dashboard/Program.cs`**:
+     - SigNoz service registrations (`AddHttpClient<ISigNozQueryService>`, etc.)
+     - SigNoz configuration binding (`builder.Services.Configure<SigNozQueryOptions>`)
+     - SigNoz admin API endpoints (search for `/api/admin/observability/*` using SigNoz services)
+   - **Remove from `appsettings*.json`**:
+     - `SigNozQuery` configuration section
+     - `SigNozAuth` configuration section
+     - Any SigNoz-related settings
+   - **Update Razor pages**:
+     - Remove `@inject ISigNozQueryService` (replaced with IPrometheusQueryService, ITempoTracesService, ILokiLogsService)
+     - Update `ObservabilityOverview.razor` to use PGTL services or Grafana iframes
+   - **Validation**: Search Dashboard project for "SigNoz" (case-insensitive) and ensure zero matches
+
+3. **Remove SigNoz code from other services** (1 day)
+   - **Gateway service**:
+     - Remove any SigNoz-specific YARP routes (if any `/signoz/*` routes exist)
+     - Remove SigNoz admin API proxy endpoints (if any)
+     - Search Gateway project for "SigNoz" and remove all references
+   - **Identity, Database, Storage, Telemetry services**:
+     - These services should not have SigNoz code (they only export OTLP, which remains)
+     - Verify by searching each project for "SigNoz" (should be zero matches)
+   - **Shared libraries** (if any):
+     - Check `TansuCloud.Observability.Shared/` or similar for SigNoz-specific code
+     - Remove any SigNoz DTOs or helper classes
+   - **Unit test projects**:
+     - Delete SigNoz-specific unit tests: `*SigNoz*.cs` test files
+     - Keep tests for PGTL services (Prometheus, Tempo, Loki)
+   - **E2E test projects**:
+     - Delete SigNoz-specific E2E tests: `SigNoz*E2E.cs` files
+     - Keep observability E2E tests that now use PGTL stack
+   - **Validation**: Run full-repo search for "SigNoz" excluding Tasks-M*.md files, ensure zero code matches
+
+4. **Update all user-facing documentation** (2 days)
+   - **`Architecture.md`**:
+     - Section: Observability Architecture
+       - **Remove**: SigNoz architecture diagram, SigNoz component descriptions
+       - **Add**: PGTL stack architecture diagram (Prometheus, Grafana, Tempo, Loki)
+       - **Add**: PGTL component descriptions, resource requirements, data flow
+     - Section: Telemetry Pipeline
+       - Update: Services → OpenTelemetry Collector → PGTL stack (not SigNoz)
+     - **Validation**: Search for "SigNoz" (case-insensitive), ensure zero matches
+   
+   - **`Guide-For-Admins-and-Tenants.md`**:
+     - **Section 6: Observability** (complete rewrite):
+       - 6.1: Observability Overview (PGTL stack introduction)
+       - 6.2: Admin Dashboard Observability Pages (embedded Grafana)
+       - 6.3: Metrics (Prometheus) - Query examples, retention management
+       - 6.4: Traces (Tempo) - Trace search, correlation, retention
+       - 6.5: Logs (Loki) - Log search, filtering, retention
+       - 6.6: Grafana Dashboards (optional advanced access)
+       - 6.7: Retention and Sampling Management (Admin UI)
+       - 6.8: Advanced: Enabling Grafana UI Access (for 1% power users)
+     - **Remove all SigNoz sections**:
+       - Delete: "Accessing SigNoz UI"
+       - Delete: "SigNoz Authentication"
+       - Delete: "SigNoz Governance Settings"
+       - Delete: Any SigNoz API references
+     - **Validation**: Search for "SigNoz" (case-insensitive), ensure zero matches
+   
+   - **`Easy-installation.md`**:
+     - Section: Observability Stack
+       - **Remove**: SigNoz setup instructions, SigNoz profile steps
+       - **Add**: PGTL stack deployment (Prometheus, Tempo, Loki deployed by default)
+       - **Add**: Optional Grafana UI access steps
+     - Section: Environment Variables
+       - **Remove**: `SIGNOZ_*`, `CLICKHOUSE_*` variables
+       - **Add**: `GRAFANA_ADMIN_PASSWORD`, PGTL retention settings
+     - **Validation**: Search for "SigNoz" (case-insensitive), ensure zero matches
+   
+   - **`README.md`** (if it mentions observability):
+     - Update: Observability powered by PGTL stack (not SigNoz)
+     - **Validation**: Search for "SigNoz", ensure zero matches
+
+4. **Full E2E test validation** (1 day)
+   - Run all E2E tests: `dotnet test tests/TansuCloud.E2E.Tests/ -c Debug`
+   - Expected results: All tests pass (170/170)
+   - New tests: PrometheusMetricsE2E, TempoTracesE2E, LokiLogsE2E, GrafanaIntegrationE2E, ObservabilitySettingsE2E
+   - **Validation**: Search all docs for "SigNoz" (case-insensitive), verify only Tasks-M*.md matches
+
+5. **Comprehensive validation searches** (1 day)
+   - **Code validation**:
+     - `grep -ri "signoz" docker-compose.yml docker-compose.prod.yml` → Expected: 0 matches
+     - `grep -ri "signoz" TansuCloud.Dashboard/` → Expected: 0 matches (excluding Tasks-M*.md)
+     - `grep -ri "signoz" TansuCloud.Gateway/` → Expected: 0 matches
+     - `grep -ri "signoz" tests/` → Expected: 0 code matches (git history references OK)
+     - `docker compose config | grep -i signoz` → Expected: 0 matches
+     - `docker compose -f docker-compose.prod.yml config | grep -i signoz` → Expected: 0 matches
+   
+   - **Documentation validation**:
+     - `grep -ri "signoz" Architecture.md` → Expected: 0 matches
+     - `grep -ri "signoz" Guide-For-Admins-and-Tenants.md` → Expected: 0 matches
+     - `grep -ri "signoz" Easy-installation.md` → Expected: 0 matches
+     - `grep -ri "signoz" README.md` → Expected: 0 matches
+     - `grep -ri "signoz" docs/*.md` → Expected: 0 matches (except `docs/archived/SigNoz-*.md`)
+   
+   - **Exception validation**:
+     - SigNoz mentions allowed ONLY in `Tasks-M*.md` files (for historical dev documentation)
+     - Verify Tasks-M3.md Task 19 and Tasks-M4.md Task 36 contain historical notes sections
+   
+   - **PGTL stack health checks**:
+     - All services healthy: `docker compose ps` shows all "Up (healthy)"
+     - Prometheus: `curl http://127.0.0.1:9090/-/healthy` = 200 OK
+     - Grafana: `curl http://127.0.0.1:3000/api/health` = 200 OK
+     - Tempo: `curl http://127.0.0.1:3200/ready` = 200 OK
+     - Loki: `curl http://127.0.0.1:3100/ready` = 200 OK
+     - Grafana database provisioned via TansuCloud.Database service
+   
+   - **Full E2E test validation**:
+     - Command: `dotnet test tests/TansuCloud.E2E.Tests/TansuCloud.E2E.Tests.csproj -c Debug`
+     - Expected: 200+ tests passing (all existing + 30 new PGTL tests)
+     - Zero SigNoz-related test failures
+     - New PGTL tests (Prometheus, Tempo, Loki, Grafana) all passing
+     - Dashboard observability pages rendering correctly
+     - Embedded Grafana iframe loading with anonymous auth
+   
+   - Fix any regressions
+
+6. **Resource usage validation and migration guide** (1 day)
+   - **Docker stats baseline**:
+     - Start full stack: `docker compose up -d --build`
+     - Wait 5 minutes for services to stabilize
+     - Measure memory usage: `docker stats --no-stream --format "table {{.Container}}\t{{.MemUsage}}\t{{.CPUPerc}}"`
+     - Expected totals:
+       - Prometheus: <512MB (target: 256-512MB)
+       - Grafana: <256MB (target: 128-256MB)
+       - Tempo: <1GB (target: 512MB-1GB)
+       - Loki: <1GB (target: 512MB-1GB)
+       - OpenTelemetry Collector: <512MB (target: 256-512MB)
+       - **Total PGTL stack: <4GB** (vs SigNoz 8GB = 50% reduction)
+     - Document actual values in migration guide
+   
+   - **Create migration guide**: `docs/PGTL-Migration-Guide.md`
+     - Section 1: Migration Overview (why migrate from SigNoz, PGTL benefits)
+     - Section 2: Pre-Migration Checklist (backup existing data, dependencies)
+     - Section 3: Step-by-Step Migration:
+       1. Stop SigNoz containers (no data migration needed - fresh start)
+       2. Pull latest TansuCloud images (with PGTL support)
+       3. Update `.env` with new variables (Grafana admin password, retention settings)
+       4. Run `docker compose up -d --build` (PGTL stack auto-deploys)
+       5. Verify: Check Dashboard observability pages, Grafana dashboards
+       6. Optional: Enable Grafana UI access via Gateway (for 1% power users)
+     - Section 4: Validation Steps:
+       - All grep searches (code + docs) showing zero SigNoz matches
+       - E2E tests passing
+       - Resource usage under targets
+       - Health checks passing
+     - Section 5: Rollback Plan (emergency revert if needed)
+     - Section 6: Post-Migration Tasks (archive SigNoz configs, update monitoring alerts)
+     - Downtime estimate: ~5-10 minutes (no data loss, SigNoz data discarded)
+     - Rollback note: Not needed (SigNoz compatibility broken upstream, no working baseline)
+
+**Acceptance criteria**:
+
+- ✅ All SigNoz code and config removed from repository
+- ✅ All documentation updated to reflect PGTL stack
+- ✅ All E2E tests passing (100% pass rate)
+- ✅ PGTL stack uses <4GB memory total (verified via `docker stats`)
+- ✅ Migration guide created for existing deployments
+- ✅ No broken links or references to SigNoz in docs
+
+**Tests**:
+
+```csharp
+// TansuCloud.E2E.Tests/PGTLStackE2E.cs
+[Fact]
+public async Task PGTL_Stack_All_Components_Healthy()
+{
+    // Verify all PGTL components are healthy
+    var prometheus = await HttpClient.GetAsync("http://prometheus:9090/-/healthy");
+    var tempo = await HttpClient.GetAsync("http://tempo:3200/ready");
+    var loki = await HttpClient.GetAsync("http://loki:3100/ready");
+    var grafana = await HttpClient.GetAsync("http://grafana:3000/api/health");
+    
+    prometheus.EnsureSuccessStatusCode();
+    tempo.EnsureSuccessStatusCode();
+    loki.EnsureSuccessStatusCode();
+    grafana.EnsureSuccessStatusCode();
+}
+
+[Fact]
+public async Task PGTL_Stack_Memory_Usage_Under_4GB()
+{
+    var stats = await DockerStats();
+    
+    var prometheusMemory = stats["prometheus"].MemoryUsageMB;
+    var tempoMemory = stats["tempo"].MemoryUsageMB;
+    var lokiMemory = stats["loki"].MemoryUsageMB;
+    var grafanaMemory = stats["grafana"].MemoryUsageMB;
+    var collectorMemory = stats["otel-collector"].MemoryUsageMB;
+    
+    var total = prometheusMemory + tempoMemory + lokiMemory + grafanaMemory + collectorMemory;
+    
+    Assert.True(total < 4096, $"PGTL stack uses {total}MB (expected <4GB)");
+}
+```
+
+---
+
+#### Overall Task 47 Acceptance Criteria
+
+**Functional Requirements:**
+
+- ✅ Prometheus deployed for metrics (7-day retention, <512MB memory)
+- ✅ Grafana deployed for visualization (PostgreSQL backend provisioned via TansuCloud.Database, <256MB memory)
+- ✅ Tempo deployed for traces (TansuCloud Storage backend, 7-day retention, <1GB memory)
+- ✅ Loki deployed for logs (TansuCloud Storage backend, 7-day retention, <1GB memory)
+- ✅ OpenTelemetry Collector routes telemetry to PGTL components (<512MB memory)
+- ✅ Dashboard Admin UI updated: New IPrometheusQueryService, ITempoTracesService, ILokiLogsService
+- ✅ Dashboard observability pages functional: /admin/observability (metrics), /admin/observability/traces, /admin/observability/logs
+- ✅ Grafana dashboards embedded in TansuCloud Admin UI via iframe (kiosk mode, anonymous viewer auth)
+- ✅ Retention and sampling management via Dashboard Admin UI: /admin/observability/config
+- ✅ All PGTL services internal-only (no exposed host ports by default)
+- ✅ Optional Grafana UI access documented (disabled by default)
+- ✅ Total PGTL stack memory: <4GB (vs. SigNoz 8GB = 50% reduction)
+
+**SigNoz Removal Requirements (MANDATORY):**
+
+- ✅ **Zero SigNoz code in codebase**:
+  - `grep -ri "signoz" TansuCloud.Dashboard/ TansuCloud.Gateway/ TansuCloud.*/` → 0 matches
+  - No ISigNozQueryService, ISigNozTracesService, ISigNozLogsService interfaces
+  - No SigNoz* classes, DTOs, or models
+  - No `using TansuCloud.Dashboard.Observability.SigNoz;` statements
+  - No SigNoz authentication services or configuration classes
+
+- ✅ **Zero SigNoz in Docker Compose**:
+  - `docker-compose.yml`: No `signoz`, `signoz-otel-collector`, `signoz-schema-migrator`, `clickhouse`, `zookeeper` services
+  - `docker-compose.prod.yml`: No SigNoz services or profiles
+  - `docker compose config | grep -i signoz` → 0 matches
+  - `docker compose -f docker-compose.prod.yml config | grep -i signoz` → 0 matches
+
+- ✅ **Zero SigNoz in Documentation** (except Tasks-M*.md):
+  - `Architecture.md`: No SigNoz architecture diagrams, references, or configuration notes
+  - `Guide-For-Admins-and-Tenants.md`: No SigNoz sections, UI access instructions, API references
+  - `Easy-installation.md`: No SigNoz deployment steps, profile activation, or environment variables
+  - `README.md`: No SigNoz mentions in observability section
+  - `docs/*.md`: All SigNoz-specific docs moved to `docs/archived/SigNoz-*.md` (historical reference only)
+  - Allowed: `Tasks-M1.md`, `Tasks-M2.md`, `Tasks-M3.md`, `Tasks-M4.md`, `Tasks-M5.md` (development history)
+
+- ✅ **Zero SigNoz Environment Variables**:
+  - `.env.example`: No `SIGNOZ_*`, `CLICKHOUSE_*`, `ZOOKEEPER_*` variables
+  - Service configs: No `SigNozQuery:*`, `SigNoz:*` configuration sections
+  - All SigNoz-related secrets removed from environment templates
+
+- ✅ **Zero SigNoz Dependencies**:
+  - No NuGet packages related to ClickHouse client libraries (if any were added)
+  - No Docker volumes for SigNoz data (`signoz-data`, `clickhouse-data`, `zookeeper-data`)
+  - `docker volume ls | grep signoz` → 0 matches after cleanup
+
+**Validation Checklist (Must Pass):**
+
+- ✅ All E2E tests passing (170 existing + 30 new PGTL tests = 200 total)
+- ✅ Code grep validation: `grep -ri "signoz" . --exclude-dir=node_modules --exclude="Tasks-M*.md"` → 0 matches
+- ✅ Compose validation: `docker compose config | grep -i signoz` → 0 matches
+- ✅ Docker ps check: `docker ps -a | grep signoz` → 0 containers (after `docker compose down -v`)
+- ✅ Volume check: `docker volume ls | grep signoz` → 0 volumes
+- ✅ Documentation validation: Manual review of Architecture.md, Guide, Easy-installation confirms zero SigNoz
+- ✅ PGTL stack health: All 5 components (Prometheus, Grafana, Tempo, Loki, Collector) healthy
+- ✅ Resource limits: `docker stats` confirms <4GB total for PGTL stack
+- ✅ Migration guide created: `docs/PGTL-Migration-Guide.md` with step-by-step instructions
+
+---
+
+#### Dependencies and Prerequisites
+
+**Required before starting**:
+
+- Task 8 (OpenTelemetry baseline) must be complete ✅
+- Task 19 (Observability pages) Phase 1-7 complete ✅
+- Task 36 (SigNoz dashboards) complete ✅
+- Task 39 (Instrumentation hardening) complete ✅
+- TansuCloud Storage service operational (for Tempo/Loki backends) ✅
+- Docker Compose with resource limits support ✅
+
+**Blocks**:
+
+- No current blockers; all prerequisites met
+
+**Enables future work**:
+
+- Task 44: BaaS Authentication (observability for per-tenant users)
+- Task 45: Serverless Functions (function execution traces/logs)
+- Task 46: Database Quotas (connection pool metrics)
+- Enhanced multi-tenant observability (per-tenant metrics/traces/logs isolation)
+
+---
+
+#### Risks and Mitigations
+
+| Risk | Impact | Mitigation |
+|------|--------|------------|
+| Tempo/Loki cannot connect to Storage service | HIGH | Test Storage service S3-compatible API compatibility; add integration tests; provide fallback to local volumes for dev |
+| Prometheus retention deletion breaks queries | MEDIUM | Implement graceful degradation in Dashboard; cache recent query results; document retention behavior |
+| PGTL stack exceeds 4GB memory target | MEDIUM | Monitor with `docker stats`; adjust resource limits; reduce retention to 3-5 days if needed; disable Grafana in resource-constrained environments |
+| OpenTelemetry Collector becomes bottleneck | HIGH | Load test with realistic traffic; add batching and buffering; consider horizontal scaling (multiple collector instances) |
+| Grafana UI exposure increases attack surface | MEDIUM | Keep disabled by default; require strong authentication; document security best practices; audit access logs |
+| Dashboard queries timeout with large datasets | MEDIUM | Implement query timeouts (30s); add pagination to results; cache frequently-accessed queries; optimize PromQL/TraceQL/LogQL queries |
+| Storage service lifecycle policies fail | HIGH | Add monitoring for lifecycle job execution; alert on failures; provide manual cleanup scripts as fallback |
+
+---
+
+#### Effort Estimate
+
+- **Phase 1** (Prometheus Metrics): 1-2 weeks (1 developer)
+- **Phase 2** (Tempo Traces): 2-3 weeks (1 developer)
+- **Phase 3** (Loki Logs): 2-3 weeks (1 developer)
+- **Phase 4** (Grafana Deployment): 1-2 weeks (1 developer)
+- **Phase 5** (Retention/Sampling UI): 1 week (1 developer)
+- **Phase 6** (Cleanup/Validation): 1 week (1 developer)
+
+**Total**: 8-12 weeks for full PGTL migration (can be parallelized: 2 developers = 6-8 weeks)
+
+**Quick win**: Phase 1 (Prometheus) can be completed in 1-2 weeks and already provides value (metrics working)
+
+---
+
+#### Success Metrics
+
+**Technical**:
+
+- PGTL stack memory usage: <4GB total (50% reduction vs. SigNoz 8GB)
+- Query latency: Prometheus queries <500ms (p95), Tempo trace lookups <1s, Loki log searches <2s
+- Data retention: 7 days enforced across all components
+- Uptime: 99.9% for all PGTL components
+- Storage efficiency: Tempo/Loki use <10GB disk per 7 days of data (1000 req/min baseline)
+
+**Product**:
+
+- Dashboard observability pages functional within 2 weeks of Phase 1 completion (metrics working)
+- Full PGTL migration completed within 12 weeks
+- 90%+ of operators prefer Dashboard Admin UI over direct Grafana access (validated via feedback survey)
+- Zero data loss during migration (SigNoz data discarded as expected, fresh PGTL start)
+- Positive feedback from early adopters on PGTL performance and reliability
+
+---
+
+#### Documentation and Training
+
+**Docs to create/update**:
+
+- ✅ `Architecture.md`: Update Observability section with PGTL architecture diagram
+- ✅ `Guide-For-Admins-and-Tenants.md`: Sections 6.5-6.9 (Prometheus, Tempo, Loki, Grafana, Retention)
+- ✅ `Easy-installation.md`: Update observability profile setup
+- ✅ `docs/PGTL-Migration-Guide.md`: Step-by-step migration from SigNoz
+- ✅ `Tasks-M3.md` Task 19: Archive SigNoz implementation notes, update status
+- ✅ `Tasks-M4.md` Task 36: Archive SigNoz notes, update status
+- ⏳ `docs/Observability-Alternative-Solutions-Analysis.md`: Mark as "COMPLETED - PGTL chosen"
+
+**Training materials**:
+
+- [ ] Video tutorial: "TansuCloud Observability with PGTL Stack"
+- [ ] Blog post: "Migrating from SigNoz to PGTL: Lessons Learned"
+- [ ] Admin guide: "Managing Retention and Sampling in TansuCloud"
+- [ ] Developer guide: "Writing PromQL/TraceQL/LogQL queries for TansuCloud"
+
+---
+
+#### Next Steps After Task 47 Creation
+
+1. **Review and approve** task scope and phasing with team ✅
+2. **Prioritize Phase 1** (Prometheus) for immediate value
+3. **Set up feature branch**: `feature/pgtl-migration`
+4. **Create GitHub Epic**: "PGTL Stack Migration" with milestones for each phase
+5. **Begin Phase 1 implementation**:
+   - Deploy Prometheus with OTLP receiver (2 days)
+   - Implement IPrometheusQueryService (3 days)
+   - Update Dashboard ObservabilityOverview page (3 days)
+6. **Weekly demos** to show progress and gather feedback
+7. **Resource monitoring**: Track memory usage throughout migration to validate <4GB target
+8. **Early validation**: After Phase 1, validate Prometheus with 1 week of production-like load
+
+---
+
+**Status**: Task 47 created — Ready for Phase 1 kickoff approval ✅
 
 ---

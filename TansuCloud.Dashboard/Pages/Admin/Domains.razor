@@ -269,7 +269,7 @@
     protected override async Task OnInitializedAsync()
     {
         await LoadAsync();
-    } // End of Method OnInitializedAsync
+    }
 
     private async Task LoadAsync()
     {
@@ -285,7 +285,7 @@
         {
             _err = ex.Message;
         }
-    } // End of Method LoadAsync
+    }
 
     private async Task SaveAsync()
     {
@@ -318,7 +318,7 @@
         {
             _saveMsg = ex.Message;
         }
-    } // End of Method SaveAsync
+    }
 
     private async Task SavePemAsync()
     {
@@ -352,7 +352,7 @@
         {
             _saveMsg = ex.Message;
         }
-    } // End of Method SavePemAsync
+    }
 
     private async Task RemoveAsync(string host)
     {
@@ -372,7 +372,7 @@
         {
             _err = ex.Message;
         }
-    } // End of Method RemoveAsync
+    }
 
     private async Task OnInputFileChanged(InputFileChangeEventArgs e)
     {
@@ -384,7 +384,7 @@
         using var ms = new MemoryStream();
         await stream.CopyToAsync(ms);
         _pfxBytes = ms.ToArray();
-    } // End of Method OnInputFileChanged
+    }
 
     private async Task OnRotatePfxChanged(InputFileChangeEventArgs e)
     {
@@ -395,7 +395,7 @@
         using var ms = new MemoryStream();
         await stream.CopyToAsync(ms);
         _rotatePfx = ms.ToArray();
-    } // End of Method OnRotatePfxChanged
+    }
 
     private async Task RotateAsync()
     {
@@ -460,7 +460,7 @@
         {
             _rotateMsg = ex.Message;
         }
-    } // End of Method RotateAsync
+    }
 
     public sealed class DomainBindingInfo
     {
@@ -475,5 +475,5 @@
         public bool ChainProvided { get; set; }
         public bool ChainValidated { get; set; }
         public int ChainCount { get; set; }
-    } // End of Class DomainBindingInfo
-} // End of Class Domains
+    }
+}

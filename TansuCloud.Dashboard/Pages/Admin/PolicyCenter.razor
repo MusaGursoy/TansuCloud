@@ -2,7 +2,7 @@
 @using System.Net.Http.Json
 @using System.Text.Json
 @attribute [Authorize(Policy = "AdminOnly")]
-@layout AdminLayout
+@layout TansuCloud.Dashboard.Pages.Admin.AdminLayout
 @inject IHttpClientFactory HttpClientFactory
 @inject ILogger<PolicyCenter> Logger
 @inject IDialogService DialogService
@@ -155,7 +155,7 @@
     protected override async Task OnInitializedAsync()
     {
         await LoadPolicies();
-    } // End of Method OnInitializedAsync
+    }
 
     private async Task LoadPolicies()
     {
@@ -204,7 +204,7 @@
         {
             _loading = false;
         }
-    } // End of Method LoadPolicies
+    }
 
     private void ApplyFilters()
     {
@@ -214,14 +214,14 @@
             (string.IsNullOrWhiteSpace(_filterType) || p.Type.Equals(_filterType, StringComparison.OrdinalIgnoreCase)) &&
             (string.IsNullOrWhiteSpace(_filterMode) || p.Mode.Equals(_filterMode, StringComparison.OrdinalIgnoreCase))
         ).ToList();
-    } // End of Method ApplyFilters
+    }
 
     private void ClearFilters()
     {
         _filterType = "";
         _filterMode = "";
         ApplyFilters();
-    } // End of Method ClearFilters
+    }
 
     private async Task ShowCreateDialog()
     {
@@ -242,7 +242,7 @@
         {
             await SavePolicy(savedModel);
         }
-    } // End of Method ShowCreateDialog
+    }
 
     private async Task ShowEditDialog(PolicyViewModel policy)
     {
@@ -270,7 +270,7 @@
         {
             await SavePolicy(savedModel);
         }
-    } // End of Method ShowEditDialog
+    }
 
     private async Task SavePolicy(PolicyDialogModel dialogPolicy)
     {
@@ -330,7 +330,7 @@
         {
             _saving = false;
         }
-    } // End of Method SavePolicy
+    }
 
     private async Task ShowDeleteConfirm(PolicyViewModel policy)
     {
@@ -348,7 +348,7 @@
         {
             await ConfirmDelete();
         }
-    } // End of Method ShowDeleteConfirm
+    }
 
     private async Task ConfirmDelete()
     {
@@ -383,7 +383,7 @@
         {
             _deleting = false;
         }
-    } // End of Method ConfirmDelete
+    }
 
     private Color GetTypeColor(string type) => type switch
     {
@@ -409,14 +409,13 @@
         public string Description { get; set; } = "";
         public DateTime UpdatedAt { get; set; }
         public JsonElement Config { get; set; }
-    } // End of Class PolicyViewModel
-
-    public class PolicyDialogModel
+    }
+public class PolicyDialogModel
     {
         public string Id { get; set; } = "";
         public string Type { get; set; } = "Cors";
         public string Mode { get; set; } = "Shadow";
         public string Description { get; set; } = "";
         public string ConfigJson { get; set; } = "{}";
-    } // End of Class PolicyDialogModel
-} // End of Class PolicyCenter
+    }
+}

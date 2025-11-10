@@ -52,12 +52,12 @@ public sealed class SigNozTracesService : ISigNozTracesService
     {
         try
         {
-            // Build SigNoz query_range API request
+            // Build SigNoz query_range API request (v5 format)
             var queryPayload = BuildTraceSearchQuery(request);
 
             var httpRequest = await CreateAuthenticatedRequestAsync(
                 HttpMethod.Post,
-                "api/v3/query_range",
+                "api/v5/query_range",
                 cancellationToken
             );
             httpRequest.Content = JsonContent.Create(queryPayload, options: s_jsonOptions);
@@ -159,32 +159,44 @@ public sealed class SigNozTracesService : ISigNozTracesService
     {
         try
         {
-            // Query for distinct service names from traces
+            // Query for distinct service names from traces (v5 format)
             var queryPayload = new
             {
-                start = DateTimeOffset.UtcNow.AddDays(-1).ToUnixTimeMilliseconds() * 1_000_000,
-                end = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() * 1_000_000,
-                queries = new[]
+                schemaVersion = "v1",
+                start = DateTimeOffset.UtcNow.AddDays(-1).ToUnixTimeMilliseconds(),
+                end = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                requestType = "scalar",
+                compositeQuery = new
                 {
-                    new
+                    queries = new[]
                     {
-                        queryName = "A",
-                        aggregateOperator = "noop",
-                        aggregateAttribute = new
+                        new
                         {
-                            key = "serviceName",
-                            dataType = "string",
-                            type = "tag",
-                            isColumn = false
-                        },
-                        groupBy = new[] { new { key = "serviceName", dataType = "string" } }
+                            type = "builder_query",
+                            spec = new
+                            {
+                                name = "A",
+                                signal = "traces",
+                                disabled = false,
+                                aggregations = new[] { new { expression = "count()" } },
+                                filter = new { expression = "" },
+                                groupBy = new[]
+                                {
+                                    new { name = "service.name", fieldContext = "span" }
+                                },
+                                limit = 1000,
+                                having = new { expression = "" }
+                            }
+                        }
                     }
-                }
+                },
+                formatOptions = new { formatTableResultForUI = true, fillGaps = false },
+                variables = new { }
             };
 
             var httpRequest = await CreateAuthenticatedRequestAsync(
                 HttpMethod.Post,
-                "api/v3/query_range",
+                "api/v5/query_range",
                 cancellationToken
             );
             httpRequest.Content = JsonContent.Create(queryPayload, options: s_jsonOptions);
@@ -193,7 +205,12 @@ public sealed class SigNozTracesService : ISigNozTracesService
 
             if (!response.IsSuccessStatusCode)
             {
-                _logger.LogWarning("SigNoz get services failed: {StatusCode}", response.StatusCode);
+                var errorBody = await response.Content.ReadAsStringAsync(cancellationToken);
+                _logger.LogWarning(
+                    "SigNoz get services failed: {StatusCode}, {ErrorBody}",
+                    response.StatusCode,
+                    errorBody
+                );
                 return new List<string>();
             }
 
@@ -235,74 +252,67 @@ public sealed class SigNozTracesService : ISigNozTracesService
 
     private object BuildTraceSearchQuery(TraceSearchRequest request)
     {
-        // Build filters based on search criteria
-        var filters = new List<object>();
+        // Build filter expression from search criteria (v5 format uses filter.expression, not filters array)
+        var filterParts = new List<string>();
 
         if (!string.IsNullOrWhiteSpace(request.ServiceName))
         {
-            filters.Add(
-                new
-                {
-                    key = "serviceName",
-                    op = "=",
-                    value = request.ServiceName
-                }
-            );
+            filterParts.Add($"serviceName = '{request.ServiceName}'");
         }
 
         if (!string.IsNullOrWhiteSpace(request.Status))
         {
-            filters.Add(
-                new
-                {
-                    key = "status",
-                    op = "=",
-                    value = request.Status
-                }
-            );
+            // Map status to statusCode: "ok" -> "1", "error" -> "2"
+            var statusCode = request.Status.ToLowerInvariant() switch
+            {
+                "error" => "2",
+                "ok" => "1",
+                _ => request.Status
+            };
+            filterParts.Add($"statusCode = '{statusCode}'");
         }
 
         if (request.MinDurationMs.HasValue)
         {
-            filters.Add(
-                new
-                {
-                    key = "durationNano",
-                    op = ">=",
-                    value = request.MinDurationMs.Value * 1_000_000 // ms to nano
-                }
-            );
+            filterParts.Add($"durationNano >= {request.MinDurationMs.Value * 1_000_000}");
         }
 
         if (request.MaxDurationMs.HasValue)
         {
-            filters.Add(
-                new
-                {
-                    key = "durationNano",
-                    op = "<=",
-                    value = request.MaxDurationMs.Value * 1_000_000 // ms to nano
-                }
-            );
+            filterParts.Add($"durationNano <= {request.MaxDurationMs.Value * 1_000_000}");
         }
+
+        var filterExpression = filterParts.Count > 0 ? string.Join(" AND ", filterParts) : "";
 
         return new
         {
-            start = request.StartTimeNano,
-            end = request.EndTimeNano,
-            queries = new[]
+            schemaVersion = "v1",
+            start = request.StartTimeNano / 1_000_000, // Convert ns to ms for v5
+            end = request.EndTimeNano / 1_000_000,
+            requestType = "raw",
+            compositeQuery = new
             {
-                new
+                queries = new[]
                 {
-                    queryName = "A",
-                    dataSource = "traces",
-                    aggregateOperator = "noop",
-                    filters = filters.ToArray(),
-                    limit = request.Limit,
-                    offset = request.Offset,
-                    orderBy = new[] { new { columnName = "timestamp", order = "desc" } }
+                    new
+                    {
+                        type = "builder_query",
+                        spec = new
+                        {
+                            name = "A",
+                            signal = "traces",
+                            disabled = false,
+                            aggregations = Array.Empty<object>(), // No aggregation for list view
+                            filter = new { expression = filterExpression },
+                            limit = request.Limit,
+                            offset = request.Offset,
+                            having = new { expression = "" }
+                        }
+                    }
                 }
-            }
+            },
+            formatOptions = new { formatTableResultForUI = true, fillGaps = false },
+            variables = new { }
         };
     } // End of Method BuildTraceSearchQuery
 
@@ -312,63 +322,79 @@ public sealed class SigNozTracesService : ISigNozTracesService
 
         try
         {
-            // SigNoz v3 query_range response structure:
-            // { "data": { "result": [ { "list": [ ... ] } ] } }
+            // SigNoz v5 query_range response structure:
+            // { "data": { "results": [ { "table": { "rows": [...] } } ] } }
             if (!response.TryGetProperty("data", out var data))
                 return traces;
 
-            if (!data.TryGetProperty("result", out var result))
+            if (!data.TryGetProperty("results", out var results))
                 return traces;
 
-            if (result.ValueKind != JsonValueKind.Array || result.GetArrayLength() == 0)
+            if (results.ValueKind != JsonValueKind.Array || results.GetArrayLength() == 0)
                 return traces;
 
-            var firstResult = result[0];
-            if (!firstResult.TryGetProperty("list", out var list))
+            var firstResult = results[0];
+            if (!firstResult.TryGetProperty("table", out var table))
                 return traces;
 
-            foreach (var item in list.EnumerateArray())
+            if (!table.TryGetProperty("rows", out var rows))
+                return traces;
+
+            foreach (var row in rows.EnumerateArray())
             {
-                var trace = ParseTraceSummary(item);
+                var trace = ParseTraceSummaryV5(row);
                 if (trace != null)
                     traces.Add(trace);
             }
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Error parsing SigNoz trace search response");
+            _logger.LogWarning(ex, "Error parsing SigNoz trace search response (v5)");
         }
 
         return traces;
     } // End of Method ParseTraceSearchResponse
 
-    private TraceSummary? ParseTraceSummary(JsonElement item)
+    private TraceSummary? ParseTraceSummaryV5(JsonElement row)
     {
         try
         {
-            var traceId = item.GetProperty("traceID").GetString() ?? string.Empty;
-            var serviceName = item.TryGetProperty("serviceName", out var svc)
+            if (!row.TryGetProperty("data", out var data))
+                return null;
+
+            var traceId = data.TryGetProperty("traceID", out var tid)
+                ? tid.GetString() ?? string.Empty
+                : string.Empty;
+
+            var serviceName = data.TryGetProperty("serviceName", out var svc)
                 ? svc.GetString() ?? "unknown"
                 : "unknown";
-            var operationName = item.TryGetProperty("name", out var op)
+
+            var operationName = data.TryGetProperty("name", out var op)
                 ? op.GetString() ?? "unknown"
                 : "unknown";
 
-            var durationNano = item.TryGetProperty("durationNano", out var dur)
+            var durationNano = data.TryGetProperty("durationNano", out var dur)
                 ? dur.GetInt64()
                 : 0;
             var durationMs = durationNano / 1_000_000;
 
-            var spanCount = item.TryGetProperty("spanCount", out var sc) ? sc.GetInt32() : 1;
+            var spanCount = data.TryGetProperty("spanCount", out var sc) ? sc.GetInt32() : 1;
 
-            var timestampNano = item.TryGetProperty("timestamp", out var ts) ? ts.GetInt64() : 0;
+            var timestampNano = data.TryGetProperty("timestamp", out var ts) ? ts.GetInt64() : 0;
             var timestamp = DateTimeOffset.FromUnixTimeMilliseconds(timestampNano / 1_000_000);
 
-            var status = item.TryGetProperty("status", out var st)
-                ? st.GetString() ?? "UNSET"
-                : "UNSET";
+            var statusCode = data.TryGetProperty("statusCode", out var code)
+                ? code.GetString()
+                : "0";
+            var status = statusCode switch
+            {
+                "2" => "ERROR",
+                "1" => "OK",
+                _ => "UNSET"
+            };
 
-            var errorMessage = item.TryGetProperty("errorMessage", out var em)
+            var errorMessage = data.TryGetProperty("errorMessage", out var em)
                 ? em.GetString()
                 : null;
 
@@ -386,10 +412,10 @@ public sealed class SigNozTracesService : ISigNozTracesService
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Error parsing trace summary item");
+            _logger.LogWarning(ex, "Error parsing trace summary item (v5)");
             return null;
         }
-    } // End of Method ParseTraceSummary
+    } // End of Method ParseTraceSummaryV5
 
     private TraceDetail? ParseTraceDetail(JsonElement response, string traceId)
     {
@@ -559,24 +585,54 @@ public sealed class SigNozTracesService : ISigNozTracesService
 
         try
         {
-            if (!response.TryGetProperty("data", out var data))
+            // V5 API response structure (scalar with groupBy):
+            // { "status": "success", "data": { "data": { "results": [ { "columns": [...], "data": [[...]] } ] } } }
+            
+            if (!response.TryGetProperty("data", out var outerData))
                 return services;
 
-            if (!data.TryGetProperty("result", out var result))
+            if (!outerData.TryGetProperty("data", out var innerData))
                 return services;
 
-            if (result.ValueKind != JsonValueKind.Array)
+            if (!innerData.TryGetProperty("results", out var results) 
+                || results.ValueKind != JsonValueKind.Array)
                 return services;
 
-            foreach (var item in result.EnumerateArray())
+            foreach (var result in results.EnumerateArray())
             {
-                if (item.TryGetProperty("list", out var list))
+                // Find the "service.name" column index
+                if (!result.TryGetProperty("columns", out var columns))
+                    continue;
+
+                int serviceNameIndex = -1;
+                int columnIndex = 0;
+                foreach (var column in columns.EnumerateArray())
                 {
-                    foreach (var entry in list.EnumerateArray())
+                    if (column.TryGetProperty("name", out var colName) 
+                        && colName.GetString() == "service.name")
                     {
-                        if (entry.TryGetProperty("serviceName", out var svc))
+                        serviceNameIndex = columnIndex;
+                        break;
+                    }
+                    columnIndex++;
+                }
+
+                if (serviceNameIndex < 0)
+                    continue;
+
+                // Extract service names from data arrays
+                if (!result.TryGetProperty("data", out var dataRows))
+                    continue;
+
+                foreach (var dataRow in dataRows.EnumerateArray())
+                {
+                    // Each row is an array: ["service-name", count]
+                    if (dataRow.GetArrayLength() > serviceNameIndex)
+                    {
+                        var serviceNameElement = dataRow[serviceNameIndex];
+                        if (serviceNameElement.ValueKind == JsonValueKind.String)
                         {
-                            var serviceName = svc.GetString();
+                            var serviceName = serviceNameElement.GetString();
                             if (!string.IsNullOrWhiteSpace(serviceName))
                                 services.Add(serviceName);
                         }
@@ -586,7 +642,7 @@ public sealed class SigNozTracesService : ISigNozTracesService
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Error parsing service list response");
+            _logger.LogWarning(ex, "Error parsing service list response (v5)");
         }
 
         return services.Distinct().OrderBy(s => s).ToList();

@@ -3,7 +3,7 @@
 @using TansuCloud.Dashboard.Models
 @using MudBlazor
 @attribute [Authorize(Policy = "AdminOnly")]
-@layout AdminLayout
+@layout TansuCloud.Dashboard.Pages.Admin.AdminLayout
 @inject IHttpClientFactory HttpClientFactory
 @inject ILogger<Config> Logger
 @inject ISnackbar Snackbar
@@ -232,7 +232,7 @@
     protected override async Task OnInitializedAsync()
     {
         await LoadConfig();
-    } // End of Method OnInitializedAsync
+    }
 
     private async Task LoadConfig()
     {
@@ -271,12 +271,12 @@
         {
             _loading = false;
         }
-    } // End of Method LoadConfig
+    }
 
     private async Task RefreshConfig()
     {
         await LoadConfig();
-    } // End of Method RefreshConfig
+    }
 
     private async Task SaveConfig()
     {
@@ -311,14 +311,14 @@
         {
             _loading = false;
         }
-    } // End of Method SaveConfig
+    }
 
     private Task OpenAlertDialog(AlertSloTemplate? alert)
     {
         // TODO: Implement alert SLO editor dialog
         Snackbar.Add("Alert SLO editor coming soon!", Severity.Info);
         return Task.CompletedTask;
-    } // End of Method OpenAlertDialog
+    }
 
     private string GetSamplingDescription(double ratio)
     {

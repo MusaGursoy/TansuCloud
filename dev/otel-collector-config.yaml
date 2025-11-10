@@ -3,24 +3,38 @@ receivers:
     protocols:
       grpc:
         endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
 
 processors:
   batch: {}
 
 exporters:
+  # Export metrics to Prometheus (PGTL Stack - Phase 1)
+  prometheusremotewrite:
+    endpoint: http://prometheus:9090/api/v1/write
+    tls:
+      insecure: true
+  
+  # Debug exporter for development
   debug:
     verbosity: basic
 
 service:
   pipelines:
+    # Traces pipeline (will be configured in Phase 2 for Tempo)
     traces:
       receivers: [otlp]
       processors: [batch]
       exporters: [debug]
+    
+    # Metrics pipeline - export to Prometheus
     metrics:
       receivers: [otlp]
       processors: [batch]
-      exporters: [debug]
+      exporters: [prometheusremotewrite, debug]
+    
+    # Logs pipeline (will be configured in Phase 3 for Loki)
     logs:
       receivers: [otlp]
       processors: [batch]

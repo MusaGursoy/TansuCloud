@@ -158,7 +158,7 @@
     protected override async Task OnInitializedAsync()
     {
         await LoadAsync();
-    } // End of Method OnInitializedAsync
+    }
 
     private async Task LoadAsync()
     {
@@ -181,7 +181,7 @@
         {
             error = $"Load failed: {ex.Message}";
         }
-    } // End of Method LoadAsync
+    }
 
     private void SaveClicked()
     {
@@ -193,13 +193,13 @@
             StaticTtlSeconds = dto.StaticTtlSeconds
         };
         showConfirmModal = true;
-    } // End of Method SaveClicked
+    }
 
     private void CancelSave()
     {
         showConfirmModal = false;
         beforeSave = null;
-    } // End of Method CancelSave
+    }
 
     private async Task ConfirmSaveAsync()
     {
@@ -224,7 +224,7 @@
         {
             error = $"Save failed: {ex.Message}";
         }
-    } // End of Method ConfirmSaveAsync
+    }
 
     private void Validate()
     {
@@ -235,16 +235,16 @@
             validationErrors.Add("Default TTL must be >= 0");
         if (dto.StaticTtlSeconds < 0)
             validationErrors.Add("Static TTL must be >= 0");
-    } // End of Method Validate
+    }
 
     private bool IsInvalid(string field)
     {
         return validationErrors.Any(e => e.Contains(field, StringComparison.OrdinalIgnoreCase));
-    } // End of Method IsInvalid
+    }
 
     private record OutputCacheConfigDto
     {
         public int DefaultTtlSeconds { get; set; }
         public int StaticTtlSeconds { get; set; }
-    } // End of Class OutputCacheConfigDto
-} // End of Code
+    }
+}

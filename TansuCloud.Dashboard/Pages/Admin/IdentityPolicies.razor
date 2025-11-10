@@ -2,7 +2,7 @@
 @using System.Net.Http.Json
 @using System.Text.Json
 @attribute [Authorize(Policy = "AdminOnly")]
-@layout AdminLayout
+@layout TansuCloud.Dashboard.Pages.Admin.AdminLayout
 @inject IHttpClientFactory HttpClientFactory
 @inject ILogger<IdentityPolicies> Logger
 
@@ -192,7 +192,7 @@
     protected override async Task OnInitializedAsync()
     {
         await LoadConfig();
-    } // End of Method OnInitializedAsync
+    }
 
     private async Task LoadConfig()
     {
@@ -248,20 +248,20 @@
         {
             _loading = false;
         }
-    } // End of Method LoadConfig
+    }
 
     private void EnableEditMode()
     {
         _editMode = true;
         _editConfig = _config!.Clone();
-    } // End of Method EnableEditMode
+    }
 
     private void CancelEdit()
     {
         _editMode = false;
         _editConfig = _config!.Clone();
         _errorMessage = null;
-    } // End of Method CancelEdit
+    }
 
     private async Task SaveChanges()
     {
@@ -333,12 +333,12 @@
         {
             _saving = false;
         }
-    } // End of Method SaveChanges
+    }
 
     private async Task RefreshConfig()
     {
         await LoadConfig();
-    } // End of Method RefreshConfig
+    }
 
     // View Models
     private class IdentityPoliciesViewModel
@@ -371,28 +371,25 @@
                     RefreshTokenLifetimeSeconds = Tokens.RefreshTokenLifetimeSeconds
                 }
             };
-        } // End of Method Clone
-    } // End of Class IdentityPoliciesViewModel
-
-    private class PasswordPolicyViewModel
+        }
+    }
+private class PasswordPolicyViewModel
     {
         public int RequiredLength { get; set; }
         public bool RequireDigit { get; set; }
         public bool RequireUppercase { get; set; }
         public bool RequireLowercase { get; set; }
         public bool RequireNonAlphanumeric { get; set; }
-    } // End of Class PasswordPolicyViewModel
-
-    private class LockoutPolicyViewModel
+    }
+private class LockoutPolicyViewModel
     {
         public bool Enabled { get; set; }
         public int MaxFailedAttempts { get; set; }
         public int DurationMinutes { get; set; }
-    } // End of Class LockoutPolicyViewModel
-
-    private class TokenLifetimesViewModel
+    }
+private class TokenLifetimesViewModel
     {
         public int AccessTokenLifetimeSeconds { get; set; }
         public int RefreshTokenLifetimeSeconds { get; set; }
-    } // End of Class TokenLifetimesViewModel
-} // End of Class IdentityPolicies
+    }
+}

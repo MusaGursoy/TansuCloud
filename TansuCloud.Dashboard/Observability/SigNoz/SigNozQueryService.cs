@@ -76,17 +76,18 @@ public sealed class SigNozQueryService : ISigNozQueryService
     private async Task<HttpRequestMessage> CreateAuthenticatedRequestAsync(
         HttpMethod method,
         string url,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default
+    )
     {
         var request = new HttpRequestMessage(method, url);
-        
+
         // Try to get JWT token if authentication is configured
         var token = await _authService.GetAccessTokenAsync(cancellationToken);
         if (!string.IsNullOrWhiteSpace(token))
         {
             request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
         }
-        
+
         return request;
     } // End of Method CreateAuthenticatedRequestAsync
 
@@ -435,10 +436,29 @@ public sealed class SigNozQueryService : ISigNozQueryService
 
                 try
                 {
-                    // Call SigNoz API: GET /api/v1/services (with metrics and tracing)
+                    // Call SigNoz API: POST /api/v1/services with time range and tags
+                    var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+                    var oneHourAgo = DateTimeOffset.UtcNow.AddHours(-1).ToUnixTimeMilliseconds();
+
+                    var requestBody = new
+                    {
+                        start = oneHourAgo.ToString(),
+                        end = now.ToString(),
+                        tags = Array.Empty<object>()
+                    };
+
                     var response = await ExecuteWithMetricsAsync(
                         endpoint,
-                        () => _httpClient.GetAsync("api/v1/services", cancellationToken),
+                        async () =>
+                        {
+                            var request = await CreateAuthenticatedRequestAsync(
+                                HttpMethod.Post,
+                                "api/v1/services",
+                                cancellationToken
+                            );
+                            request.Content = JsonContent.Create(requestBody);
+                            return await _httpClient.SendAsync(request, cancellationToken);
+                        },
                         cancellationToken
                     );
 
@@ -819,7 +839,11 @@ public sealed class SigNozQueryService : ISigNozQueryService
                 {
                     // SigNoz uses /traces/{traceId} endpoint (not /api/v1/traces/{traceId})
                     var url = $"{_options.CurrentValue.ApiBaseUrl}/traces/{traceId}";
-                    var request = await CreateAuthenticatedRequestAsync(HttpMethod.Get, url, cancellationToken);
+                    var request = await CreateAuthenticatedRequestAsync(
+                        HttpMethod.Get,
+                        url,
+                        cancellationToken
+                    );
                     var response = await _httpClient.SendAsync(request, cancellationToken);
 
                     if (!response.IsSuccessStatusCode)
@@ -874,11 +898,7 @@ public sealed class SigNozQueryService : ISigNozQueryService
                 }
                 catch (Exception ex)
                 {
-                    _logger.LogError(
-                        ex,
-                        "Failed to retrieve trace details for {TraceId}",
-                        traceId
-                    );
+                    _logger.LogError(ex, "Failed to retrieve trace details for {TraceId}", traceId);
                     return null;
                 }
             },
@@ -900,23 +920,20 @@ public sealed class SigNozQueryService : ISigNozQueryService
         var durationMs = (dto.DurationNano ?? 0) / 1_000_000.0;
 
         var attributes =
-            dto.Attributes
-                ?.Where(kv => kv.Value != null)
+            dto.Attributes?.Where(kv => kv.Value != null)
                 .ToDictionary(kv => kv.Key, kv => kv.Value!.ToString() ?? "")
                 .AsReadOnly() ?? new Dictionary<string, string>().AsReadOnly();
 
         var events =
-            dto.Events
-                ?.Select(e => new SpanEvent(
-                    Name: e.Name ?? "unknown",
-                    Timestamp: DateTimeOffset
-                        .FromUnixTimeMilliseconds((e.TimeUnixNano ?? 0) / 1_000_000)
-                        .UtcDateTime,
-                    Attributes: e.Attributes
-                        ?.Where(kv => kv.Value != null)
-                        .ToDictionary(kv => kv.Key, kv => kv.Value!.ToString() ?? "")
-                        .AsReadOnly() ?? new Dictionary<string, string>().AsReadOnly()
-                ))
+            dto.Events?.Select(e => new SpanEvent(
+                Name: e.Name ?? "unknown",
+                Timestamp: DateTimeOffset
+                    .FromUnixTimeMilliseconds((e.TimeUnixNano ?? 0) / 1_000_000)
+                    .UtcDateTime,
+                Attributes: e.Attributes?.Where(kv => kv.Value != null)
+                    .ToDictionary(kv => kv.Key, kv => kv.Value!.ToString() ?? "")
+                    .AsReadOnly() ?? new Dictionary<string, string>().AsReadOnly()
+            ))
                 .ToList()
                 .AsReadOnly() ?? new List<SpanEvent>().AsReadOnly();
 
@@ -968,10 +985,18 @@ public sealed class SigNozQueryService : ISigNozQueryService
                 };
 
                 var json = JsonSerializer.Serialize(requestBody);
-                var content = new StringContent(json, System.Text.Encoding.UTF8, "application/json");
+                var content = new StringContent(
+                    json,
+                    System.Text.Encoding.UTF8,
+                    "application/json"
+                );
 
                 var url = $"{_options.CurrentValue.ApiBaseUrl}/api/v3/query_range";
-                var request = await CreateAuthenticatedRequestAsync(HttpMethod.Post, url, cancellationToken);
+                var request = await CreateAuthenticatedRequestAsync(
+                    HttpMethod.Post,
+                    url,
+                    cancellationToken
+                );
                 request.Content = content;
 
                 var response = await ExecuteWithMetricsAsync(
@@ -995,8 +1020,8 @@ public sealed class SigNozQueryService : ISigNozQueryService
                     );
                 }
 
-                var traces = apiResponse.Data.Traces
-                    .Select(t => new TraceListItem(
+                var traces = apiResponse
+                    .Data.Traces.Select(t => new TraceListItem(
                         TraceId: t.TraceId ?? "unknown",
                         RootServiceName: t.RootServiceName ?? "unknown",
                         RootOperationName: t.RootTraceName ?? "unknown",

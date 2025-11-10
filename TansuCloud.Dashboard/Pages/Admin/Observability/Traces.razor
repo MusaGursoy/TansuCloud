@@ -4,7 +4,7 @@
 @using MudBlazor
 @using Microsoft.AspNetCore.Components.Rendering
 @attribute [Authorize(Policy = "AdminOnly")]
-@layout AdminLayout
+@layout TansuCloud.Dashboard.Pages.Admin.AdminLayout
 @inject ISigNozTracesService TracesService
 @inject ILogger<Traces> Logger
 @inject ISnackbar Snackbar
@@ -168,13 +168,13 @@
     private string? _selectedStatus;
     private long? _minDurationMs;
     private long? _maxDurationMs;
-    private int _timeRangeHours = 1;
+    private int _timeRangeHours = 24; // Default to last 24 hours to show historical data
 
     protected override async Task OnInitializedAsync()
     {
         await LoadServices();
         await SearchTraces();
-    } // End of Method OnInitializedAsync
+    }
 
     private async Task LoadServices()
     {
@@ -187,13 +187,13 @@
             Logger.LogError(ex, "Error loading services");
             Snackbar.Add("Failed to load services", Severity.Error);
         }
-    } // End of Method LoadServices
+    }
 
     private async Task RefreshServices()
     {
         await LoadServices();
         Snackbar.Add("Services refreshed", Severity.Success);
-    } // End of Method RefreshServices
+    }
 
     private async Task SearchTraces()
     {
@@ -230,7 +230,7 @@
         {
             _loading = false;
         }
-    } // End of Method SearchTraces
+    }
 
     private async Task ViewTraceDetail(string traceId)
     {
@@ -251,13 +251,13 @@
             Logger.LogError(ex, "Error loading trace detail for {TraceId}", traceId);
             Snackbar.Add("Failed to load trace detail", Severity.Error);
         }
-    } // End of Method ViewTraceDetail
+    }
 
     private void CloseDetailDialog()
     {
         _showDetailDialog = false;
         _selectedTrace = null;
-    } // End of Method CloseDetailDialog
+    }
 
     private RenderFragment RenderSpanTree(List<SpanDetail> spans)
     {
@@ -279,7 +279,7 @@
 
             builder.CloseComponent();
         };
-    } // End of Method RenderSpanTree
+    }
 
     private void RenderSpan(RenderTreeBuilder builder, SpanDetail span, Dictionary<string, List<SpanDetail>> spansByParent, int depth)
     {
@@ -366,7 +366,7 @@
                 RenderSpan(builder, child, spansByParent, depth + 1);
             }
         }
-    } // End of Method RenderSpan
+    }
 
     private Color GetStatusColor(string status)
     {
@@ -377,7 +377,7 @@
             "UNSET" => Color.Default,
             _ => Color.Default
         };
-    } // End of Method GetStatusColor
+    }
 
     private string FormatDuration(long durationMs)
     {
@@ -388,5 +388,5 @@
         if (durationMs < 60000)
             return $"{durationMs / 1000.0:F2}s";
         return $"{durationMs / 60000.0:F2}m";
-    } // End of Method FormatDuration
+    }
 }

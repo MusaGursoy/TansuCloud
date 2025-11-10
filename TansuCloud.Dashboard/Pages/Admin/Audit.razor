@@ -343,12 +343,12 @@
             _sigNozBaseUrl = Catalog.CreateCatalog().BaseUrl;
             _ = InvokeAsync(StateHasChanged);
         });
-    } // End of Method OnInitialized
+    }
 
     protected override async Task OnInitializedAsync()
     {
         await SearchAsync();
-    } // End of Method OnInitializedAsync
+    }
 
     private async Task SearchAsync()
     {
@@ -358,12 +358,12 @@
             await LoadPageAsync();
         }
         finally { loading = false; }
-    } // End of Method SearchAsync
+    }
 
     private async Task LoadMoreAsync()
     {
         await LoadPageAsync();
-    } // End of Method LoadMoreAsync
+    }
 
     private async Task LoadPageAsync()
     {
@@ -393,19 +393,19 @@
             error = ex.Message;
         }
         StateHasChanged();
-    } // End of Method LoadPageAsync
+    }
 
     private async Task ExportCsvAsync()
     {
         var url = BuildExportUrl("csv");
         await JS.InvokeVoidAsync("open", url, "_blank");
-    } // End of Method ExportCsvAsync
+    }
 
     private async Task ExportJsonAsync()
     {
         var url = BuildExportUrl("json");
         await JS.InvokeVoidAsync("open", url, "_blank");
-    } // End of Method ExportJsonAsync
+    }
 
     private string BuildExportUrl(string kind)
     {
@@ -420,13 +420,13 @@
         if (!string.IsNullOrWhiteSpace(correlationId)) url.Append($"&correlationId={Uri.EscapeDataString(correlationId)}");
         if (impersonationOnly) url.Append("&impersonationOnly=true");
         return url.ToString();
-    } // End of Method BuildExportUrl
+    }
 
     private void Select(AuditItem it)
     {
         selected = it;
         detailsText = it.Details?.RootElement.GetRawText() ?? "(no details)";
-    } // End of Method Select
+    }
 
     private void ResetFilters()
     {
@@ -435,7 +435,7 @@
         tenantId = subject = category = action = service = outcome = correlationId = null;
         impersonationOnly = false;
         _ = SearchAsync();
-    } // End of Method ResetFilters
+    }
 
     private Color GetOutcomeColor(string? outcome)
     {
@@ -448,20 +448,19 @@
             var o when o.Contains("warn") => Color.Warning,
             _ => Color.Default
         };
-    } // End of Method GetOutcomeColor
+    }
 
     public void Dispose()
     {
         _optionsReload?.Dispose();
-    } // End of Method Dispose
+    }
 
     private sealed class QueryResult
     {
         public List<AuditItem> Items { get; set; } = new();
         public string? NextPageToken { get; set; }
-    } // End of Class QueryResult
-
-    private sealed class AuditItem
+    }
+private sealed class AuditItem
     {
         public Guid Id { get; set; }
         public DateTimeOffset WhenUtc { get; set; }
@@ -483,5 +482,5 @@
         public System.Text.Json.JsonDocument? Details { get; set; }
         public string? ImpersonatedBy { get; set; }
         public string? SourceHost { get; set; }
-    } // End of Class AuditItem
-} // End of Class Audit
+    }
+}

@@ -440,23 +440,114 @@ Common pitfalls
 We use SigNoz as the backend telemetry store for metrics, traces, and logs. **All observability access is through the TansuCloud Dashboard's Observability pages** via the SigNoz REST API.
 
 **Architecture**: SigNoz runs inside the Docker network without external port exposure. The Dashboard integrates with SigNoz through API-only calls, providing curated observability views at:
+
 - `/dashboard/admin/observability` - Overview dashboard with key metrics
 - `/dashboard/admin/observability/traces` - Distributed traces explorer with filtering
 - `/dashboard/admin/observability/config` - Observability governance settings
 
 **Direct SigNoz UI Access** (optional, advanced users only):
-By default, SigNoz UI is NOT exposed externally - all observability features are available through the Dashboard's curated views. However, advanced users may optionally enable direct access to the full SigNoz UI for deep troubleshooting:
 
-**To enable (dev/compose):**
-```yaml
-# Add to the signoz service in docker-compose.yml
-ports:
-  - "3301:8080"
+**For 99% of users**: The TansuCloud Dashboard provides all standard observability workflows (Overview, Traces, Logs, Configuration) through curated, user-friendly pages at `/dashboard/admin/observability/*`. **This is the recommended approach** for production deployments.
+
+**For advanced users (~1% of deployments)**: If you need deep troubleshooting, custom dashboards, or advanced SigNoz features not yet exposed in the Dashboard, you can optionally enable direct access to the full SigNoz UI:
+
+**Security Architecture**:
+
+- By default, SigNoz runs **inside the Docker network only** (no host port exposure)
+- This isolates observability data from external access
+- The Dashboard authenticates with SigNoz API internally and presents data securely
+
+**Option 1: SSH Tunnel (Recommended for temporary access)**
+
+```bash
+# From your local machine, create SSH tunnel to production server
+ssh -L 3301:localhost:3301 user@your-server.com
+
+# On the server, temporarily forward to SigNoz container
+docker run --rm -p 3301:3301 --network tansucloud-network \
+  alpine/socat TCP-LISTEN:3301,fork TCP:signoz:8080
+
+# Access from local browser: http://localhost:3301
+# Login: Use SIGNOZ_API_EMAIL and SIGNOZ_API_PASSWORD from .env
+# Close tunnel when done (Ctrl+C)
 ```
 
-Then access SigNoz directly at `http://127.0.0.1:3301`. For production, use your load balancer or ingress controller to expose the signoz service port 8080 on your chosen external port.
+**Option 2: Permanent Port Exposure (Development/Staging only)**
 
-**Note:** 99% of users will never need this - the Dashboard provides all standard observability workflows (Overview, Traces, Logs, Configuration).
+```yaml
+# In docker-compose.yml (dev) or docker-compose.prod.yml (production)
+# Add to the signoz service:
+signoz:
+  profiles: [observability]
+  ports:
+    - "3301:8080"  # Add this line
+  # ... rest of config
+```
+
+Then restart SigNoz:
+
+```bash
+# Development
+docker compose restart signoz
+
+# Production
+docker compose -f docker-compose.prod.yml --profile observability restart signoz
+```
+
+Access SigNoz UI at:
+
+- Development: `http://127.0.0.1:3301`
+- Production: `https://your-domain.com:3301` (requires firewall rule + TLS termination)
+
+**Option 3: Production with Nginx/Caddy Reverse Proxy**
+
+```nginx
+# /etc/nginx/sites-available/signoz
+server {
+    listen 443 ssl http2;
+    server_name signoz.your-domain.com;
+    
+    ssl_certificate /etc/letsencrypt/live/your-domain.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/your-domain.com/privkey.pem;
+    
+    # Restrict access to specific IPs (VPN, office network)
+    allow 10.0.0.0/8;       # Internal network
+    allow 203.0.113.0/24;   # Office network
+    deny all;
+    
+    location / {
+        proxy_pass http://signoz:8080;  # Internal Docker network
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+}
+```
+
+**When to use direct SigNoz UI access**:
+
+- ✅ Creating custom dashboards with complex queries
+- ✅ Setting up advanced alerts with custom conditions
+- ✅ Debugging OTLP collector pipeline issues
+- ✅ Analyzing query performance and cardinality
+- ✅ Configuring retention policies beyond governance defaults
+- ✅ Accessing SigNoz features not yet integrated into Dashboard
+
+**Security warnings**:
+
+- ⚠️ **Never expose SigNoz directly to the public internet** - observability data can contain sensitive information (API keys, user data, internal architecture)
+- ⚠️ **Always use firewall rules or VPN** to restrict access to trusted IPs
+- ⚠️ **Enable HTTPS/TLS** if exposing externally (use nginx/caddy as shown above)
+- ⚠️ **Rotate SIGNOZ_API_PASSWORD regularly** if direct access is enabled
+- ⚠️ **Consider IP allowlisting** at the nginx/firewall level for additional protection
+
+**Authentication**:
+
+- Login with credentials from `.env`:
+  - Email: Value of `SIGNOZ_API_EMAIL` (default: `admin@your-domain.com`)
+  - Password: Value of `SIGNOZ_API_PASSWORD` (must be 12+ characters with uppercase, lowercase, number, symbol)
+- These credentials are automatically created by the `signoz-init` container on first startup
 
 All services export OTLP to the in-cluster SigNoz collector. Metrics, traces, and logs appear automatically as you drive traffic through the gateway.Quick start (dev)
 
@@ -3525,6 +3616,7 @@ If you routinely run with Redis, consider adding a VS Code test task that sets `
 ### 8.2 Observability dashboards (SigNoz)
 
 **TansuCloud Dashboard provides curated observability views** through API-only integration with SigNoz. Access all observability features at:
+
 - `/dashboard/admin/observability` - Overview with key metrics, service graphs, and system health
 - `/dashboard/admin/observability/traces` - Distributed traces explorer with filtering by service, status, duration
 - `/dashboard/admin/observability/logs` - Centralized log viewer with search and context (Phase 7)
