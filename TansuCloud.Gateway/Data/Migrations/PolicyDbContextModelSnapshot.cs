@@ -17,10 +17,78 @@ namespace TansuCloud.Gateway.Data.Migrations
         {
 #pragma warning disable 612, 618
             modelBuilder
-                .HasAnnotation("ProductVersion", "9.0.9")
+                .HasAnnotation("ProductVersion", "9.0.10")
                 .HasAnnotation("Relational:MaxIdentifierLength", 63);
 
             NpgsqlModelBuilderExtensions.UseIdentityByDefaultColumns(modelBuilder);
+
+            modelBuilder.Entity("TansuCloud.Gateway.Data.ObservabilitySettings", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
+
+                    b.Property<string>("Component")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<bool>("Enabled")
+                        .HasColumnType("boolean");
+
+                    b.Property<int>("RetentionDays")
+                        .HasColumnType("integer");
+
+                    b.Property<int>("SamplingPercent")
+                        .HasColumnType("integer");
+
+                    b.Property<DateTime>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("UpdatedBy")
+                        .HasColumnType("text");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("Component")
+                        .IsUnique()
+                        .HasDatabaseName("ix_observability_settings_component");
+
+                    b.HasIndex("Enabled")
+                        .HasDatabaseName("ix_observability_settings_enabled");
+
+                    b.ToTable("ObservabilitySettings");
+
+                    b.HasData(
+                        new
+                        {
+                            Id = 1,
+                            Component = "prometheus",
+                            Enabled = true,
+                            RetentionDays = 7,
+                            SamplingPercent = 100,
+                            UpdatedAt = new DateTime(2025, 1, 1, 0, 0, 0, 0, DateTimeKind.Utc)
+                        },
+                        new
+                        {
+                            Id = 2,
+                            Component = "tempo",
+                            Enabled = true,
+                            RetentionDays = 7,
+                            SamplingPercent = 100,
+                            UpdatedAt = new DateTime(2025, 1, 1, 0, 0, 0, 0, DateTimeKind.Utc)
+                        },
+                        new
+                        {
+                            Id = 3,
+                            Component = "loki",
+                            Enabled = true,
+                            RetentionDays = 7,
+                            SamplingPercent = 100,
+                            UpdatedAt = new DateTime(2025, 1, 1, 0, 0, 0, 0, DateTimeKind.Utc)
+                        });
+                });
 
             modelBuilder.Entity("TansuCloud.Gateway.Data.PolicyEntity", b =>
                 {

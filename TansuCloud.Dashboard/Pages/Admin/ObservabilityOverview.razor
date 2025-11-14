@@ -1,8 +1,10 @@
 @page "/admin/observability"
 @layout TansuCloud.Dashboard.Pages.Admin.AdminLayout
 @using MudBlazor
-@using TansuCloud.Dashboard.Observability.SigNoz
-@inject ISigNozQueryService SigNozService
+@using TansuCloud.Dashboard.Observability.Prometheus
+@using TansuCloud.Dashboard.Services
+@inject IPrometheusQueryService PrometheusService
+@inject IGrafanaEmbedService GrafanaService
 @inject NavigationManager Navigation
 @inject ILogger<ObservabilityOverview> Logger
 @inject ISnackbar Snackbar
@@ -13,7 +15,7 @@
 <MudContainer MaxWidth="MaxWidth.ExtraExtraLarge" Class="mt-4 mb-4">
     <MudText Typo="Typo.h4" Class="mb-2">Observability Dashboard</MudText>
     <MudText Typo="Typo.body1" Class="mb-4">
-        Real-time service health, topology, and error tracking powered by SigNoz.
+        Real-time service health, metrics, and error tracking powered by Prometheus (Task 47 Phase 1).
     </MudText>
 
     @if (_loading)
@@ -25,11 +27,11 @@
     }
     else
     {
-        <!-- Service Status Cards -->
+        <!-- Service Status Cards (Application Services Only) -->
         <MudGrid Class="mb-4">
-            @if (_services.Any())
+            @if (_services.Any(s => s.ServiceName.StartsWith("tansu.")))
             {
-                @foreach (var service in _services.Take(6))
+                @foreach (var service in _services.Where(s => s.ServiceName.StartsWith("tansu.")).Take(6))
                 {
                     <MudItem xs="12" sm="6" md="4" lg="2">
                         <MudCard Elevation="2">
@@ -53,38 +55,6 @@
             }
         </MudGrid>
 
-        <!-- OTLP Health Status -->
-        @if (_otlpHealth != null)
-        {
-            <MudCard Elevation="2" Class="mb-4">
-                <MudCardHeader>
-                    <CardHeaderContent>
-                        <MudText Typo="Typo.h6">OTLP Exporter Health</MudText>
-                    </CardHeaderContent>
-                </MudCardHeader>
-                <MudCardContent>
-                    <MudGrid>
-                        <MudItem xs="12" sm="6" md="3">
-                            <MudText Typo="Typo.subtitle2">Total Exporters</MudText>
-                            <MudText Typo="Typo.h5">@GetTotalExporters()</MudText>
-                        </MudItem>
-                        <MudItem xs="12" sm="6" md="3">
-                            <MudText Typo="Typo.subtitle2">Healthy</MudText>
-                            <MudText Typo="Typo.h5" Color="Color.Success">@GetHealthyExporters()</MudText>
-                        </MudItem>
-                        <MudItem xs="12" sm="6" md="3">
-                            <MudText Typo="Typo.subtitle2">Unhealthy</MudText>
-                            <MudText Typo="Typo.h5" Color="Color.Error">@GetUnhealthyExporters()</MudText>
-                        </MudItem>
-                        <MudItem xs="12" sm="6" md="3">
-                            <MudText Typo="Typo.subtitle2">Last Check</MudText>
-                            <MudText Typo="Typo.body2">@GetLastCheckTime()</MudText>
-                        </MudItem>
-                    </MudGrid>
-                </MudCardContent>
-            </MudCard>
-        }
-
         <!-- Service Topology -->
         @if (_topology != null && _topology.Nodes.Any())
         {
@@ -100,7 +70,6 @@
                             <tr>
                                 <th>Service</th>
                                 <th>Type</th>
-                                <th>Dependencies</th>
                                 <th>Call Rate</th>
                                 <th>Error Rate</th>
                             </tr>
@@ -111,7 +80,6 @@
                                 <tr>
                                     <td><strong>@node.ServiceName</strong></td>
                                     <td>@node.ServiceType</td>
-                                    <td>@GetDependencies(node.ServiceName).Count</td>
                                     <td>@node.CallRate.ToString("F1")/s</td>
                                     <td>
                                         <MudChip T="string" Size="Size.Small" Color="@(node.ErrorRate > 0.05 ? Color.Error : Color.Success)">
@@ -194,6 +162,60 @@
                 </MudButton>
             </MudItem>
         </MudGrid>
+
+        <!-- Grafana Dashboard Embedding (Task 47 Phase 4) -->
+        @if (GrafanaService.IsGrafanaAvailable)
+        {
+            <MudDivider Class="my-6" />
+            
+            <MudText Typo="Typo.h5" Class="mb-2">
+                <MudIcon Icon="@Icons.Material.Filled.Dashboard" Class="mr-2" />
+                Advanced Dashboards (Grafana)
+            </MudText>
+            <MudText Typo="Typo.body2" Class="mb-4">
+                Interactive charts powered by Prometheus, Tempo, and Loki. Auto-refreshes every 30 seconds.
+            </MudText>
+
+            <!-- Time Range Selector -->
+            <MudButtonGroup Color="Color.Primary" Variant="Variant.Outlined" Size="Size.Small" Class="mb-4">
+                <MudButton OnClick="@(() => SetTimeRange("now-15m"))">15m</MudButton>
+                <MudButton OnClick="@(() => SetTimeRange("now-1h"))">1h</MudButton>
+                <MudButton OnClick="@(() => SetTimeRange("now-6h"))">6h</MudButton>
+                <MudButton OnClick="@(() => SetTimeRange("now-24h"))">24h</MudButton>
+            </MudButtonGroup>
+
+            <!-- TansuCloud Overview Dashboard -->
+            <MudCard Elevation="2" Class="mb-4">
+                <MudCardHeader>
+                    <CardHeaderContent>
+                        <MudText Typo="Typo.h6">TansuCloud Overview</MudText>
+                        <MudText Typo="Typo.body2">Service health, request rates, and latency p95</MudText>
+                    </CardHeaderContent>
+                    <CardHeaderActions>
+                        <MudIconButton Icon="@Icons.Material.Filled.Refresh" 
+                                      Color="Color.Primary" 
+                                      Size="Size.Small"
+                                      OnClick="RefreshGrafana" />
+                    </CardHeaderActions>
+                </MudCardHeader>
+                <MudCardContent Class="pa-0">
+                    @if (!string.IsNullOrEmpty(_grafanaOverviewUrl))
+                    {
+                        <iframe src="@_grafanaOverviewUrl" 
+                                style="width: 100%; height: 2400px; border: none;">
+                        </iframe>
+                    }
+                    else
+                    {
+                        <div class="pa-4 text-center">
+                            <MudText Typo="Typo.body2" Color="Color.Error">
+                                Grafana dashboard unavailable. Check configuration.
+                            </MudText>
+                        </div>
+                    }
+                </MudCardContent>
+            </MudCard>
+        }
     }
 </MudContainer>
 
@@ -201,40 +223,77 @@
     private bool _loading = true;
     private List<ServiceNode> _services = new();
     private ServiceTopologyResult? _topology;
-    private OtlpHealthResult? _otlpHealth;
     private RecentErrorsResult? _recentErrors;
+    
+    // Grafana embedding state (Task 47 Phase 4)
+    private string? _grafanaOverviewUrl;
+    private string _selectedTimeRange = "now-1h";
 
     protected override async Task OnInitializedAsync()
     {
         await LoadData();
+        UpdateGrafanaUrl();
     }
 
     private async Task LoadData()
     {
         _loading = true;
+        Console.WriteLine("[OVERVIEW] LoadData() starting...");
         try
         {
+            Console.WriteLine("[OVERVIEW] Calling GetServiceTopologyAsync...");
             // Load all dashboard data in parallel
-            var topologyTask = SigNozService.GetServiceTopologyAsync();
-            var otlpTask = SigNozService.GetOtlpHealthAsync();
-            var errorsTask = SigNozService.GetRecentErrorsAsync(timeRangeMinutes: 60, limit: 10);
+            var topologyTask = PrometheusService.GetServiceTopologyAsync();
+            var errorsTask = PrometheusService.GetRecentErrorsAsync(serviceName: null, timeRangeMinutes: 60, limit: 10);
 
-            await Task.WhenAll(topologyTask, otlpTask, errorsTask);
+            await Task.WhenAll(topologyTask, errorsTask);
 
             _topology = await topologyTask;
             _services = _topology?.Nodes.ToList() ?? new();
-            _otlpHealth = await otlpTask;
+            Console.WriteLine($"[OVERVIEW] Got {_services.Count} services from topology");
             _recentErrors = await errorsTask;
         }
         catch (Exception ex)
         {
+            Console.WriteLine($"[OVERVIEW] ERROR: {ex.Message}");
             Logger.LogError(ex, "Error loading observability dashboard data");
-            Snackbar.Add("Failed to load observability data. Check SigNoz connection.", Severity.Error);
+            Snackbar.Add("Failed to load observability data. Check Prometheus connection.", Severity.Error);
         }
         finally
         {
+            Console.WriteLine("[OVERVIEW] LoadData() finished");
             _loading = false;
         }
+    }
+
+    private void UpdateGrafanaUrl()
+    {
+        if (!GrafanaService.IsGrafanaAvailable)
+        {
+            _grafanaOverviewUrl = null;
+            return;
+        }
+
+        _grafanaOverviewUrl = GrafanaService.GetDashboardEmbedUrl(
+            dashboardUid: "tansucloud-overview",
+            theme: "light",
+            timeRange: _selectedTimeRange);
+        
+        Logger.LogDebug("Updated Grafana URL: {Url}", _grafanaOverviewUrl);
+    }
+
+    private void SetTimeRange(string timeRange)
+    {
+        _selectedTimeRange = timeRange;
+        UpdateGrafanaUrl();
+        StateHasChanged();
+    }
+
+    private void RefreshGrafana()
+    {
+        UpdateGrafanaUrl();
+        StateHasChanged();
+        Snackbar.Add("Dashboard refreshed", Severity.Info);
     }
 
     private Color GetHealthColor(ServiceNode service)
@@ -267,12 +326,5 @@
     {
         Navigation.NavigateTo($"/admin/observability/traces?traceId={traceId}");
     }
-
-    private int GetTotalExporters() => _otlpHealth?.Exporters.Count ?? 0;
-    private int GetHealthyExporters() => _otlpHealth?.Exporters.Count(e => e.IsHealthy) ?? 0;
-    private int GetUnhealthyExporters() => _otlpHealth?.Exporters.Count(e => !e.IsHealthy) ?? 0;
-    private string GetLastCheckTime() => _otlpHealth?.Exporters.Any() == true 
-        ? (_otlpHealth.Exporters.Max(e => e.LastExport) ?? DateTime.UtcNow).ToString("HH:mm:ss") 
-        : "N/A";
 }
 

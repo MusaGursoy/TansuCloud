@@ -1,4 +1,0 @@
--- Tansu.Cloud Public Repository:    https://github.com/MusaGursoy/TansuCloud
--- Fix logs_attribute_keys table to include timestamp column if missing
--- This prevents signoz-schema-migrator-async migration 1003 from failing
--- Note: This runs after schema migrations create the database, so we use a patch instead

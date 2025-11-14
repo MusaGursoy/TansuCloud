@@ -1,0 +1,16 @@
+# Grafana Dashboards Provisioning
+# Auto-import dashboards from /var/lib/grafana/dashboards on startup
+
+apiVersion: 1
+
+providers:
+  - name: 'TansuCloud Dashboards'
+    orgId: 1
+    folder: 'TansuCloud'
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 30
+    allowUiUpdates: true
+    options:
+      path: /etc/grafana/provisioning/dashboards
+      foldersFromFilesStructure: true

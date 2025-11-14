@@ -15,21 +15,7 @@
 			"label": "Run all E2E tests",
 			"type": "shell",
 			"command": "dotnet test .\\tests\\TansuCloud.E2E.Tests\\TansuCloud.E2E.Tests.csproj -c Debug",
-			"group": "build",
-			"dependsOn": [
-				"SigNoz: readiness probe"
-			],
-			"dependsOrder": "sequence"
-		},
-		{
-			"label": "SigNoz: readiness probe",
-			"type": "shell",
-			"command": "pwsh",
-			"args": [
-				"-NoProfile",
-				"-File",
-				"${workspaceFolder}/dev/tools/sigNoz-ready.ps1"
-			]
+			"group": "build"
 		},
 		{
 			"label": "Run health E2E tests",
@@ -372,37 +358,6 @@
 			"command": "dotnet build .\\TansuCloud.sln -c Debug",
 			"isBackground": false,
 			"group": "build"
-		},
-		{
-			"label": "SigNoz: readiness + run E2E",
-			"type": "shell",
-			"command": "pwsh",
-			"args": [
-				"-NoProfile",
-				"-File",
-				"${workspaceFolder}/dev/tools/sigNoz-run-exception-e2e.ps1"
-			],
-			"group": "build"
-		},
-		{
-			"label": "SigNoz: governance (dry-run)",
-			"type": "shell",
-			"command": "pwsh",
-			"args": [
-				"-NoProfile",
-				"-Command",
-				"& { $ErrorActionPreference='Stop'; . '${workspaceFolder}/dev/tools/common.ps1'; Import-TansuDotEnv | Out-Null; pwsh -NoProfile -File '${workspaceFolder}/dev/tools/signoz-apply-governance.ps1' -DefaultsPath '${workspaceFolder}/SigNoz/governance.dev.json' }"
-			]
-		},
-		{
-			"label": "SigNoz: governance (apply)",
-			"type": "shell",
-			"command": "pwsh",
-			"args": [
-				"-NoProfile",
-				"-Command",
-				"& { $ErrorActionPreference='Stop'; . '${workspaceFolder}/dev/tools/common.ps1'; Import-TansuDotEnv | Out-Null; pwsh -NoProfile -File '${workspaceFolder}/dev/tools/signoz-apply-governance.ps1' -DefaultsPath '${workspaceFolder}/SigNoz/governance.dev.json' -Apply }"
-			]
 		},
 		{
 			"label": "temp: validate prod compose",

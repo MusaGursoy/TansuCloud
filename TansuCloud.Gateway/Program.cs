@@ -136,6 +136,8 @@ builder
         // Export OTLP diagnostics/gauges
         metrics.AddMeter("tansu.otel.exporter");
         metrics.AddTansuOtlpExporter(builder.Configuration, builder.Environment);
+        // Export Prometheus metrics for direct scraping (Task 47 Phase 4)
+        metrics.AddPrometheusExporter();
     });
 
 // Shared observability core (Task 38): dynamic log level overrides, etc.
@@ -467,8 +469,16 @@ var gatewayDbConnectionString =
     ?? throw new InvalidOperationException("GatewayDb connection string not configured");
 
 builder.Services.AddDbContext<TansuCloud.Gateway.Data.PolicyDbContext>(options =>
-    options.UseNpgsql(gatewayDbConnectionString)
-);
+{
+    options.UseNpgsql(gatewayDbConnectionString);
+    
+    // In Development, suppress pending model changes warning (Task 47: manual table creation workaround)
+    if (builder.Environment.IsDevelopment())
+    {
+        options.ConfigureWarnings(warnings =>
+            warnings.Ignore(Microsoft.EntityFrameworkCore.Diagnostics.RelationalEventId.PendingModelChangesWarning));
+    }
+});
 
 builder.Services.AddScoped<
     TansuCloud.Gateway.Data.IPolicyStore,
@@ -1252,6 +1262,33 @@ var initialProxyRoutes = new List<RouteConfig>
                 ["Set"] = "Accept-Encoding"
             }
         }
+    },
+    // Grafana route - Optional advanced visualization (Task 47 Phase 4)
+    // Only accessible in Development or when GRAFANA_UI_ENABLED=true
+    // Note: Grafana serves from sub-path (/grafana), so we don't remove the prefix
+    new RouteConfig
+    {
+        RouteId = "grafana-route",
+        ClusterId = "grafana",
+        Order = 1,
+        Match = new RouteMatch { Path = "/grafana/{**catch-all}" },
+        Transforms = new[]
+        {
+            // Don't remove path prefix - Grafana expects /grafana/* with SERVE_FROM_SUB_PATH=true
+            new Dictionary<string, string> { ["RequestHeaderOriginalHost"] = "true" },
+            new Dictionary<string, string>
+            {
+                ["RequestHeader"] = "X-Forwarded-Proto",
+                ["Set"] = "https"
+            },
+            new Dictionary<string, string>
+            {
+                ["RequestHeader"] = "X-Forwarded-Prefix",
+                ["Set"] = "/grafana"
+            },
+            new Dictionary<string, string> { ["RequestHeadersCopy"] = "true" },
+            new Dictionary<string, string> { ["ResponseHeadersCopy"] = "true" }
+        }
     }
 };
 var initialProxyClusters = new List<ClusterConfig>
@@ -1324,6 +1361,20 @@ var initialProxyClusters = new List<ClusterConfig>
         Destinations = new Dictionary<string, DestinationConfig>
         {
             ["s1"] = new() { Address = storageBase }
+        }
+    },
+    new ClusterConfig
+    {
+        ClusterId = "grafana",
+        HttpRequest = new()
+        {
+            ActivityTimeout = TimeSpan.FromMinutes(5),
+            Version = new Version(1, 1),
+            VersionPolicy = HttpVersionPolicy.RequestVersionOrLower
+        },
+        Destinations = new Dictionary<string, DestinationConfig>
+        {
+            ["g1"] = new() { Address = "http://grafana:3000" }
         }
     }
 };
@@ -2430,6 +2481,156 @@ adminGroup
         }
     )
     .WithDisplayName("Admin: Delete policy");
+
+// Observability Settings endpoints (Task 47 Phase 5 - Retention/Sampling Management)
+adminGroup
+    .MapGet(
+        "/observability/settings",
+        async (TansuCloud.Gateway.Data.PolicyDbContext db) =>
+        {
+            var settings = await db.ObservabilitySettings.OrderBy(s => s.Component).ToListAsync();
+            return Results.Json(settings);
+        }
+    )
+    .WithDisplayName("Admin: List observability settings");
+
+adminGroup
+    .MapGet(
+        "/observability/settings/{component}",
+        async (TansuCloud.Gateway.Data.PolicyDbContext db, string component) =>
+        {
+            var setting = await db.ObservabilitySettings
+                .FirstOrDefaultAsync(s => s.Component == component.ToLowerInvariant());
+            return setting is not null ? Results.Json(setting) : Results.NotFound();
+        }
+    )
+    .WithDisplayName("Admin: Get observability setting by component");
+
+adminGroup
+    .MapPut(
+        "/observability/settings/{component}",
+        async (
+            HttpContext http,
+            TansuCloud.Gateway.Data.PolicyDbContext db,
+            string component,
+            JsonElement body,
+            ILoggerFactory loggerFactory,
+            IAuditLogger audit
+        ) =>
+        {
+            var logger = loggerFactory.CreateLogger("Gateway.ObservabilitySettings");
+            var remote = http.Connection.RemoteIpAddress?.ToString() ?? "unknown";
+
+            try
+            {
+                // Get admin identity from claims
+                var adminEmail = http.User.FindFirst("email")?.Value
+                    ?? http.User.FindFirst("sub")?.Value
+                    ?? "unknown";
+
+                // Find existing setting
+                var setting = await db.ObservabilitySettings
+                    .FirstOrDefaultAsync(s => s.Component == component.ToLowerInvariant());
+
+                if (setting is null)
+                {
+                    return Results.NotFound();
+                }
+
+                // Parse update request
+                var retentionDays = body.TryGetProperty("retentionDays", out var retProp)
+                    ? retProp.GetInt32()
+                    : setting.RetentionDays;
+                var samplingPercent = body.TryGetProperty("samplingPercent", out var sampProp)
+                    ? sampProp.GetInt32()
+                    : setting.SamplingPercent;
+                var enabled = body.TryGetProperty("enabled", out var enabledProp)
+                    ? enabledProp.GetBoolean()
+                    : setting.Enabled;
+
+                // Validation
+                if (retentionDays < 1 || retentionDays > 365)
+                {
+                    return Results.Problem(
+                        title: "Invalid retention days",
+                        detail: "Retention days must be between 1 and 365.",
+                        statusCode: StatusCodes.Status400BadRequest
+                    );
+                }
+
+                if (samplingPercent < 0 || samplingPercent > 100)
+                {
+                    return Results.Problem(
+                        title: "Invalid sampling percent",
+                        detail: "Sampling percent must be between 0 and 100.",
+                        statusCode: StatusCodes.Status400BadRequest
+                    );
+                }
+
+                // Store old values for audit
+                var oldValues = new
+                {
+                    RetentionDays = setting.RetentionDays,
+                    SamplingPercent = setting.SamplingPercent,
+                    Enabled = setting.Enabled
+                };
+
+                // Update setting
+                setting.RetentionDays = retentionDays;
+                setting.SamplingPercent = samplingPercent;
+                setting.Enabled = enabled;
+                setting.UpdatedAt = DateTime.UtcNow;
+                setting.UpdatedBy = adminEmail;
+
+                await db.SaveChangesAsync();
+
+                // Audit log
+                try
+                {
+                    var ev = new TansuCloud.Observability.Auditing.AuditEvent
+                    {
+                        Category = "Admin",
+                        Action = "ObservabilitySettingsUpdate",
+                        Outcome = "Success",
+                        Subject = http.User?.Identity?.Name ?? "anonymous",
+                        CorrelationId = http.TraceIdentifier
+                    };
+                    audit.TryEnqueueRedacted(
+                        ev,
+                        new
+                        {
+                            Component = component,
+                            OldRetentionDays = oldValues.RetentionDays,
+                            NewRetentionDays = setting.RetentionDays,
+                            OldSamplingPercent = oldValues.SamplingPercent,
+                            NewSamplingPercent = setting.SamplingPercent,
+                            OldEnabled = oldValues.Enabled,
+                            NewEnabled = setting.Enabled
+                        },
+                        new[] { "Component", "OldRetentionDays", "NewRetentionDays", "OldSamplingPercent", "NewSamplingPercent", "OldEnabled", "NewEnabled" }
+                    );
+                }
+                catch { }
+
+                logger.LogInformation(
+                    "Admin {Admin} updated {Component} observability settings: Retention={Retention}d, Sampling={Sampling}%, Enabled={Enabled}",
+                    adminEmail, component, retentionDays, samplingPercent, enabled
+                );
+
+                return Results.Json(setting);
+            }
+            catch (Exception ex)
+            {
+                logger.LogError(ex, "Failed to update observability setting {Component}", component);
+                return Results.Problem(
+                    title: "Update failed",
+                    detail: $"Failed to update {component} settings: {ex.Message}",
+                    statusCode: StatusCodes.Status500InternalServerError
+                );
+            }
+        }
+    )
+    .WithDisplayName("Admin: Update observability setting");
 
 // Policy simulator endpoints (Task 17 - Cache & Rate Limit Policies)
 adminGroup
@@ -3837,6 +4038,9 @@ app.Use(
 );
 
 app.MapReverseProxy();
+
+// Expose Prometheus metrics endpoint for scraping (Task 47 Phase 4)
+app.MapPrometheusScrapingEndpoint();
 
 app.Run();
 

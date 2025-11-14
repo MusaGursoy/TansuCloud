@@ -1,0 +1,97 @@
+# Grafana Loki Configuration for TansuCloud (Task 47 Phase 3)
+# Purpose: Log aggregation and storage backend for TansuCloud observability
+# Storage: Local filesystem (chunks + index) for 7-day retention
+# Retention: 168 hours (7 days) via compactor
+
+# Server configuration
+server:
+  http_listen_port: 3100
+  grpc_listen_port: 9096
+  log_level: info
+
+# Authentication disabled (internal Docker network only)
+auth_enabled: false
+
+# Ingester configuration (writes logs to storage)
+ingester:
+  lifecycler:
+    address: 127.0.0.1
+    ring:
+      kvstore:
+        store: inmemory
+      replication_factor: 1
+  chunk_idle_period: 5m       # How long a chunk can be idle before flushing
+  chunk_block_size: 262144    # Target chunk size (256KB)
+  chunk_retain_period: 30s    # Keep chunks in memory after flush
+  max_chunk_age: 1h           # Max age before forced flush
+  wal:
+    enabled: true
+    dir: /loki/wal             # Write-ahead log directory (inside volume)
+
+# Schema configuration (index + chunks storage)
+schema_config:
+  configs:
+    - from: 2024-01-01
+      store: tsdb
+      object_store: filesystem
+      schema: v13
+      index:
+        prefix: index_
+        period: 24h
+
+# Storage configuration (local filesystem)
+storage_config:
+  tsdb_shipper:
+    active_index_directory: /loki/index
+    cache_location: /loki/index-cache
+  filesystem:
+    directory: /loki/chunks
+
+# Compactor configuration (retention and cleanup)
+compactor:
+  working_directory: /loki/compactor
+  compaction_interval: 10m
+  retention_enabled: true
+  retention_delete_delay: 2h
+  retention_delete_worker_count: 150
+  delete_request_store: filesystem
+
+# Limits configuration (prevent abuse)
+limits_config:
+  reject_old_samples: true
+  reject_old_samples_max_age: 168h  # 7 days
+  ingestion_rate_mb: 10              # 10MB/s per tenant
+  ingestion_burst_size_mb: 20        # 20MB burst
+  max_query_series: 500              # Limit concurrent series in queries
+  max_query_lookback: 168h           # 7-day query window
+  max_streams_per_user: 0            # Unlimited streams
+  max_global_streams_per_user: 0     # Unlimited global streams
+  retention_period: 168h             # 7-day retention
+
+# Query frontend configuration
+query_range:
+  align_queries_with_step: true
+  max_retries: 5
+  cache_results: true
+  results_cache:
+    cache:
+      embedded_cache:
+        enabled: true
+        max_size_mb: 100
+
+# Ruler configuration (disabled - no alerts in Phase 3)
+ruler:
+  storage:
+    type: local
+    local:
+      directory: /loki/rules
+  rule_path: /loki/rules-temp
+  alertmanager_url: http://localhost
+  ring:
+    kvstore:
+      store: inmemory
+  enable_api: false
+
+# Analytics (disabled)
+analytics:
+  reporting_enabled: false

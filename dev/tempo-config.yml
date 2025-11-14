@@ -1,0 +1,41 @@
+# Tempo configuration for TansuCloud (Task 47 Phase 2)
+# Grafana Tempo: Distributed tracing backend
+# Storage: Local filesystem (7-day retention)
+
+server:
+  http_listen_port: 3200
+  log_level: info
+
+distributor:
+  receivers:
+    otlp:
+      protocols:
+        grpc:
+          endpoint: 0.0.0.0:4317
+        http:
+          endpoint: 0.0.0.0:4318
+
+ingester:
+  trace_idle_period: 10s
+  max_block_bytes: 1_000_000
+  max_block_duration: 5m
+
+compactor:
+  compaction:
+    block_retention: 168h  # 7 days (7 * 24h)
+
+storage:
+  trace:
+    backend: local
+    wal:
+      path: /var/tempo/wal
+    local:
+      path: /var/tempo/blocks
+
+querier:
+  frontend_worker:
+    frontend_address: tempo:9095
+
+query_frontend:
+  search:
+    max_duration: 0s  # No limit on search duration

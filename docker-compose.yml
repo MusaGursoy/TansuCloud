@@ -23,7 +23,9 @@ services:
       # No bind mount needed - databases are created automatically on first start
       # - ./dev/db-init:/docker-entrypoint-initdb.d:ro
     ports:
-      - "5432:5432" # Host exposure for EfMigrationsIntegrationTests
+      - "5432:5432"  # Exposed for host-based E2E tests
+    # Access: Tests run on host and access via localhost:5432
+    # Debugging: docker exec -it tansu-postgres psql -U postgres
     networks:
       - tansucloud-network
 
@@ -63,9 +65,9 @@ services:
     command: ["--config=/etc/otel-collector-config.yaml"]
     volumes:
       - ./dev/otel-collector-config.yaml:/etc/otel-collector-config.yaml:ro
-    ports:
-      - "4317:4317" # OTLP gRPC
-      - "4318:4318" # OTLP HTTP
+    # NOTE: OTLP ports NOT exposed to host (security + production parity)
+    # Access: Services in Docker network use otel-collector:4317
+    # Debugging: docker logs tansu-otel-collector --tail 50
     healthcheck:
       test: ["CMD", "wget", "--spider", "-q", "http://localhost:13133/"]
       interval: 30s
@@ -94,6 +96,7 @@ services:
       - '--web.console.libraries=/usr/share/prometheus/console_libraries'
       - '--web.console.templates=/usr/share/prometheus/consoles'
       - '--web.enable-lifecycle'
+      - '--web.enable-remote-write-receiver'
     volumes:
       - ./dev/prometheus-config.yml:/etc/prometheus/prometheus.yml:ro
       - tansu-prometheus-data:/prometheus
@@ -108,6 +111,111 @@ services:
     networks:
       - tansucloud-network
 
+  tempo:
+    image: grafana/tempo:2.6.0
+    container_name: tansu-tempo
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 1G
+    command:
+      - '-config.file=/etc/tempo.yml'
+    volumes:
+      - ./dev/tempo-config.yml:/etc/tempo.yml:ro
+      - tansu-tempo-data:/var/tempo
+    # NOTE: Tempo is accessible only within the Docker network via http://tempo:3200
+    # Traces accessed through Dashboard API - no direct external port exposure
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:3200/ready"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    networks:
+      - tansucloud-network
+
+  loki:
+    image: grafana/loki:3.3.1
+    container_name: tansu-loki
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 1G
+    command:
+      - '-config.file=/etc/loki.yml'
+    volumes:
+      - ./dev/loki-config.yml:/etc/loki.yml:ro
+      - tansu-loki-data:/loki
+    # NOTE: Loki is accessible only within the Docker network via http://loki:3100
+    # Logs accessed through Dashboard API - no direct external port exposure
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:3100/ready"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    networks:
+      - tansucloud-network
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: tansu-grafana
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 256M
+    environment:
+      # Database (PostgreSQL backend)
+      GF_DATABASE_TYPE: postgres
+      GF_DATABASE_HOST: postgres:5432
+      GF_DATABASE_NAME: grafana
+      GF_DATABASE_USER: ${POSTGRES_USER}
+      GF_DATABASE_PASSWORD: ${POSTGRES_PASSWORD}
+      # Security
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD}
+      GF_AUTH_DISABLE_LOGIN_FORM: "false"
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      # Server (internal address; Gateway handles proxy via X-Forwarded-Prefix)
+      GF_SERVER_ROOT_URL: ${PUBLIC_BASE_URL}/grafana
+      GF_SERVER_SERVE_FROM_SUB_PATH: "true"
+      GF_SERVER_HTTP_PORT: "3000"
+      # Security - Allow embedding in iframe (dev only, Dashboard embeds Grafana dashboards)
+      GF_SECURITY_ALLOW_EMBEDDING: "true"
+      # Disable telemetry
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+    volumes:
+      - ./dev/grafana/provisioning:/etc/grafana/provisioning:ro
+      - tansu-grafana-data:/var/lib/grafana
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:3000/api/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    depends_on:
+      postgres:
+        condition: service_started
+      prometheus:
+        condition: service_healthy
+      tempo:
+        condition: service_healthy
+      loki:
+        condition: service_healthy
+    networks:
+      - tansucloud-network
+    # NOTE: Grafana is accessible only within Docker network
+    # Access via Gateway /grafana/* route (optional, disabled by default)
+    # Or embed dashboards in Admin Dashboard via iframe
+
   redis:
     image: ghcr.io/microsoft/garnet:latest
     container_name: tansu-redis
@@ -119,7 +227,9 @@ services:
           memory: 2G
     command: ["/app/GarnetServer", "--port", "6379", "--checkpointdir", "/data", "--recover"]
     ports:
-      - "6379:6379"  # Expose for E2E tests running on host
+      - "6379:6379"  # Exposed for host-based E2E tests
+    # Access: Tests run on host and access via localhost:6379
+    # Debugging: docker exec -it tansu-redis /app/GarnetServer --test-ping
     healthcheck:
       test: ["CMD", "/app/GarnetServer", "--test-ping"]
       interval: 10s
@@ -187,8 +297,9 @@ services:
       dockerfile: TansuCloud.Identity/Dockerfile
     container_name: tansu-identity
     restart: unless-stopped
-    ports:
-      - "5095:8080"
+    # NOTE: Port NOT exposed to host - all access via Gateway /identity/
+    # Production parity: Identity never directly exposed
+    # Debugging: docker logs tansu-identity --tail 50
     deploy:
       resources:
         limits:
@@ -247,14 +358,22 @@ services:
       Cache__Redis: redis:6379
       # Route audit writes via PgCat; avoid localhost inside container
       Audit__ConnectionString: "Host=pgcat;Port=6432;Database=postgres;Username=${POSTGRES_USER};Password=${POSTGRES_PASSWORD}"
-      # SigNoz Query Service API (inside container network, port 8080)
-      # External port 3301 removed - access observability through Dashboard only
-      # Advanced users can optionally expose with: ports: ["3301:8080"]
-      SigNozQuery__ApiBaseUrl: http://signoz:8080
-      SigNozQuery__SigNozUiBaseUrl: http://signoz:8080
-      # SigNoz API authentication (required even with SIGNOZ_DISABLE_FRONTEND_AUTH=true)
-      SigNozQuery__Email: ${SIGNOZ_API_EMAIL}
-      SigNozQuery__Password: ${SIGNOZ_API_PASSWORD}
+      # Prometheus Query Service API (Task 47 Phase 1 - Prometheus metrics)
+      PrometheusQuery__ApiBaseUrl: http://prometheus:9090
+      PrometheusQuery__PrometheusUiBaseUrl: http://prometheus:9090
+      PrometheusQuery__TimeoutSeconds: 30
+      PrometheusQuery__MaxRetries: 2
+      # Tempo Query Service API (Task 47 Phase 2 - Tempo traces)
+      TempoQuery__ApiBaseUrl: http://tempo:3200
+      TempoQuery__TimeoutSeconds: 30
+      TempoQuery__MaxRetries: 2
+      # Loki Query Service API (Task 47 Phase 3 - Loki logs)
+      LokiQuery__ApiBaseUrl: http://loki:3100
+      LokiQuery__TimeoutSeconds: 30
+      LokiQuery__MaxRetries: 2
+      # Grafana Dashboard Embedding (Task 47 Phase 4 - Grafana visualization)
+      Grafana__Enabled: ${GRAFANA_ENABLED:-true}
+      Grafana__BaseUrl: ${PUBLIC_BASE_URL}/grafana
       Oidc__Authority: ${PUBLIC_BASE_URL}/identity
       # Use gateway for backchannel discovery (containers can't reach 127.0.0.1)
       # Gateway now passes through Identity's issuer unchanged
@@ -265,11 +384,6 @@ services:
       # Dev-only: bypass id_token signature to isolate env/test issues; disable in production
       DASHBOARD_BYPASS_IDTOKEN_SIGNATURE: "1"
       GatewayBaseUrl: ${GATEWAY_BASE_URL}
-      # Dev convenience: standard ClickHouse HTTP for host tooling and docs. Avoids .env edits.
-      # Note: this is primarily for humans/tools; app containers do not read this variable.
-      CLICKHOUSE_HTTP: http://127.0.0.1:8123
-      # Prometheus has been removed in favor of SigNoz. Leave unset to disable legacy metrics proxy.
-      # Prometheus__BaseUrl: 
       LogReporting__Enabled: ${LOGREPORTING__ENABLED:-true}
       LogReporting__MainServerUrl: ${LOGREPORTING__MAINSERVERURL:-http://telemetry:8080/api/logs/report}
       LogReporting__ApiKey: ${LOGREPORTING__APIKEY:-dev-telemetry-api-key-1234567890}
@@ -384,6 +498,29 @@ services:
       redis:
         condition: service_healthy
 
+  # ========================================
+  # Telemetry Service - Development Only
+  # ========================================
+  # NOTE: This service is NOT part of production TansuCloud deployments.
+  # Purpose: Telemetry runs on the MAIN SERVER (tansu.cloud) to collect
+  #          product diagnostics from customer TansuCloud deployments.
+  # 
+  # Architecture:
+  #   - Customer deployments: Dashboard → HTTPS → telemetry.tansu.cloud
+  #   - Main server: Standalone telemetry service (separate infrastructure)
+  #   - NOT part of tansucloud-network in production
+  # 
+  # Development use:
+  #   - Included here for local testing of Dashboard log reporting (Task 37)
+  #   - Simulates the main server telemetry endpoint locally
+  #   - Dashboard sends reports to http://telemetry:8080/api/logs/report
+  # 
+  # Production deployment:
+  #   - Remove this service from docker-compose.prod.yml
+  #   - Deploy telemetry separately on main server infrastructure
+  #   - Configure Dashboard LogReporting__MainServerUrl to point to
+  #     the actual main server endpoint (e.g., https://telemetry.tansu.cloud)
+  # ========================================
   telemetry:
     build:
       context: .
@@ -405,8 +542,9 @@ services:
       Telemetry__Database__EnforceForeignKeys: true
     volumes:
       - tansu-telemetrydata:/var/opt/tansu/telemetry
-    ports:
-      - "5279:8080"
+    # NOTE: Port NOT exposed - telemetry simulated locally for Dashboard testing
+    # In production, telemetry runs on separate main server (not in customer network)
+    # Dev access: Tests use http://telemetry:8080 inside Docker network
     healthcheck:
       test: ["CMD", "/bin/busybox", "wget", "-q", "-O", "-", "http://localhost:8080/health/ready"]
       interval: 10s
@@ -417,7 +555,7 @@ services:
       otel-collector:
         condition: service_started
     networks:
-      - tansucloud-network
+      - tansucloud-network  # Dev-only: for local testing
 
   gateway:
     build:
@@ -442,7 +580,6 @@ services:
       Services__IdentityBaseUrl: http://identity:8080
       Services__DatabaseBaseUrl: http://db:8080
       Services__StorageBaseUrl: http://storage:8080
-      Services__SigNozBaseUrl: http://signoz:8080
       OpenTelemetry__Otlp__Enabled: true
       OpenTelemetry__Otlp__Endpoint: http://otel-collector:4317
       Cache__Redis: redis:6379
@@ -474,6 +611,63 @@ services:
     networks:
       - tansucloud-network
 
+  # ========================================
+  # E2E Tests - Containerized Testing
+  # ========================================
+  # Purpose: Run E2E tests inside Docker network to access internal services
+  # Usage: docker compose --profile testing up --build e2e-tests
+  # Filter: docker compose run --rm e2e-tests --filter "FullyQualifiedName~LokiLogsE2E"
+  # ========================================
+  e2e-tests:
+    build:
+      context: .
+      dockerfile: tests/TansuCloud.E2E.Tests/Dockerfile
+    container_name: tansu-e2e-tests
+    environment:
+      # Container detection
+      DOTNET_RUNNING_IN_CONTAINER: "true"
+      
+      # Gateway and public URLs (use internal service name)
+      GATEWAY_BASE_URL: http://gateway:8080
+      PUBLIC_BASE_URL: http://gateway:8080
+      
+      # PGTL Stack (internal service names)
+      PROMETHEUS_API_BASE_URL: http://prometheus:9090
+      TEMPO_API_BASE_URL: http://tempo:3200
+      LOKI_API_BASE_URL: http://loki:3100
+      
+      # Infrastructure (internal service names)
+      OTEL_COLLECTOR_BASE_URL: http://otel-collector:4317
+      TELEMETRY_BASE_URL: http://telemetry:8080
+      
+      # Database connection (for EF migration tests)
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      
+      # Test configuration
+      ASPNETCORE_ENVIRONMENT: Development
+    depends_on:
+      gateway:
+        condition: service_healthy
+      postgres:
+        condition: service_started
+      redis:
+        condition: service_healthy
+      prometheus:
+        condition: service_healthy
+      tempo:
+        condition: service_healthy
+      loki:
+        condition: service_healthy
+      otel-collector:
+        condition: service_started
+      telemetry:
+        condition: service_healthy
+    networks:
+      - tansucloud-network
+    profiles:
+      - testing  # Only run when explicitly requested
+
 networks:
   tansucloud-network:
     driver: bridge
@@ -490,6 +684,12 @@ volumes:
   tansu-dashboard-keys:
     driver: local
   tansu-prometheus-data:
+    driver: local
+  tansu-tempo-data:
+    driver: local
+  tansu-loki-data:
+    driver: local
+  tansu-grafana-data:
     driver: local
   tansu-telemetrydata:
     driver: local

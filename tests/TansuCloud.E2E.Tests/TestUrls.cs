@@ -9,11 +9,30 @@ internal static class TestUrls
 {
     private const string DefaultLoopback = "http://127.0.0.1:8080";
     private const string DefaultGatewayInternal = "http://gateway:8080";
+
+    // PGTL Stack - Container URLs (when DOTNET_RUNNING_IN_CONTAINER=true)
+    private const string DefaultPrometheusInternal = "http://prometheus:9090";
+    private const string DefaultTempoInternal = "http://tempo:3200";
+    private const string DefaultLokiInternal = "http://loki:3100";
+
+    // Infrastructure - Container URLs
+    private const string DefaultOtelCollectorInternal = "http://otel-collector:4317";
+    private const string DefaultTelemetryInternal = "http://telemetry:8080";
+
+    // Host URLs (when running tests on host machine - no longer used in standard dev)
     private const string DefaultTelemetryBase = "http://127.0.0.1:5279";
+    private const string DefaultPrometheusBase = "http://127.0.0.1:9090";
+    private const string DefaultTempoBase = "http://127.0.0.1:3200";
+    private const string DefaultLokiBase = "http://127.0.0.1:3100";
+    private const string DefaultOtelCollectorBase = "http://127.0.0.1:8888";
 
     private static string? _publicBase;
     private static string? _gatewayBase;
     private static string? _telemetryBase;
+    private static string? _prometheusBase;
+    private static string? _tempoBase;
+    private static string? _lokiBase;
+    private static string? _otelCollectorBase;
 
     internal static string PublicBaseUrl =>
         _publicBase ??= Resolve(
@@ -32,7 +51,37 @@ internal static class TestUrls
     internal static string TelemetryBaseUrl =>
         _telemetryBase ??= Resolve(
             "TELEMETRY_BASE_URL",
-            fallback: DefaultTelemetryBase,
+            fallback: IsRunningInContainer() ? DefaultTelemetryInternal : DefaultTelemetryBase,
+            preferLoopback: !IsRunningInContainer()
+        );
+
+    internal static string PrometheusApiBaseUrl =>
+        _prometheusBase ??= Resolve(
+            "PROMETHEUS_API_BASE_URL",
+            fallback: IsRunningInContainer() ? DefaultPrometheusInternal : DefaultPrometheusBase,
+            preferLoopback: !IsRunningInContainer()
+        );
+
+    internal static string TempoApiBaseUrl =>
+        _tempoBase ??= Resolve(
+            "TEMPO_API_BASE_URL",
+            fallback: IsRunningInContainer() ? DefaultTempoInternal : DefaultTempoBase,
+            preferLoopback: !IsRunningInContainer()
+        );
+
+    internal static string LokiApiBaseUrl =>
+        _lokiBase ??= Resolve(
+            "LOKI_API_BASE_URL",
+            fallback: IsRunningInContainer() ? DefaultLokiInternal : DefaultLokiBase,
+            preferLoopback: !IsRunningInContainer()
+        );
+
+    internal static string OtelCollectorBaseUrl =>
+        _otelCollectorBase ??= Resolve(
+            "OTEL_COLLECTOR_BASE_URL",
+            fallback: IsRunningInContainer()
+                ? DefaultOtelCollectorInternal
+                : DefaultOtelCollectorBase,
             preferLoopback: !IsRunningInContainer()
         );
 

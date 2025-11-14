@@ -4298,5 +4298,277 @@ docker volume inspect tansu-pgdata
 
 - Never use `docker compose down -v` in production
 - Backup before any volume operations
+
+---
+
+## Containerized E2E Testing
+
+### Overview
+
+TansuCloud uses **containerized E2E tests** that run inside the Docker network to ensure production parity. This approach validates the actual deployment topology where:
+
+- **Only Gateway (port 8080) is exposed** to the host machine
+- **All other services** (Postgres, Redis, PGTL stack, Identity, etc.) are **internal-only**
+- **Tests access services via Docker service names** (e.g., `postgres:5432`, `redis:6379`, `prometheus:9090`)
+
+This matches production exactly where services are never directly exposed.
+
+### Benefits
+
+1. **Production Parity**: Tests run in the same network topology as production
+2. **Security**: Validates that services work without port exposure
+3. **Early Detection**: Catches routing/gateway issues before deployment
+4. **CI/CD Ready**: Same tests run identically in local dev and CI pipelines
+
+### Port Exposure Summary
+
+| Service | Dev Port | Prod Port | Accessible From |
+|---------|----------|-----------|-----------------|
+| Gateway | 8080 | 80/443 | Host machine + tests |
+| Postgres | ❌ None | ❌ None | **Docker network only** |
+| Redis | ❌ None | ❌ None | **Docker network only** |
+| OTEL Collector | ❌ None | ❌ None | **Docker network only** |
+| Identity | ❌ None | ❌ None | **Via Gateway only** |
+| Dashboard | ❌ None | ❌ None | **Via Gateway only** |
+| Database | ❌ None | ❌ None | **Via Gateway only** |
+| Storage | ❌ None | ❌ None | **Via Gateway only** |
+| Prometheus | ❌ None | ❌ None | **Docker network only** |
+| Tempo | ❌ None | ❌ None | **Docker network only** |
+| Loki | ❌ None | ❌ None | **Docker network only** |
+
+### Running Containerized E2E Tests
+
+#### Run All Tests
+
+```powershell
+# Bring up the full stack
+docker compose up -d
+
+# Wait for services to be healthy (optional - compose waits automatically)
+docker compose ps
+
+# Run all E2E tests in containerized environment
+docker compose --profile testing up --build e2e-tests
+
+# Or run tests without rebuilding
+docker compose run --rm e2e-tests
+```
+
+#### Run Specific Test Suite
+
+```powershell
+# Run only Loki logs tests
+docker compose run --rm e2e-tests --filter "FullyQualifiedName~LokiLogsE2E"
+
+# Run only health endpoint tests
+docker compose run --rm e2e-tests --filter "FullyQualifiedName~HealthEndpointsE2E"
+
+# Run only Dashboard metrics tests
+docker compose run --rm e2e-tests --filter "FullyQualifiedName~DashboardMetricsSmoke"
+```
+
+#### Run Single Test
+
+```powershell
+# Run specific test method
+docker compose run --rm e2e-tests --filter "FullyQualifiedName~TansuCloud.E2E.Tests.LokiLogsE2E.Loki_IsReceivingLogs_ViaOtelCollector"
+```
+
+### Debugging Without Port Exposure
+
+Since ports are no longer exposed, use `docker exec` for direct service access:
+
+#### Postgres
+
+```powershell
+# Interactive psql shell
+docker exec -it tansu-postgres psql -U postgres
+
+# List databases
+docker exec tansu-postgres psql -U postgres -c "\l"
+
+# Query specific database
+docker exec tansu-postgres psql -U postgres -d tansu_identity -c "SELECT * FROM AspNetUsers;"
+
+# Check extension versions
+docker exec tansu-postgres psql -U postgres -d tansu_tenant_acme_dev -c "SELECT extname, extversion FROM pg_extension WHERE extname IN ('citus', 'vector');"
+```
+
+#### Redis (Garnet)
+
+```powershell
+# Ping test
+docker exec tansu-redis /app/GarnetServer --test-ping
+
+# Get info (via logs - Garnet doesn't have redis-cli)
+docker logs tansu-redis --tail 50
+```
+
+#### PGTL Stack
+
+```powershell
+# Check Prometheus targets
+docker exec tansu-prometheus wget -O- 'http://localhost:9090/api/v1/targets'
+
+# Query Prometheus metrics
+docker exec tansu-prometheus wget -O- 'http://localhost:9090/api/v1/query?query=up'
+
+# Check Tempo readiness
+docker exec tansu-tempo wget -O- 'http://localhost:3200/ready'
+
+# Check Loki readiness
+docker exec tansu-loki wget -O- 'http://localhost:3100/ready'
+
+# Query Loki logs
+docker exec tansu-loki wget -O- 'http://localhost:3100/loki/api/v1/labels'
+docker exec tansu-loki wget -O- 'http://localhost:3100/loki/api/v1/label/service_name/values'
+```
+
+#### OTEL Collector
+
+```powershell
+# Check collector logs
+docker logs tansu-otel-collector --tail 50
+
+# Filter for specific patterns
+docker logs tansu-otel-collector | Select-String "loki|prometheus|tempo"
+```
+
+#### Application Services
+
+```powershell
+# Identity logs
+docker logs tansu-identity --tail 50
+
+# Dashboard logs
+docker logs tansu-dashboard --tail 50
+
+# Gateway logs
+docker logs tansu-gateway --tail 50
+
+# Database service logs
+docker logs tansu-db --tail 50
+
+# Storage service logs
+docker logs tansu-storage --tail 50
+```
+
+### Test Infrastructure Details
+
+#### Test Dockerfile
+
+Location: `tests/TansuCloud.E2E.Tests/Dockerfile`
+
+- Builds test project in container
+- Installs Playwright browsers for UI tests
+- Sets `DOTNET_RUNNING_IN_CONTAINER=true` environment variable
+- Uses container-aware URLs for all services
+
+#### TestUrls.cs Logic
+
+The `TestUrls.cs` class automatically detects container environment:
+
+```csharp
+private static bool IsRunningInContainer()
+{
+    return string.Equals(
+        Environment.GetEnvironmentVariable("DOTNET_RUNNING_IN_CONTAINER"),
+        "true",
+        StringComparison.OrdinalIgnoreCase
+    );
+}
+
+// Example: Prometheus URL resolution
+internal static string PrometheusApiBaseUrl =>
+    IsRunningInContainer() 
+        ? "http://prometheus:9090"  // Container network
+        : "http://127.0.0.1:9090";  // Host machine (legacy)
+```
+
+**Container URLs** (when `DOTNET_RUNNING_IN_CONTAINER=true`):
+- Gateway: `http://gateway:8080`
+- Postgres: `postgres:5432`
+- Redis: `redis:6379`
+- Prometheus: `http://prometheus:9090`
+- Tempo: `http://tempo:3200`
+- Loki: `http://loki:3100`
+- OTEL Collector: `http://otel-collector:4317`
+
+### CI/CD Integration
+
+The same containerized tests run in CI pipelines:
+
+```yaml
+# .github/workflows/e2e-tests.yml
+- name: Run E2E Tests
+  run: |
+    docker compose up -d
+    docker compose --profile testing up --build e2e-tests
+```
+
+**Benefits**:
+- Identical test execution in dev and CI
+- No environment-specific test configurations
+- True validation of production topology
+
+### Troubleshooting
+
+#### Tests Can't Reach Services
+
+**Symptom**: Connection refused errors in containerized tests
+
+**Cause**: Service not healthy or network misconfiguration
+
+**Solution**:
+```powershell
+# Check service health
+docker compose ps
+
+# Inspect service logs
+docker logs tansu-<service-name> --tail 50
+
+# Verify network
+docker network inspect tansucloud_tansucloud-network
+```
+
+#### Tests Pass Locally But Fail in CI
+
+**Symptom**: Tests work with `docker compose run --rm e2e-tests` but fail in CI
+
+**Cause**: Missing service dependencies or timing issues
+
+**Solution**:
+- Verify all services have `depends_on` with `condition: service_healthy`
+- Increase `start_period` in healthcheck definitions
+- Check CI logs for service startup failures
+
+#### Playwright Browser Issues
+
+**Symptom**: Browser tests fail with "browser not found"
+
+**Cause**: Playwright browsers not installed in test container
+
+**Solution**:
+- Ensure Dockerfile includes: `pwsh -Command "playwright install --with-deps chromium"`
+- Rebuild test container: `docker compose build e2e-tests`
+
+### Migration Notes
+
+**Legacy (Pre-Containerized Testing)**:
+- ⚠️ Services exposed ports to host (Postgres 5432, Redis 6379, etc.)
+- ⚠️ Tests ran from host machine using `127.0.0.1` URLs
+- ⚠️ Dev/prod topology divergence
+
+**Current (Containerized Testing)**:
+- ✅ Only Gateway port 8080 exposed
+- ✅ Tests run in Docker network using service names
+- ✅ Production parity (same topology in dev/prod)
+
+**Breaking Change**: If you have custom tests or scripts that expect direct port access, update them to either:
+1. Use `docker exec` for debugging
+2. Run tests via `docker compose run --rm e2e-tests`
+3. Temporarily expose ports by uncommenting `ports:` sections (not recommended)
+
+---
 - Test restore procedures regularly
 - Monitor volume disk usage with alerts

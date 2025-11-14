@@ -37,10 +37,12 @@ public sealed class TestInfrastructureFixture : IAsyncLifetime
 
     private static async Task WaitForPostgres()
     {
-        var host = Environment.GetEnvironmentVariable("PGHOST") ?? "localhost";
+        // Use container-aware host resolution
+        bool isContainer = !string.IsNullOrEmpty(Environment.GetEnvironmentVariable("DOTNET_RUNNING_IN_CONTAINER"));
+        var host = isContainer ? "postgres" : (Environment.GetEnvironmentVariable("PGHOST") ?? "localhost");
         var port = Environment.GetEnvironmentVariable("PGPORT") ?? "5432";
-        var user = Environment.GetEnvironmentVariable("PGUSER") ?? "postgres";
-        var pass = Environment.GetEnvironmentVariable("PGPASSWORD") ?? "postgres";
+        var user = Environment.GetEnvironmentVariable("POSTGRES_USER") ?? Environment.GetEnvironmentVariable("PGUSER") ?? "postgres";
+        var pass = Environment.GetEnvironmentVariable("POSTGRES_PASSWORD") ?? Environment.GetEnvironmentVariable("PGPASSWORD") ?? "postgres";
         var cs = $"Host={host};Port={port};Database=postgres;Username={user};Password={pass}";
         var attempt = 0;
         Exception? last = null;

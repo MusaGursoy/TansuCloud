@@ -225,6 +225,22 @@ services:
       Cache__Redis: redis:6379
       # Route audit writes via PgCat; override via env in real deployments
       Audit__ConnectionString: "Host=pgcat;Port=6432;Database=postgres;Username=${POSTGRES_USER};Password=${POSTGRES_PASSWORD}"
+      # Prometheus Query Service API (Task 47 Phase 1 - Prometheus metrics)
+      PrometheusQuery__ApiBaseUrl: http://prometheus:9090
+      PrometheusQuery__PrometheusUiBaseUrl: http://prometheus:9090
+      PrometheusQuery__TimeoutSeconds: 30
+      PrometheusQuery__MaxRetries: 2
+      # Tempo Query Service API (Task 47 Phase 2 - Tempo traces)
+      TempoQuery__ApiBaseUrl: http://tempo:3200
+      TempoQuery__TimeoutSeconds: 30
+      TempoQuery__MaxRetries: 2
+      # Loki Query Service API (Task 47 Phase 3 - Loki logs)
+      LokiQuery__ApiBaseUrl: http://loki:3100
+      LokiQuery__TimeoutSeconds: 30
+      LokiQuery__MaxRetries: 2
+      # Grafana Dashboard Embedding (Task 47 Phase 4 - Grafana visualization)
+      Grafana__Enabled: ${GRAFANA_ENABLED:-false}
+      Grafana__BaseUrl: ${PUBLIC_BASE_URL}/grafana
       # SigNoz Query Service API (inside container network, port 8080)
       SigNozQuery__ApiBaseUrl: http://signoz:8080
       SigNozQuery__Email: ${SIGNOZ_API_EMAIL}
@@ -404,248 +420,8 @@ services:
       - tansucloud-network
 
   # =====================
-  # Observability (optional) — enable with: --profile observability
-  # =====================
-
-  zookeeper:
-    profiles: [observability]
-    image: bitnami/zookeeper:latest
-    container_name: signoz-zookeeper
-    restart: unless-stopped
-    deploy:
-      resources:
-        limits:
-          cpus: "1.0"
-          memory: 2G
-    environment:
-      - ZOO_SERVER_ID=1
-      - ALLOW_ANONYMOUS_LOGIN=yes
-      - ZOO_AUTOPURGE_INTERVAL=1
-      - ZOO_ENABLE_PROMETHEUS_METRICS=yes
-      - ZOO_4LW_COMMANDS_WHITELIST=ruok
-    healthcheck:
-      test: ["CMD", "/bin/bash", "-lc", "wget -q -O - http://127.0.0.1:8080/commands/ruok | grep imok"]
-      interval: 30s
-      timeout: 5s
-      retries: 5
-      start_period: 60s  # Allow 1 minute for ZooKeeper startup before marking unhealthy
-    volumes:
-      - signoz-zookeeper-data:/bitnami/zookeeper
-    networks:
-      - tansucloud-network
-
-  clickhouse:
-    profiles: [observability]
-    image: clickhouse/clickhouse-server:latest
-    container_name: signoz-clickhouse
-    restart: unless-stopped
-    deploy:
-      resources:
-        limits:
-          cpus: "1.0"
-          memory: 2G
-    environment:
-      CLICKHOUSE_DB: signoz
-      CLICKHOUSE_USER: admin
-      CLICKHOUSE_PASSWORD: admin
-    ulimits:
-      nofile:
-        soft: 262144
-        hard: 262144
-    healthcheck:
-      test: ["CMD", "wget", "--spider", "-q", "0.0.0.0:8123/ping"]
-      interval: 30s
-      timeout: 5s
-      retries: 5
-      start_period: 90s  # Allow 90 seconds for ClickHouse startup before marking unhealthy
-    volumes:
-      - signoz-clickhouse-data:/var/lib/clickhouse
-      - ./dev/clickhouse/cluster.xml:/etc/clickhouse-server/config.d/cluster.xml:ro
-      - ./dev/clickhouse/zookeeper.xml:/etc/clickhouse-server/config.d/zookeeper.xml:ro
-    networks:
-      - tansucloud-network
-    depends_on:
-      - zookeeper
-
-  signoz:
-    profiles: [observability]
-    image: signoz/signoz:latest
-    container_name: signoz
-    restart: unless-stopped
-    deploy:
-      resources:
-        limits:
-          cpus: "1.0"
-          memory: 2G
-    environment:
-      - SIGNOZ_TELEMETRYSTORE_PROVIDER=clickhouse
-      - SIGNOZ_TELEMETRYSTORE_CLICKHOUSE_DSN=tcp://admin:admin@clickhouse:9000
-      - SIGNOZ_TELEMETRYSTORE_CLICKHOUSE_CLUSTER=cluster
-      - SIGNOZ_ALERTMANAGER_PROVIDER=signoz
-      - SIGNOZ_JWT_SECRET=${SIGNOZ_JWT_SECRET:-change-me}
-      # Disable API authentication - safe since SigNoz API is only accessible within Docker network
-      - SIGNOZ_DISABLE_FRONTEND_AUTH=true
-    # By default, SigNoz UI is NOT exposed externally - all observability accessed through Dashboard
-    # Advanced users can optionally expose the full SigNoz UI by uncommenting:
-    # ports:
-    #   - "3301:8080"
-    healthcheck:
-      test: ["CMD", "/bin/busybox", "wget", "-q", "-O", "-", "http://localhost:8080/"]
-      interval: 30s
-      timeout: 5s
-      retries: 10
-      start_period: 180s  # Allow 3 minutes for initial startup (ClickHouse connection + migrations) before marking unhealthy
-    depends_on:
-      clickhouse:
-        condition: service_healthy
-    volumes:
-      - signoz-data:/var/lib/signoz
-    networks:
-      - tansucloud-network
-
-  signoz-init:
-    profiles: [observability]
-    image: mcr.microsoft.com/powershell:latest
-    container_name: signoz-init
-    restart: on-failure
-    deploy:
-      resources:
-        limits:
-          cpus: "0.5"
-          memory: 256M
-    environment:
-      SIGNOZ_API_EMAIL: ${SIGNOZ_API_EMAIL}
-      SIGNOZ_API_PASSWORD: ${SIGNOZ_API_PASSWORD}
-    depends_on:
-      signoz:
-        condition: service_healthy
-    networks:
-      - tansucloud-network
-    volumes:
-      - ./dev/tools:/tools:ro
-    command: ["pwsh", "-NoProfile", "-File", "/tools/signoz-init.ps1", "-SigNozUrl", "http://signoz:8080"]
-
-  otel-collector:
-    profiles: [observability]
-    image: signoz/otel-collector:latest
-    container_name: otel-collector
-    restart: unless-stopped
-    deploy:
-      resources:
-        limits:
-          cpus: "1.0"
-          memory: 2G
-    command:
-      - --config=/etc/otel-collector-config.yaml
-    environment:
-      - OTEL_RESOURCE_ATTRIBUTES=host.name=signoz-host,os.type=linux
-      - LOW_CARDINAL_EXCEPTION_GROUPING=false
-    expose:
-      - "4317" # OTLP gRPC
-      - "4318" # OTLP HTTP
-    volumes:
-      - ./dev/otel-collector-config.yaml:/etc/otel-collector-config.yaml:ro
-    depends_on:
-      - signoz
-      - signoz-schema-migrator-sync
-    networks:
-      - tansucloud-network
-
-  clickhouse-prepatch:
-    profiles: [observability]
-    image: clickhouse/clickhouse-server:latest
-    container_name: signoz-clickhouse-prepatch
-    restart: on-failure
-    deploy:
-      resources:
-        limits:
-          cpus: "1.0"
-          memory: 1G
-    depends_on:
-      clickhouse:
-        condition: service_healthy
-    networks:
-      - tansucloud-network
-    entrypoint: ["bash","-lc"]
-    volumes:
-      - ./dev/clickhouse/prepatches:/prepatches:ro
-    command:
-      - >-
-        bash /prepatches/run-prepatches.sh
-
-  clickhouse-compat-init:
-    profiles: [observability]
-    image: clickhouse/clickhouse-client:latest
-    container_name: signoz-clickhouse-compat-init
-    restart: on-failure
-    deploy:
-      resources:
-        limits:
-          cpus: "1.0"
-          memory: 2G
-    depends_on:
-      clickhouse:
-        condition: service_healthy
-      clickhouse-prepatch:
-        condition: service_completed_successfully
-    networks:
-      - tansucloud-network
-    entrypoint: ["bash","-c"]
-    volumes:
-      - ./dev/clickhouse/patches:/patches:ro
-    command: |
-      set -euo pipefail
-      clickhouse-client --host clickhouse --port 9000 --user admin --password admin -q "CREATE MATERIALIZED VIEW IF NOT EXISTS signoz_traces.root_operations ON CLUSTER cluster AS SELECT DISTINCT name, resource_string_service\$\$name AS serviceName FROM signoz_traces.signoz_index_v3 WHERE parent_span_id = ''"
-      clickhouse-client --host clickhouse --port 9000 --user admin --password admin -q "CREATE MATERIALIZED VIEW IF NOT EXISTS signoz_traces.distributed_top_level_operations ON CLUSTER cluster AS SELECT name, serviceName, toDateTime(timestamp) AS time FROM signoz_traces.distributed_signoz_index_v3 WHERE parent_span_id = '' OR length(parent_span_id) = 0"
-      for f in /patches/*.sql; do echo "Applying patch: $f"; clickhouse-client --host clickhouse --port 9000 --user admin --password admin -n < "$f"; done
-
-  signoz-schema-migrator-sync:
-    profiles: [observability]
-    image: signoz/signoz-schema-migrator:latest
-    container_name: signoz-schema-migrator-sync
-    command: ["sync", "--dsn=tcp://admin:admin@clickhouse:9000"]
-    restart: on-failure
-    deploy:
-      resources:
-        limits:
-          cpus: "1.0"
-          memory: 2G
-    environment:
-      - SIGNOZ_TELEMETRYSTORE_CLICKHOUSE_CLUSTER=cluster
-    depends_on:
-      clickhouse:
-        condition: service_healthy
-      clickhouse-prepatch:
-        condition: service_completed_successfully
-      clickhouse-compat-init:
-        condition: service_completed_successfully
-    networks:
-      - tansucloud-network
-
-  signoz-schema-migrator-async:
-    profiles: [observability]
-    image: signoz/signoz-schema-migrator:latest
-    container_name: signoz-schema-migrator-async
-    command: ["async", "--dsn=tcp://admin:admin@clickhouse:9000"]
-    restart: on-failure
-    deploy:
-      resources:
-        limits:
-          cpus: "1.0"
-          memory: 2G
-    environment:
-      - SIGNOZ_TELEMETRYSTORE_CLICKHOUSE_CLUSTER=cluster
-    depends_on:
-      clickhouse:
-        condition: service_healthy
-      signoz-schema-migrator-sync:
-        condition: service_completed_successfully
-    networks:
-      - tansucloud-network
-
-  # =====================
-  # PGTL Stack - Phase 1: Prometheus Metrics
-  # (SigNoz services above will be removed in Task 47 Phase 6)
+  # Observability Stack (optional) — enable with: --profile observability
+  # PGTL: Prometheus (metrics), Tempo (traces), Loki (logs)
   # =====================
 
   # OpenTelemetry Collector - Routes telemetry to PGTL stack
@@ -677,6 +453,54 @@ services:
     networks:
       - tansucloud-network
 
+  tempo:
+    profiles: [observability]
+    image: grafana/tempo:2.6.0
+    container_name: tansu-tempo
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 1G
+    command:
+      - '-config.file=/etc/tempo.yml'
+    volumes:
+      - ./dev/tempo-config.yml:/etc/tempo.yml:ro
+      - tansu-tempo-data:/var/tempo
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:3200/ready"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    networks:
+      - tansucloud-network
+
+  loki:
+    profiles: [observability]
+    image: grafana/loki:3.3.1
+    container_name: tansu-loki
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 1G
+    command:
+      - '-config.file=/etc/loki.yml'
+    volumes:
+      - ./dev/loki-config.yml:/etc/loki.yml:ro
+      - tansu-loki-data:/loki
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:3100/ready"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    networks:
+      - tansucloud-network
+
   prometheus:
     profiles: [observability]
     image: prom/prometheus:v3.0.1
@@ -705,9 +529,67 @@ services:
       timeout: 5s
       retries: 5
       start_period: 30s
+    networks:
+      - tansucloud-network
+
+  grafana:
+    profiles: [observability]
+    image: grafana/grafana:11.3.1
+    container_name: tansu-grafana
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 256M
+    environment:
+      # Database backend (PostgreSQL)
+      GF_DATABASE_TYPE: postgres
+      GF_DATABASE_HOST: postgres:5432
+      GF_DATABASE_NAME: grafana
+      GF_DATABASE_USER: ${POSTGRES_USER}
+      GF_DATABASE_PASSWORD: ${POSTGRES_PASSWORD}
+      GF_DATABASE_SSL_MODE: disable
+      
+      # Security
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD}
+      GF_AUTH_DISABLE_LOGIN_FORM: "false"
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      
+      # Server settings (external URL for asset paths; SERVE_FROM_SUB_PATH handles proxy)
+      GF_SERVER_ROOT_URL: ${PUBLIC_BASE_URL}/grafana
+      GF_SERVER_SERVE_FROM_SUB_PATH: "true"
+      GF_SERVER_HTTP_PORT: "3000"
+      
+      # Security - Allow embedding in iframe (Dashboard embeds Grafana dashboards)
+      GF_SECURITY_ALLOW_EMBEDDING: "true"
+      
+      # Paths
+      GF_PATHS_PROVISIONING: /etc/grafana/provisioning
+      GF_PATHS_DATA: /var/lib/grafana
+      
+      # Logging
+      GF_LOG_LEVEL: info
+    volumes:
+      - tansu-grafana-data:/var/lib/grafana
+      - ./dev/grafana/provisioning:/etc/grafana/provisioning:ro
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:3000/api/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
     depends_on:
-      telemetry:
-        condition: service_started
+      postgres:
+        condition: service_healthy
+      tempo:
+        condition: service_healthy
+      loki:
+        condition: service_healthy
+      prometheus:
+        condition: service_healthy
     networks:
       - tansucloud-network
 
@@ -729,9 +611,9 @@ volumes:
     driver: local
   tansu-prometheus-data:
     driver: local
-  signoz-clickhouse-data:
+  tansu-tempo-data:
     driver: local
-  signoz-zookeeper-data:
+  tansu-loki-data:
     driver: local
-  signoz-data:
+  tansu-grafana-data:
     driver: local

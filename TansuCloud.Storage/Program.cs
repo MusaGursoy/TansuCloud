@@ -124,6 +124,8 @@ builder
         // Export OTLP diagnostics/gauges
         metrics.AddMeter("tansu.otel.exporter");
         metrics.AddTansuOtlpExporter(builder.Configuration, builder.Environment);
+        // Export Prometheus metrics for direct scraping (Task 47 Phase 4)
+        metrics.AddPrometheusExporter();
     });
 
 // Observability core (Task 38)
@@ -895,6 +897,9 @@ if (app.Environment.IsDevelopment())
         )
         .AllowAnonymous();
 }
+
+// Expose Prometheus metrics endpoint for scraping (Task 47 Phase 4)
+app.MapPrometheusScrapingEndpoint().AllowAnonymous();
 
 app.Run();
 

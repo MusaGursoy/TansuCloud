@@ -16,26 +16,38 @@ exporters:
     tls:
       insecure: true
   
+  # Export traces to Tempo (PGTL Stack - Phase 2)
+  otlp/tempo:
+    endpoint: tempo:4317
+    tls:
+      insecure: true
+  
+  # Export logs to Loki (PGTL Stack - Phase 3)
+  loki:
+    endpoint: http://loki:3100/loki/api/v1/push
+    tls:
+      insecure: true
+  
   # Debug exporter for development
   debug:
     verbosity: basic
 
 service:
   pipelines:
-    # Traces pipeline (will be configured in Phase 2 for Tempo)
+    # Traces pipeline - export to Tempo (Phase 2)
     traces:
       receivers: [otlp]
       processors: [batch]
-      exporters: [debug]
+      exporters: [otlp/tempo, debug]
     
-    # Metrics pipeline - export to Prometheus
+    # Metrics pipeline - export to Prometheus (Phase 1)
     metrics:
       receivers: [otlp]
       processors: [batch]
       exporters: [prometheusremotewrite, debug]
     
-    # Logs pipeline (will be configured in Phase 3 for Loki)
+    # Logs pipeline - export to Loki (Phase 3)
     logs:
       receivers: [otlp]
       processors: [batch]
-      exporters: [debug]
+      exporters: [loki, debug]

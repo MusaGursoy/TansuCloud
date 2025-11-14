@@ -36,7 +36,7 @@ using TansuCloud.Dashboard.Components;
 using TansuCloud.Dashboard.Hosting;
 using TansuCloud.Dashboard.Observability;
 using TansuCloud.Dashboard.Observability.Logging;
-using TansuCloud.Dashboard.Observability.SigNoz;
+using TansuCloud.Dashboard.Observability.Prometheus;
 using TansuCloud.Dashboard.Services;
 using TansuCloud.Observability;
 using TansuCloud.Observability.Auditing;
@@ -124,58 +124,65 @@ builder
         metrics.AddMeter("TansuCloud.Audit");
         // Export OTLP diagnostics/gauges
         metrics.AddMeter("tansu.otel.exporter");
-        // SigNoz query service metrics (Task 19 Phase 6 - self-monitoring)
-        metrics.AddMeter("TansuCloud.Dashboard.SigNoz");
         metrics.AddTansuOtlpExporter(builder.Configuration, builder.Environment);
+        // Export Prometheus metrics for direct scraping (Task 47 Phase 4)
+        metrics.AddPrometheusExporter();
     });
 
 // Observability core (Task 38)
 builder.Services.AddTansuObservabilityCore();
 builder.Services.AddTansuAudit(builder.Configuration);
-builder.Services.Configure<SigNozOptions>(
-    builder.Configuration.GetSection(SigNozOptions.SectionName)
-);
-builder.Services.AddSingleton<SigNozMetricsCatalog>();
-
-// SigNoz query service for Observability pages (Task 19)
-builder.Services.Configure<SigNozQueryOptions>(
-    builder.Configuration.GetSection(SigNozQueryOptions.SectionName)
+// Prometheus query service for Observability pages (Task 47 Phase 1)
+builder.Services.Configure<PrometheusQueryOptions>(
+    builder.Configuration.GetSection(PrometheusQueryOptions.SectionName)
 );
 
-// Circuit breaker for SigNoz API (Task 19 Phase 6 - graceful degradation)
-builder.Services.AddSingleton<SigNozCircuitBreaker>();
+builder.Services.AddHttpClient<IPrometheusQueryService, PrometheusQueryService>(client =>
+{
+    var prometheusBaseUrl = builder.Configuration["PrometheusQuery:ApiBaseUrl"] ?? "http://prometheus:9090";
+    client.BaseAddress = new Uri(prometheusBaseUrl.TrimEnd('/') + "/");
+    client.Timeout = TimeSpan.FromSeconds(30);
+});
 
-// SigNoz JWT authentication service
-builder.Services.AddHttpClient<ISigNozAuthenticationService, SigNozAuthenticationService>();
-
-builder.Services.AddHttpClient<ISigNozQueryService, SigNozQueryService>();
-
-// SigNoz Traces Service (Task 19 Phase 6)
-builder.Services.AddHttpClient<ISigNozTracesService, SigNozTracesService>();
-
-// SigNoz Logs Service (Task 19 Phase 7)
-builder.Services.AddHttpClient<ISigNozLogsService, SigNozLogsService>();
-
-// HttpClient for SigNoz health checks (Task 19 Phase 6)
-builder.Services.AddHttpClient(
-    "SigNozHealthCheck",
-    (sp, client) =>
-    {
-        var opts =
-            sp.GetRequiredService<Microsoft.Extensions.Options.IOptionsMonitor<SigNozQueryOptions>>().CurrentValue;
-        client.BaseAddress = new Uri(opts.ApiBaseUrl.TrimEnd('/') + "/");
-        client.Timeout = TimeSpan.FromSeconds(15); // Health check timeout
-        // Note: Health check uses /api/v1/version which typically doesn't require auth
-        // If your SigNoz instance requires API key for version endpoint, uncomment:
-        // if (!string.IsNullOrWhiteSpace(opts.ApiKey))
-        // {
-        //     client.DefaultRequestHeaders.Authorization =
-        //         new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", opts.ApiKey);
-        // }
-    }
+// Tempo traces service for Observability pages (Task 47 Phase 2)
+builder.Services.Configure<TansuCloud.Dashboard.Observability.Tempo.TempoQueryOptions>(
+    builder.Configuration.GetSection(TansuCloud.Dashboard.Observability.Tempo.TempoQueryOptions.SectionName)
 );
 
-builder.Services.AddHybridCache(); // For caching SigNoz query results
+builder.Services.AddHttpClient<TansuCloud.Dashboard.Observability.Tempo.ITempoTracesService, TansuCloud.Dashboard.Observability.Tempo.TempoTracesService>(client =>
+{
+    var tempoBaseUrl = builder.Configuration["TempoQuery:ApiBaseUrl"] ?? "http://tempo:3200";
+    client.BaseAddress = new Uri(tempoBaseUrl.TrimEnd('/') + "/");
+    client.Timeout = TimeSpan.FromSeconds(30);
+});
+
+// Loki logs service for Observability pages (Task 47 Phase 3)
+builder.Services.Configure<TansuCloud.Dashboard.Observability.Loki.LokiQueryOptions>(
+    builder.Configuration.GetSection(TansuCloud.Dashboard.Observability.Loki.LokiQueryOptions.SectionName)
+);
+
+builder.Services.AddHttpClient<TansuCloud.Dashboard.Observability.Loki.ILokiLogsService, TansuCloud.Dashboard.Observability.Loki.LokiLogsService>(client =>
+{
+    var lokiBaseUrl = builder.Configuration["LokiQuery:ApiBaseUrl"] ?? "http://loki:3100";
+    client.BaseAddress = new Uri(lokiBaseUrl.TrimEnd('/') + "/");
+    client.Timeout = TimeSpan.FromSeconds(30);
+});
+
+// Traces Service - Backed by Tempo (Task 47 Phase 2)
+// Implements ISigNozTracesService for backward compatibility with existing UI
+builder.Services.AddScoped<ISigNozTracesService, TansuCloud.Dashboard.Services.TempoTracesAdapter>();
+
+// Logs Service - Backed by Loki (Task 47 Phase 3)
+// Implements ISigNozLogsService for backward compatibility with existing UI
+builder.Services.AddScoped<ISigNozLogsService, LokiLogsAdapter>();
+
+// Grafana Embed Service - For dashboard iframe integration (Task 47 Phase 4)
+builder.Services.Configure<TansuCloud.Dashboard.Services.GrafanaOptions>(
+    builder.Configuration.GetSection("Grafana"));
+builder.Services.AddScoped<TansuCloud.Dashboard.Services.IGrafanaEmbedService, 
+    TansuCloud.Dashboard.Services.GrafanaEmbedService>();
+
+builder.Services.AddHybridCache(); // For caching query results
 
 // MudBlazor services (MIT License - no keys required!)
 builder.Services.AddMudServices();
@@ -204,8 +211,7 @@ builder
 // Readiness: verify OTLP exporter reachability and W3C Activity id format
 builder
     .Services.AddHealthChecks()
-    .AddCheck<OtlpConnectivityHealthCheck>("otlp", tags: new[] { "ready", "otlp" })
-    .AddCheck<SigNozConnectivityHealthCheck>("signoz", tags: new[] { "ready", "signoz" });
+    .AddCheck<OtlpConnectivityHealthCheck>("otlp", tags: new[] { "ready", "otlp" });
 
 // Phase 0: publish health transitions
 builder.Services.AddSingleton<IHealthCheckPublisher, HealthTransitionPublisher>();
@@ -233,11 +239,6 @@ builder.Services.AddSignalR(o =>
     o.ClientTimeoutInterval = TimeSpan.FromMinutes(2);
 });
 builder.Services.AddHttpContextAccessor();
-
-// Observability: Metrics flow through SigNoz; legacy in-app Prometheus proxy removed.
-Console.WriteLine(
-    "[Observability] SigNoz now provides metrics, traces, and logs. In-app Prometheus proxy disabled."
-);
 
 // Log capture and reporting: options, buffer, provider, runtime switch, reporter, background service
 builder.Services.Configure<LoggingReportOptions>(builder.Configuration.GetSection("LoggingReport"));
@@ -2549,681 +2550,6 @@ if (app.Environment.IsDevelopment())
         .AllowAnonymous();
 }
 
-void MapMetricsApi(string prefix)
-{
-    var group = app.MapGroup(prefix).RequireAuthorization("AdminOnly");
-
-    group.MapGet(
-        "/catalog",
-        (SigNozMetricsCatalog catalog, HttpContext http, IAuditLogger audit) =>
-        {
-            var catalogResponse = catalog.CreateCatalog();
-            try
-            {
-                var ev = new TansuCloud.Observability.Auditing.AuditEvent
-                {
-                    Category = "Admin",
-                    Action = "MetricsCatalogRead",
-                    Outcome = "Success",
-                    Subject = http.User?.Identity?.Name ?? "anonymous",
-                    CorrelationId = http.TraceIdentifier
-                };
-                audit.TryEnqueueRedacted(
-                    ev,
-                    new { Count = catalogResponse.Charts.Count },
-                    new[] { "Count" }
-                );
-            }
-            catch { }
-            return Results.Json(catalogResponse);
-        }
-    );
-
-    group.MapGet(
-        "/range",
-        (
-            string chartId,
-            int? rangeMinutes,
-            int? stepSeconds,
-            string? tenant,
-            string? service,
-            SigNozMetricsCatalog catalog,
-            HttpContext http,
-            IAuditLogger audit
-        ) =>
-        {
-            if (!catalog.TryResolve(chartId, out var redirect))
-            {
-                try
-                {
-                    var failure = new TansuCloud.Observability.Auditing.AuditEvent
-                    {
-                        Category = "Admin",
-                        Action = "MetricsRangeQuery",
-                        Outcome = "Failure",
-                        ReasonCode = "UnknownChart",
-                        Subject = http.User?.Identity?.Name ?? "anonymous",
-                        CorrelationId = http.TraceIdentifier
-                    };
-                    audit.TryEnqueueRedacted(
-                        failure,
-                        new { ChartId = chartId ?? string.Empty },
-                        new[] { "ChartId" }
-                    );
-                }
-                catch { }
-
-                return Results.Problem(
-                    title: "Unknown chartId",
-                    detail: $"The chart '{chartId}' is not registered in the SigNoz catalog.",
-                    statusCode: 400
-                );
-            }
-
-            try
-            {
-                var ev = new TansuCloud.Observability.Auditing.AuditEvent
-                {
-                    Category = "Admin",
-                    Action = "MetricsRangeQuery",
-                    Outcome = "Success",
-                    Subject = http.User?.Identity?.Name ?? "anonymous",
-                    CorrelationId = http.TraceIdentifier
-                };
-                audit.TryEnqueueRedacted(
-                    ev,
-                    new
-                    {
-                        ChartId = redirect.ChartId,
-                        RangeMinutes = rangeMinutes ?? 0,
-                        StepSeconds = stepSeconds ?? 0,
-                        Tenant = tenant ?? string.Empty,
-                        Service = service ?? string.Empty
-                    },
-                    new[] { "ChartId", "RangeMinutes", "StepSeconds", "Tenant", "Service" }
-                );
-            }
-            catch { }
-
-            var response = new
-            {
-                chartId = redirect.ChartId,
-                source = "SigNoz",
-                sigNozUrl = redirect.SigNozUrl,
-                title = redirect.Title,
-                description = redirect.Description
-            };
-            return Results.Json(response);
-        }
-    );
-
-    group.MapGet(
-        "/instant",
-        (
-            string chartId,
-            string? at,
-            string? tenant,
-            string? service,
-            SigNozMetricsCatalog catalog,
-            HttpContext http,
-            IAuditLogger audit
-        ) =>
-        {
-            if (!catalog.TryResolve(chartId, out var redirect))
-            {
-                try
-                {
-                    var failure = new TansuCloud.Observability.Auditing.AuditEvent
-                    {
-                        Category = "Admin",
-                        Action = "MetricsInstantQuery",
-                        Outcome = "Failure",
-                        ReasonCode = "UnknownChart",
-                        Subject = http.User?.Identity?.Name ?? "anonymous",
-                        CorrelationId = http.TraceIdentifier
-                    };
-                    audit.TryEnqueueRedacted(
-                        failure,
-                        new { ChartId = chartId ?? string.Empty },
-                        new[] { "ChartId" }
-                    );
-                }
-                catch { }
-
-                return Results.Problem(
-                    title: "Unknown chartId",
-                    detail: $"The chart '{chartId}' is not registered in the SigNoz catalog.",
-                    statusCode: 400
-                );
-            }
-
-            try
-            {
-                var ev = new TansuCloud.Observability.Auditing.AuditEvent
-                {
-                    Category = "Admin",
-                    Action = "MetricsInstantQuery",
-                    Outcome = "Success",
-                    Subject = http.User?.Identity?.Name ?? "anonymous",
-                    CorrelationId = http.TraceIdentifier
-                };
-                audit.TryEnqueueRedacted(
-                    ev,
-                    new
-                    {
-                        ChartId = redirect.ChartId,
-                        At = at ?? string.Empty,
-                        Tenant = tenant ?? string.Empty,
-                        Service = service ?? string.Empty
-                    },
-                    new[] { "ChartId", "At", "Tenant", "Service" }
-                );
-            }
-            catch { }
-
-            var response = new
-            {
-                chartId = redirect.ChartId,
-                source = "SigNoz",
-                sigNozUrl = redirect.SigNozUrl,
-                title = redirect.Title,
-                description = redirect.Description
-            };
-            return Results.Json(response);
-        }
-    );
-}
-
-MapMetricsApi("/dashboard/api/metrics");
-MapMetricsApi("/api/metrics");
-
-// Admin API: Observability Governance Configuration
-app.MapGet(
-        "/api/admin/observability/governance",
-        async (IWebHostEnvironment env, IAuditLogger audit, HttpContext http) =>
-        {
-            try
-            {
-                // Read governance.defaults.json from SigNoz folder
-                var governanceFilePath = Path.Combine(
-                    env.ContentRootPath,
-                    "..",
-                    "SigNoz",
-                    "governance.defaults.json"
-                );
-
-                if (!File.Exists(governanceFilePath))
-                {
-                    return Results.Problem(
-                        title: "Configuration file not found",
-                        detail: "The governance.defaults.json file was not found. Ensure the file exists at SigNoz/governance.defaults.json.",
-                        statusCode: StatusCodes.Status404NotFound
-                    );
-                }
-
-                var jsonContent = await File.ReadAllTextAsync(governanceFilePath);
-                var config =
-                    System.Text.Json.JsonSerializer.Deserialize<TansuCloud.Dashboard.Models.ObservabilityGovernanceConfig>(
-                        jsonContent,
-                        new System.Text.Json.JsonSerializerOptions
-                        {
-                            PropertyNameCaseInsensitive = true
-                        }
-                    );
-
-                if (config == null)
-                {
-                    return Results.Problem(
-                        title: "Invalid configuration",
-                        detail: "Failed to parse governance.defaults.json",
-                        statusCode: StatusCodes.Status500InternalServerError
-                    );
-                }
-
-                // Audit read
-                try
-                {
-                    var ev = new TansuCloud.Observability.Auditing.AuditEvent
-                    {
-                        Category = "Admin",
-                        Action = "ObservabilityGovernanceRead",
-                        Outcome = "Success",
-                        Subject = http.User?.Identity?.Name ?? "anonymous",
-                        CorrelationId = http.TraceIdentifier
-                    };
-                    audit.TryEnqueue(ev);
-                }
-                catch { }
-
-                return Results.Json(config);
-            }
-            catch (Exception ex)
-            {
-                return Results.Problem(
-                    title: "Error reading configuration",
-                    detail: ex.Message,
-                    statusCode: StatusCodes.Status500InternalServerError
-                );
-            }
-        }
-    )
-    .RequireAuthorization("AdminOnly")
-    .WithDisplayName("Admin: Get observability governance config");
-
-app.MapPost(
-        "/api/admin/observability/governance",
-        async (
-            TansuCloud.Dashboard.Models.ObservabilityGovernanceConfig config,
-            HttpContext http,
-            IAuditLogger audit
-        ) =>
-        {
-            try
-            {
-                // Validate config
-                if (config.RetentionDays.Traces < 1 || config.RetentionDays.Traces > 365)
-                    return Results.ValidationProblem(
-                        new Dictionary<string, string[]>
-                        {
-                            ["RetentionDays.Traces"] = new[]
-                            {
-                                "Traces retention must be between 1 and 365 days"
-                            }
-                        }
-                    );
-
-                if (config.RetentionDays.Logs < 1 || config.RetentionDays.Logs > 365)
-                    return Results.ValidationProblem(
-                        new Dictionary<string, string[]>
-                        {
-                            ["RetentionDays.Logs"] = new[]
-                            {
-                                "Logs retention must be between 1 and 365 days"
-                            }
-                        }
-                    );
-
-                if (config.RetentionDays.Metrics < 1 || config.RetentionDays.Metrics > 365)
-                    return Results.ValidationProblem(
-                        new Dictionary<string, string[]>
-                        {
-                            ["RetentionDays.Metrics"] = new[]
-                            {
-                                "Metrics retention must be between 1 and 365 days"
-                            }
-                        }
-                    );
-
-                if (config.Sampling.TraceRatio < 0.0 || config.Sampling.TraceRatio > 1.0)
-                    return Results.ValidationProblem(
-                        new Dictionary<string, string[]>
-                        {
-                            ["Sampling.TraceRatio"] = new[]
-                            {
-                                "Trace sampling ratio must be between 0.0 and 1.0"
-                            }
-                        }
-                    );
-
-                // Find governance.defaults.json file
-                var baseDir = AppContext.BaseDirectory;
-                var governanceFilePath = Path.Combine(
-                    baseDir,
-                    "..",
-                    "..",
-                    "..",
-                    "..",
-                    "SigNoz",
-                    "governance.defaults.json"
-                );
-
-                // Read existing config for audit comparison
-                var existingJson = File.Exists(governanceFilePath)
-                    ? await File.ReadAllTextAsync(governanceFilePath)
-                    : null;
-
-                // Serialize and write new config
-                var jsonOptions = new System.Text.Json.JsonSerializerOptions
-                {
-                    WriteIndented = true,
-                    PropertyNamingPolicy = System.Text.Json.JsonNamingPolicy.CamelCase
-                };
-
-                var newJson = System.Text.Json.JsonSerializer.Serialize(config, jsonOptions);
-                await File.WriteAllTextAsync(governanceFilePath, newJson);
-
-                // Audit the change
-                var ev = new TansuCloud.Observability.Auditing.AuditEvent
-                {
-                    Category = "Admin",
-                    Action = "ObservabilityGovernanceUpdate",
-                    Outcome = "Success",
-                    Subject = http.User?.Identity?.Name ?? "anonymous",
-                    CorrelationId = http.TraceIdentifier
-                };
-                audit.TryEnqueueRedacted(
-                    ev,
-                    new
-                    {
-                        RetentionDays = config.RetentionDays,
-                        Sampling = config.Sampling,
-                        AlertSLOCount = config.AlertSLOs.Count
-                    },
-                    new[] { "RetentionDays", "Sampling", "AlertSLOCount" }
-                );
-
-                return Results.Ok(
-                    new
-                    {
-                        message = "Observability governance configuration saved successfully. Changes will take effect after running 'SigNoz: governance (apply)' task.",
-                        filePath = "SigNoz/governance.defaults.json"
-                    }
-                );
-            }
-            catch (Exception ex)
-            {
-                return Results.Problem(
-                    title: "Error saving configuration",
-                    detail: ex.Message,
-                    statusCode: StatusCodes.Status500InternalServerError
-                );
-            }
-        }
-    )
-    .RequireAuthorization("AdminOnly")
-    .WithDisplayName("Admin: Update observability governance");
-
-// Admin API: SigNoz Query Service endpoints (Task 19 - Observability pages)
-app.MapGet(
-        "/api/admin/observability/service-status",
-        async (
-            ISigNozQueryService sigNoz,
-            string? serviceName,
-            int timeRangeMinutes,
-            HttpContext http,
-            IAuditLogger audit,
-            CancellationToken ct
-        ) =>
-        {
-            try
-            {
-                var result = await sigNoz.GetServiceStatusAsync(serviceName, timeRangeMinutes, ct);
-
-                // Audit read
-                var ev = new TansuCloud.Observability.Auditing.AuditEvent
-                {
-                    Category = "Admin",
-                    Action = "ObservabilityServiceStatusRead",
-                    Outcome = "Success",
-                    Subject = http.User?.Identity?.Name ?? "anonymous",
-                    CorrelationId = http.TraceIdentifier
-                };
-                audit.TryEnqueueRedacted(
-                    ev,
-                    new { ServiceName = serviceName ?? "all", TimeRangeMinutes = timeRangeMinutes },
-                    new[] { "ServiceName", "TimeRangeMinutes" }
-                );
-
-                return Results.Ok(result);
-            }
-            catch (Exception ex)
-            {
-                return Results.Problem(
-                    title: "Failed to query service status",
-                    detail: ex.Message,
-                    statusCode: StatusCodes.Status503ServiceUnavailable
-                );
-            }
-        }
-    )
-    .RequireAuthorization("AdminOnly")
-    .WithDisplayName("Admin: Get service status from SigNoz");
-
-app.MapGet(
-        "/api/admin/observability/topology",
-        async (
-            ISigNozQueryService sigNoz,
-            HttpContext http,
-            IAuditLogger audit,
-            CancellationToken ct
-        ) =>
-        {
-            try
-            {
-                var result = await sigNoz.GetServiceTopologyAsync(ct);
-
-                // Audit read
-                var ev = new TansuCloud.Observability.Auditing.AuditEvent
-                {
-                    Category = "Admin",
-                    Action = "ObservabilityTopologyRead",
-                    Outcome = "Success",
-                    Subject = http.User?.Identity?.Name ?? "anonymous",
-                    CorrelationId = http.TraceIdentifier
-                };
-                audit.TryEnqueueRedacted(
-                    ev,
-                    new { NodeCount = result.Nodes.Count, EdgeCount = result.Edges.Count },
-                    new[] { "NodeCount", "EdgeCount" }
-                );
-
-                return Results.Ok(result);
-            }
-            catch (Exception ex)
-            {
-                return Results.Problem(
-                    title: "Failed to query service topology",
-                    detail: ex.Message,
-                    statusCode: StatusCodes.Status503ServiceUnavailable
-                );
-            }
-        }
-    )
-    .RequireAuthorization("AdminOnly")
-    .WithDisplayName("Admin: Get service topology from SigNoz");
-
-app.MapGet(
-        "/api/admin/observability/services",
-        async (
-            ISigNozQueryService sigNoz,
-            HttpContext http,
-            IAuditLogger audit,
-            CancellationToken ct
-        ) =>
-        {
-            try
-            {
-                var result = await sigNoz.GetServiceListAsync(ct);
-
-                // Audit read
-                var ev = new TansuCloud.Observability.Auditing.AuditEvent
-                {
-                    Category = "Admin",
-                    Action = "ObservabilityServiceListRead",
-                    Outcome = "Success",
-                    Subject = http.User?.Identity?.Name ?? "anonymous",
-                    CorrelationId = http.TraceIdentifier
-                };
-                audit.TryEnqueueRedacted(
-                    ev,
-                    new { ServiceCount = result.Services.Count },
-                    new[] { "ServiceCount" }
-                );
-
-                return Results.Ok(result);
-            }
-            catch (Exception ex)
-            {
-                return Results.Problem(
-                    title: "Failed to query service list",
-                    detail: ex.Message,
-                    statusCode: StatusCodes.Status503ServiceUnavailable
-                );
-            }
-        }
-    )
-    .RequireAuthorization("AdminOnly")
-    .WithDisplayName("Admin: Get service list from SigNoz");
-
-app.MapGet(
-        "/api/admin/observability/correlated-logs",
-        async (
-            string traceId,
-            string? spanId,
-            int limit,
-            ISigNozQueryService sigNoz,
-            HttpContext http,
-            IAuditLogger audit,
-            CancellationToken ct
-        ) =>
-        {
-            if (string.IsNullOrWhiteSpace(traceId))
-            {
-                return Results.BadRequest(new { error = "traceId parameter is required" });
-            }
-
-            try
-            {
-                var result = await sigNoz.GetCorrelatedLogsAsync(traceId, spanId, limit, ct);
-
-                // Audit read
-                var ev = new TansuCloud.Observability.Auditing.AuditEvent
-                {
-                    Category = "Admin",
-                    Action = "ObservabilityCorrelatedLogsRead",
-                    Outcome = "Success",
-                    Subject = http.User?.Identity?.Name ?? "anonymous",
-                    CorrelationId = http.TraceIdentifier
-                };
-                audit.TryEnqueueRedacted(
-                    ev,
-                    new
-                    {
-                        TraceId = traceId,
-                        SpanId = spanId ?? "all",
-                        LogCount = result.Logs.Count
-                    },
-                    new[] { "TraceId", "SpanId", "LogCount" }
-                );
-
-                return Results.Ok(result);
-            }
-            catch (Exception ex)
-            {
-                return Results.Problem(
-                    title: "Failed to query correlated logs",
-                    detail: ex.Message,
-                    statusCode: StatusCodes.Status503ServiceUnavailable
-                );
-            }
-        }
-    )
-    .RequireAuthorization("AdminOnly")
-    .WithDisplayName("Admin: Get correlated logs from SigNoz");
-
-app.MapGet(
-        "/api/admin/observability/otlp-health",
-        async (
-            ISigNozQueryService sigNoz,
-            HttpContext http,
-            IAuditLogger audit,
-            CancellationToken ct
-        ) =>
-        {
-            try
-            {
-                var result = await sigNoz.GetOtlpHealthAsync(ct);
-
-                // Audit read
-                var ev = new TansuCloud.Observability.Auditing.AuditEvent
-                {
-                    Category = "Admin",
-                    Action = "ObservabilityOtlpHealthRead",
-                    Outcome = "Success",
-                    Subject = http.User?.Identity?.Name ?? "anonymous",
-                    CorrelationId = http.TraceIdentifier
-                };
-                audit.TryEnqueueRedacted(
-                    ev,
-                    new
-                    {
-                        ExporterCount = result.Exporters.Count,
-                        HealthyCount = result.Exporters.Count(e => e.IsHealthy)
-                    },
-                    new[] { "ExporterCount", "HealthyCount" }
-                );
-
-                return Results.Ok(result);
-            }
-            catch (Exception ex)
-            {
-                return Results.Problem(
-                    title: "Failed to query OTLP health",
-                    detail: ex.Message,
-                    statusCode: StatusCodes.Status503ServiceUnavailable
-                );
-            }
-        }
-    )
-    .RequireAuthorization("AdminOnly")
-    .WithDisplayName("Admin: Get OTLP exporter health from SigNoz");
-
-app.MapGet(
-        "/api/admin/observability/recent-errors",
-        async (
-            string? serviceName,
-            int timeRangeMinutes,
-            int limit,
-            ISigNozQueryService sigNoz,
-            HttpContext http,
-            IAuditLogger audit,
-            CancellationToken ct
-        ) =>
-        {
-            try
-            {
-                var result = await sigNoz.GetRecentErrorsAsync(
-                    serviceName,
-                    timeRangeMinutes,
-                    limit,
-                    ct
-                );
-
-                // Audit read
-                var ev = new TansuCloud.Observability.Auditing.AuditEvent
-                {
-                    Category = "Admin",
-                    Action = "ObservabilityRecentErrorsRead",
-                    Outcome = "Success",
-                    Subject = http.User?.Identity?.Name ?? "anonymous",
-                    CorrelationId = http.TraceIdentifier
-                };
-                audit.TryEnqueueRedacted(
-                    ev,
-                    new
-                    {
-                        ServiceName = serviceName ?? "all",
-                        TimeRangeMinutes = timeRangeMinutes,
-                        ErrorCount = result.Errors.Count
-                    },
-                    new[] { "ServiceName", "TimeRangeMinutes", "ErrorCount" }
-                );
-
-                return Results.Ok(result);
-            }
-            catch (Exception ex)
-            {
-                return Results.Problem(
-                    title: "Failed to query recent errors",
-                    detail: ex.Message,
-                    statusCode: StatusCodes.Status503ServiceUnavailable
-                );
-            }
-        }
-    )
-    .RequireAuthorization("AdminOnly")
-    .WithDisplayName("Admin: Get recent errors from SigNoz");
-
 // Admin-only log reporting status/toggle API
 app.MapGet(
         "/api/admin/log-reporting/status",
@@ -3555,6 +2881,9 @@ if (app.Environment.IsDevelopment())
         )
         .AllowAnonymous();
 }
+
+// Expose Prometheus metrics endpoint for scraping (Task 47 Phase 4)
+app.MapPrometheusScrapingEndpoint();
 
 app.Run();
 

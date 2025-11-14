@@ -2,7 +2,6 @@
 @layout TansuCloud.Dashboard.Pages.Admin.AdminLayout
 @attribute [Microsoft.AspNetCore.Authorization.Authorize(Policy = "AdminOnly")]
 @using MudBlazor
-@implements IDisposable
 
 <PageTitle>Audit Log | TansuCloud Admin</PageTitle>
 
@@ -280,15 +279,6 @@
                                 @detailsText
                             </MudPaper>
                         </MudCardContent>
-                        <MudCardActions>
-                            <MudButton Variant="Variant.Outlined" 
-                                       Color="Color.Secondary" 
-                                       StartIcon="@Icons.Material.Filled.OpenInNew"
-                                       Href="@_sigNozBaseUrl" 
-                                       Target="_blank">
-                                Open SigNoz
-                            </MudButton>
-                        </MudCardActions>
                     </MudCard>
                 }
             </MudItem>
@@ -328,22 +318,7 @@
     }
 
     [Inject] private HttpClient Http { get; set; } = default!;
-    [Inject] private TansuCloud.Dashboard.Observability.SigNoz.SigNozMetricsCatalog Catalog { get; set; } = default!;
-    [Inject] private Microsoft.Extensions.Options.IOptionsMonitor<TansuCloud.Dashboard.Observability.SigNoz.SigNozOptions> OptionsMonitor { get; set; } = default!;
     [Inject] private Microsoft.JSInterop.IJSRuntime JS { get; set; } = default!;
-
-    private string _sigNozBaseUrl = string.Empty;
-    private IDisposable? _optionsReload;
-
-    protected override void OnInitialized()
-    {
-        _sigNozBaseUrl = Catalog.CreateCatalog().BaseUrl;
-        _optionsReload = OptionsMonitor.OnChange((_, _) =>
-        {
-            _sigNozBaseUrl = Catalog.CreateCatalog().BaseUrl;
-            _ = InvokeAsync(StateHasChanged);
-        });
-    }
 
     protected override async Task OnInitializedAsync()
     {
@@ -448,11 +423,6 @@
             var o when o.Contains("warn") => Color.Warning,
             _ => Color.Default
         };
-    }
-
-    public void Dispose()
-    {
-        _optionsReload?.Dispose();
     }
 
     private sealed class QueryResult
